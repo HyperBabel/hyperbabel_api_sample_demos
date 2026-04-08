@@ -1,0 +1,85 @@
+{
+  "expo": {
+    "name": "HyperBabel Demo",
+    "slug": "hyperbabel-demo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0a0a0f"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.hyperbabel.demo",
+      "infoPlist": {
+        "NSCameraUsageDescription": "HyperBabel Demo uses the camera for video calls and live streaming.",
+        "NSMicrophoneUsageDescription": "HyperBabel Demo uses the microphone for voice and video communication.",
+        "NSPhotoLibraryUsageDescription": "HyperBabel Demo accesses your photo library for sending image messages.",
+        "UIBackgroundModes": ["audio", "remote-notification", "fetch"]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0a0a0f"
+      },
+      "package": "com.hyperbabel.demo",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.BLUETOOTH",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
+      ],
+      "edgeToEdgeEnabled": true,
+      "googleServicesFile": "./google-services.json"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "HyperBabel Demo uses the camera for video calls and live streaming."
+        }
+      ],
+      [
+        "expo-av",
+        {
+          "microphonePermission": "HyperBabel Demo uses the microphone for voice and video calls."
+        }
+      ],
+      "expo-secure-store",
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ]
+    ],
+    "scheme": "hyperbabel-demo",
+    "extra": {
+      "eas": {
+        "projectId": "hyperbabel-demo"
+      }
+    }
+  }
+}

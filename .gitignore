@@ -1,0 +1,86 @@
+# Dependencies
+node_modules/
+jspm_packages/
+
+# Production Build Outputs
+build/
+dist/
+out/
+.next/
+.serverless/
+bin/
+obj/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Environment Variables & Secrets (CRITICAL SECURITY)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.pem
+*.key
+*.jks
+*.keystore
+secrets.json
+
+# React Native - Android
+react_native/android/app/build/
+react_native/android/.gradle/
+react_native/android/local.properties
+react_native/android/*.keystore
+react_native/android/*.jks
+!react_native/android/debug.keystore
+
+# React Native - iOS
+react_native/ios/Pods/
+react_native/ios/build/
+react_native/ios/*.xcworkspace/xcuserdata/
+react_native/ios/*.xcodeproj/xcuserdata/
+react_native/ios/DerivedData/
+react_native/ios/IPHONEOS_DEPLOYMENT_TARGET
+
+# React Native - General
+react_native/.expo/
+react_native/.expo-shared/
+react_native/npm-debug.log*
+react_native/yarn-debug.log*
+react_native/yarn-error.log*
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+.project
+.classpath
+.settings/
+
+# OS Specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Testing
+coverage/
+.nyc_output/
+
+# Documentation / Build artifacts
+_site/
+
+# Optional: Firebase / Service Configs (Keep private if they contain sensitive keys)
+# react_native/android/app/google-services.json
+# react_native/ios/GoogleService-Info.plist
