@@ -2,9 +2,10 @@
 
 Welcome to the HyperBabel Demo Applications! This repository contains fully functional, production-ready sample applications built on top of the **HyperBabel API Platform**. The codebase is designed to serve as a comprehensive reference for integrating HyperBabel's real-time capabilities into your own products.
 
-There are currently two architectures provided:
+There are currently three architectures provided:
 1. **[React (Web API Demo)](./react/README.md)**
 2. **[React Native (Mobile API Demo)](./react_native/README.md)**
+3. **[Flutter (Cross-Platform API Demo)](./flutter/README.md)**
 
 ---
 
@@ -38,8 +39,10 @@ Each demo uses environment variables to authenticate with the API platform.
    cd react
    # OR
    cd react_native
+   # OR
+   cd flutter
    ```
-2. Copy the example environment file:
+2. Copy the example environment file (For React & React Native):
    ```bash
    cp .env.example .env
    ```
@@ -49,6 +52,7 @@ Each demo uses environment variables to authenticate with the API platform.
    # Or for React Native:
    EXPO_PUBLIC_HB_API_KEY=your_copied_api_key_here
    ```
+*(Note: For the Flutter demo, you can enter the API Key directly in the app's setup screen when it launches).*
 
 ### Step 3: Origin / CORS Security (Crucial for Web)
 HyperBabel enforces Zero Trust security models. For Web applications (React), requests will be blocked (returning a `403 Forbidden` response) unless the origin is allowed.
@@ -68,12 +72,18 @@ For the React Native application:
 npm install
 npx expo start
 ```
+
+For the Flutter application:
+```bash
+flutter pub get
+flutter run
+```
 You can now create users, join chat rooms, trigger video calls between browser tabs or physical mobile devices, and monitor your usage hitting the API platform!
 
 ---
 
 ## Architecture & Code Quality
-Both the `react/` and `react_native/` demos have been thoroughly audited and hardened to prevent edge cases common in real-time engineering:
+The `react/`, `react_native/`, and `flutter/` demos have all been thoroughly audited and hardened to prevent edge cases common in real-time engineering:
 * **Event Guarding**: Real-time event listeners strictly validate payloads, preventing malformed UI state (e.g., dismissing heartbeat/typing events that masquerade as messages).
 * **System Messages**: Refined UI components elegantly intercept backend-generated system alerts, rendering them centrally instead of drawing blank user message bubbles.
 * **Resource Optimization**: The UI lists are equipped with robust fallback logic and perform automatic cleanup to securely close real-time connections on unmount. 
