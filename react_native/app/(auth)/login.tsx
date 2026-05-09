@@ -210,7 +210,7 @@ export default function LoginScreen() {
                   onChangeText={setBaseUrl}
                 />
                 <Text style={styles.fieldHint}>
-                  Leave as-is for production. Use http://localhost:8080/api/v1 for local dev.
+                  Leave as-is for production. Use http://localhost:8787/api/v1 for local dev.
                 </Text>
               </View>
             )}

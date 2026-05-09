@@ -1,15 +1,20 @@
 /**
- * HyperBabel Demo — RTC Service (HyperBabel Video RTC)
+ * HyperBabel Demo — RTC Service (HyperBabel Video)
  *
  * Capabilities:
- *  - Create and manage an Agora engine instance
+ *  - Create and manage a HyperBabel Video engine instance
  *  - Join a channel as publisher (video call) or subscriber (stream viewer)
  *  - Handle remote user tracking events
  *  - Provide control helpers: mute, camera toggle, flip, switch role
+ *
+ * The vendor SDK is imported by package name; specific symbols are renamed
+ * via `import as` so the body of this file talks about HyperBabel concepts
+ * only. Any existing identifiers re-exported below keep their public name
+ * because callers already depend on them.
  */
 
 import {
-  createAgoraRtcEngine,
+  createAgoraRtcEngine as createVideoEngine,
   IRtcEngine,
   RtcConnection,
   RtcSurfaceView,
@@ -39,7 +44,7 @@ export interface RtcEventHandlers {
 }
 
 /**
- * RtcClient — lifecycle wrapper for a single Agora engine instance.
+ * RtcClient — lifecycle wrapper for a single HyperBabel Video engine.
  * Create one per screen, call join() to enter the channel,
  * and always call release() in the component's cleanup effect.
  */
@@ -47,7 +52,7 @@ export class RtcClient {
   private engine: IRtcEngine | null = null;
 
   async join(options: RtcJoinOptions, handlers: RtcEventHandlers = {}): Promise<void> {
-    const engine = createAgoraRtcEngine();
+    const engine = createVideoEngine();
     this.engine  = engine;
 
     const profile =

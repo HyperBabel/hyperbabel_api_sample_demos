@@ -4,26 +4,13 @@
  * Formats message timestamps in a human-friendly way that automatically
  * adapts to the user's device locale (navigator.language).
  *
- * Supported locales (auto-detected from browser):
- *   en  — English     : "just now", "2 min ago", "Yesterday 3:30 PM"
- *   ko  — Korean      : "방금 전", "2분 전", "어제 오후 3:30"
- *   ja  — Japanese    : "たった今", "2分前", "昨日 15:30"
- *   zh  — Chinese     : "刚刚", "2分钟前", "昨天 15:30"
- *   es  — Spanish     : "ahora mismo", "hace 2 min", "Ayer 15:30"
- *   fr  — French      : "à l'instant", "il y a 2 min", "Hier 15:30"
- *   de  — German      : "gerade eben", "vor 2 Min.", "Gestern 15:30"
- *   pt  — Portuguese  : "agora mesmo", "há 2 min", "Ontem 15:30"
- *   ar  — Arabic      : "الآن", "منذ 2 دقيقة", "أمس 15:30"
- *   hi  — Hindi       : "अभी", "2 मिनट पहले", "कल दोपहर 3:30"
- *   vi  — Vietnamese  : "vừa xong", "2 phút trước", "Hôm qua 15:30"
- *   th  — Thai        : "เมื่อกี้", "2 นาทีที่แล้ว", "เมื่อวาน 15:30"
- *
- * Falls back to English for any unrecognised locale.
+ * Supported locales auto-detected from the browser: en, ko, ja, zh-CN, zh-TW,
+ * es, fr, de, pt, ar, hi, vi, th, ru, id, tr. Falls back to English for any
+ * unrecognised locale. Output strings are produced by dayjs locale modules.
  *
  * Usage:
  *   import { formatMessageTime, formatFullDate } from '../utils/timeUtils';
- *   formatMessageTime('2026-03-16T08:23:00Z')  → "2 hours ago"  (en browser)
- *   formatMessageTime('2026-03-16T08:23:00Z')  → "2시간 전"     (ko browser)
+ *   formatMessageTime('2026-03-16T08:23:00Z')  // "2 hours ago" on an en browser
  */
 
 import dayjs from 'dayjs';
@@ -105,14 +92,16 @@ initLocale().catch(() => {});
 // ── Formatting functions ───────────────────────────────────────────────────
 
 /**
- * Format a timestamp for display in a chat message.
+ * Format a timestamp for display in a chat message. The output is rendered in
+ * the active dayjs locale, so the same call returns "just now" on an English
+ * browser and the locale-equivalent string on a non-English browser.
  *
- * Rules (locale-aware throughout):
- *  - Within the last 60 seconds  → "just now" / "방금 전" / "たった今" ...
- *  - Within the last 60 minutes  → "5 minutes ago" / "5분 전" ...
- *  - Same day                    → "3:45 PM" / "오후 3:45" / "15:45" ...
- *  - Yesterday                   → "Yesterday 3:45 PM" / "어제 오후 3:45" ...
- *  - Older                       → "Mar 15, 3:45 PM" / "3월 15일 오후 3:45" ...
+ * Rules:
+ *  - Within the last 60 seconds  → relative "just now"
+ *  - Within the last 60 minutes  → relative "X minutes ago"
+ *  - Same day                    → time only (12h or 24h per locale)
+ *  - Yesterday                   → "Yesterday <time>"
+ *  - Older                       → short date + time
  *
  * @param {string|number|Date} timestamp — ISO string, Unix ms, or Date
  * @returns {string} Human-friendly, locale-aware time string
@@ -127,19 +116,19 @@ export const formatMessageTime = (timestamp) => {
   const diffSeconds = now.diff(d, 'second');
   const diffMinutes = now.diff(d, 'minute');
 
-  // Within last 60 seconds → relative "just now"
+  // Within last 60 seconds → relative "just now" (locale-aware)
   if (diffSeconds < 60) {
-    return d.fromNow(); // locale-aware: "방금 전", "たった今", "just now"
+    return d.fromNow();
   }
 
-  // Within last 60 minutes → relative "X minutes ago"
+  // Within last 60 minutes → relative "X minutes ago" (locale-aware)
   if (diffMinutes < 60) {
-    return d.fromNow(); // "5분 전", "5 minutes ago", "il y a 5 min"
+    return d.fromNow();
   }
 
-  // Today → time only (locale formats 12h or 24h per region)
+  // Today → time only; dayjs picks 12h or 24h per region
   if (d.isToday()) {
-    return d.format('LT'); // "3:45 PM" (en), "15:45" (de/fr/ko/ja)
+    return d.format('LT');
   }
 
   // Yesterday → label + time
@@ -147,8 +136,8 @@ export const formatMessageTime = (timestamp) => {
     return `${getYesterdayLabel()} ${d.format('LT')}`;
   }
 
-  // Older → short date + time
-  return d.format('ll LT'); // "Mar 15, 3:45 PM" (en), "3月15日 15:45" (ja)
+  // Older → short date + time, e.g. "Mar 15, 3:45 PM" on an en browser
+  return d.format('ll LT');
 };
 
 /**
@@ -159,7 +148,7 @@ const getYesterdayLabel = () => {
   try {
     const lang = dayjs.locale();
     const rtf = new Intl.RelativeTimeFormat(lang, { numeric: 'auto' });
-    // Intl gives us "yesterday" / "어제" / "昨日" etc.
+    // Intl resolves "yesterday" into the active language for us.
     const parts = rtf.formatToParts(-1, 'day');
     return parts.map((p) => p.value).join('').trim();
   } catch {
@@ -171,7 +160,7 @@ const getYesterdayLabel = () => {
  * Format a full date and time — used in message detail views or tooltips.
  *
  * @param {string|number|Date} timestamp
- * @returns {string} e.g. "Sunday, March 16, 2026 3:45 PM" / "2026년 3월 16일 일요일 오후 3:45"
+ * @returns {string} e.g. "Sunday, March 16, 2026 3:45 PM" on an en browser
  */
 export const formatFullDate = (timestamp) => {
   if (!timestamp) return '';
@@ -184,7 +173,7 @@ export const formatFullDate = (timestamp) => {
  * Format a date only — used for date separators in chat history.
  *
  * @param {string|number|Date} timestamp
- * @returns {string} e.g. "March 16, 2026" / "2026년 3월 16일" / "16 mars 2026"
+ * @returns {string} e.g. "March 16, 2026" on an en browser
  */
 export const formatDateSeparator = (timestamp) => {
   if (!timestamp) return '';

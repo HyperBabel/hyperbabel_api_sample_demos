@@ -1,18 +1,24 @@
 /**
  * HyperBabel Demo — Settings Screen
  *
- * Covers Phase 6 features:
- *  - Profile info (userId, lang)
- *  - API usage stats (current billing period)
- *  - Webhook management (list, create, delete)
+ * Provides configuration and monitoring panels:
+ *  - Profile info (userId, base URL)
  *  - Language preference update
+ *  - Privacy → Blocked Users link
+ *  - API usage statistics (current billing period)
+ *  - Push notification token list
+ *  - Language detection playground
  *  - Logout
+ *
+ * Webhooks are managed in the HyperBabel Console (https://console.hyperbabel.com),
+ * not from this demo, because webhook CRUD is a tenant-admin operation that
+ * requires a Console session and is not exposed to API keys.
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  SafeAreaView, Alert, Switch, TextInput, ActivityIndicator,
+  SafeAreaView, Alert, TextInput, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 
@@ -21,7 +27,11 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import * as authService from '@/services/authService';
-import type { UsageStats, WebhookConfig } from '@/services/authService';
+import * as pushService from '@/services/pushService';
+import * as translateService from '@/services/translateService';
+import type { UsageStats } from '@/services/authService';
+
+type PushTokenRow = { token: string; platform: 'ios' | 'android' | 'web'; created_at: string };
 
 // ── Usage stat row ────────────────────────────────────────────────────────
 
@@ -42,21 +52,16 @@ function UsageRow({ label, value, limit }: { label: string; value: number; limit
   );
 }
 
-// ── Webhook row ───────────────────────────────────────────────────────────
+// ── Push token row ────────────────────────────────────────────────────────
 
-function WebhookRow({ wh, onDelete }: { wh: WebhookConfig; onDelete: () => void }) {
+function PushTokenItem({ row }: { row: PushTokenRow }) {
+  const short = row.token.length > 24 ? `${row.token.slice(0, 16)}…${row.token.slice(-4)}` : row.token;
   return (
-    <View style={styles.webhookRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.webhookUrl} numberOfLines={1}>{wh.url}</Text>
-        <Text style={styles.webhookEvents}>{wh.events.join(', ')}</Text>
+    <View style={styles.pushRow}>
+      <View style={styles.pushPlatformPill}>
+        <Text style={styles.pushPlatformText}>{row.platform}</Text>
       </View>
-      <View style={styles.webhookActions}>
-        <View style={[styles.whStatus, { backgroundColor: wh.is_active ? colors.success : colors.textMuted }]} />
-        <TouchableOpacity onPress={onDelete}>
-          <Text style={{ color: colors.error, fontSize: 18 }}>🗑</Text>
-        </TouchableOpacity>
-      </View>
+      <Text style={styles.pushToken} numberOfLines={1}>{short}</Text>
     </View>
   );
 }
@@ -73,26 +78,30 @@ const LANGUAGES = [
 
 export default function SettingsScreen() {
   const { user, logout, updateLang } = useAuth();
-  const [usage,     setUsage]     = useState<UsageStats | null>(null);
-  const [webhooks,  setWebhooks]  = useState<WebhookConfig[]>([]);
-  const [loading,   setLoading]   = useState(true);
-  const [newWhUrl,  setNewWhUrl]  = useState('');
-  const [addingWh,  setAddingWh]  = useState(false);
+  const [usage,         setUsage]         = useState<UsageStats | null>(null);
+  const [pushTokens,    setPushTokens]    = useState<PushTokenRow[]>([]);
+  const [loading,       setLoading]       = useState(true);
+
+  // Language detection playground state
+  const [detectInput,   setDetectInput]   = useState('');
+  const [detectResult,  setDetectResult]  = useState<string | null>(null);
+  const [detecting,     setDetecting]     = useState(false);
 
   const loadData = useCallback(async () => {
+    if (!user) return;
     try {
-      const [u, w] = await Promise.all([
+      const [u, t] = await Promise.all([
         authService.getUsage().catch(() => null),
-        authService.listWebhooks().catch(() => ({ webhooks: [] })),
+        pushService.getTokens(user.userId).catch(() => ({ tokens: [] })),
       ]);
       setUsage(u);
-      setWebhooks(w.webhooks ?? []);
+      setPushTokens(t.tokens ?? []);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user]);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, [loadData]);
 
   const handleLogout = () => {
     Alert.alert('Logout', 'Are you sure you want to log out?', [
@@ -101,27 +110,18 @@ export default function SettingsScreen() {
     ]);
   };
 
-  const handleAddWebhook = async () => {
-    const url = newWhUrl.trim();
-    if (!url.startsWith('http')) { Alert.alert('Invalid', 'URL must start with http(s)://'); return; }
-    setAddingWh(true);
+  const handleDetectLanguage = async () => {
+    const text = detectInput.trim();
+    if (!text) return;
+    setDetecting(true);
+    setDetectResult(null);
     try {
-      const wh = await authService.createWebhook(url, ['message.created', 'video_call.started']);
-      setWebhooks((prev) => [...prev, wh]);
-      setNewWhUrl('');
+      const res = await translateService.detectLanguage(text);
+      setDetectResult(`${res.language}  (${Math.round((res.confidence ?? 0) * 100)}% confidence)`);
     } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Failed to add webhook.');
+      setDetectResult(`Error: ${err?.message ?? 'Failed to detect language'}`);
     } finally {
-      setAddingWh(false);
-    }
-  };
-
-  const handleDeleteWebhook = async (webhookId: string) => {
-    try {
-      await authService.deleteWebhook(webhookId);
-      setWebhooks((prev) => prev.filter((w) => w.webhook_id !== webhookId));
-    } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Failed to delete webhook.');
+      setDetecting(false);
     }
   };
 
@@ -156,6 +156,17 @@ export default function SettingsScreen() {
           ))}
         </View>
 
+        {/* Privacy → Blocked users */}
+        <Text style={styles.sectionTitle}>Privacy</Text>
+        <TouchableOpacity onPress={() => router.push('/(main)/blocks' as any)} activeOpacity={0.85}>
+          <Card style={styles.card}>
+            <View style={styles.linkRow}>
+              <Text style={styles.linkLabel}>🚫  Blocked Users</Text>
+              <Text style={styles.linkArrow}>›</Text>
+            </View>
+          </Card>
+        </TouchableOpacity>
+
         {/* Usage stats */}
         <Text style={styles.sectionTitle}>API Usage</Text>
         <Card style={styles.card}>
@@ -173,26 +184,44 @@ export default function SettingsScreen() {
           )}
         </Card>
 
-        {/* Webhooks */}
-        <Text style={styles.sectionTitle}>Webhooks</Text>
+        {/* Push tokens */}
+        <Text style={styles.sectionTitle}>Push Tokens</Text>
         <Card style={styles.card}>
-          {webhooks.map((wh) => (
-            <WebhookRow key={wh.webhook_id} wh={wh} onDelete={() => handleDeleteWebhook(wh.webhook_id)} />
-          ))}
-          {webhooks.length === 0 && !loading && (
-            <Text style={styles.emptyText}>No webhooks registered</Text>
+          {loading ? (
+            <ActivityIndicator color={colors.primary} />
+          ) : pushTokens.length === 0 ? (
+            <Text style={styles.emptyText}>No push tokens registered for this user yet.</Text>
+          ) : (
+            pushTokens.map((row, idx) => <PushTokenItem key={`${row.token}-${idx}`} row={row} />)
           )}
-          <View style={styles.whAddRow}>
+        </Card>
+
+        {/* Language detection playground */}
+        <Text style={styles.sectionTitle}>Language Detection</Text>
+        <Card style={styles.card}>
+          <Text style={styles.helperText}>
+            Type any text and tap Detect to see what language the AI Translation
+            engine identifies it as.
+          </Text>
+          <View style={styles.detectRow}>
             <TextInput
-              style={styles.whInput}
-              placeholder="https://your-server.com/webhook"
+              style={styles.detectInput}
+              placeholder="Type something to detect…"
               placeholderTextColor={colors.textMuted}
-              value={newWhUrl}
-              onChangeText={setNewWhUrl}
+              value={detectInput}
+              onChangeText={setDetectInput}
               autoCapitalize="none"
             />
-            <Button label={addingWh ? '…' : 'Add'} onPress={handleAddWebhook} disabled={addingWh} size="sm" />
+            <Button
+              label={detecting ? '…' : 'Detect'}
+              onPress={handleDetectLanguage}
+              disabled={detecting}
+              size="sm"
+            />
           </View>
+          {detectResult && (
+            <Text style={styles.detectResult}>{detectResult}</Text>
+          )}
         </Card>
 
         {/* Logout */}
@@ -220,6 +249,10 @@ const styles = StyleSheet.create({
   langChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   langChipText:   { ...textPresets.label, color: colors.textSecondary },
 
+  linkRow:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  linkLabel:      { ...textPresets.label, color: colors.text, fontWeight: '600' },
+  linkArrow:      { ...textPresets.h3, color: colors.textMuted },
+
   usageRow:       { paddingVertical: spacing[3], borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
   usageRowHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing[2] },
   usageLabel:     { ...textPresets.label, color: colors.textSecondary },
@@ -227,13 +260,15 @@ const styles = StyleSheet.create({
   usageBar:       { height: 4, backgroundColor: colors.surface, borderRadius: 2, overflow: 'hidden' },
   usageBarFill:   { height: '100%', borderRadius: 2 },
 
-  webhookRow:     { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing[3], borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, gap: spacing[3] },
-  webhookUrl:     { ...textPresets.label, color: colors.text, fontWeight: '600' },
-  webhookEvents:  { ...textPresets.caption, color: colors.textMuted },
-  webhookActions: { flexDirection: 'row', alignItems: 'center', gap: spacing[3] },
-  whStatus:       { width: 8, height: 8, borderRadius: 4 },
-  whAddRow:       { flexDirection: 'row', alignItems: 'center', gap: spacing[3], marginTop: spacing[4] },
-  whInput:        { flex: 1, ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[2] },
+  pushRow:        { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing[3], borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, gap: spacing[3] },
+  pushPlatformPill: { paddingHorizontal: spacing[2], paddingVertical: 2, borderRadius: borderRadius.sm, backgroundColor: colors.primary },
+  pushPlatformText: { ...textPresets.caption, color: colors.white, fontWeight: '700', textTransform: 'uppercase' },
+  pushToken:      { ...textPresets.caption, color: colors.text, flex: 1 },
+
+  detectRow:      { flexDirection: 'row', alignItems: 'center', gap: spacing[3], marginTop: spacing[3] },
+  detectInput:    { flex: 1, ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[2] },
+  detectResult:   { ...textPresets.label, color: colors.text, marginTop: spacing[3], padding: spacing[3], backgroundColor: colors.surface, borderRadius: borderRadius.lg },
+  helperText:     { ...textPresets.caption, color: colors.textMuted },
 
   emptyText:      { ...textPresets.label, color: colors.textMuted, paddingVertical: spacing[4], textAlign: 'center' },
   errorText:      { ...textPresets.label, color: colors.error, textAlign: 'center', padding: spacing[4] },

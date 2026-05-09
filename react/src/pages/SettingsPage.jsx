@@ -3,13 +3,15 @@
  *
  * Provides configuration and monitoring panels:
  * - API Usage statistics (monthly breakdown by service)
- * - Webhook management (create, list, update, delete, regenerate secret)
  * - Push notification token management
  * - Language detection playground
  *
+ * Webhooks are managed in the HyperBabel Console (https://console.hyperbabel.com),
+ * not from this demo, because webhook CRUD is a tenant-admin operation that
+ * requires a Console session and is not exposed to API keys.
+ *
  * API Integration:
  * - Auth API: getUsage
- * - Auth Webhooks API: full CRUD + logs
  * - Push API: register/unregister tokens, list tokens
  * - Translation API: detectLanguage, getSupportedLanguages
  */
@@ -27,12 +29,8 @@ export default function SettingsPage() {
 
   // ── State ──
   const [usage, setUsage] = useState(null);
-  const [webhooks, setWebhooks] = useState([]);
-  const [webhookLogs, setWebhookLogs] = useState([]);
   const [pushTokens, setPushTokens] = useState([]);
   const [supportedLangs, setSupportedLangs] = useState([]);
-  const [showWebhookModal, setShowWebhookModal] = useState(false);
-  const [newWebhook, setNewWebhook] = useState({ url: '', events: '', description: '' });
   const [detectInput, setDetectInput] = useState('');
   const [detectResult, setDetectResult] = useState(null);
 
@@ -51,69 +49,13 @@ export default function SettingsPage() {
     // Fetch all data in parallel for faster page load
     const results = await Promise.allSettled([
       authService.getUsage(),
-      authService.listWebhooks(),
-      authService.getWebhookLogs({ limit: 10 }),
       pushService.getTokens(user.user_id),
       translateService.getSupportedLanguages(),
     ]);
 
     if (results[0].status === 'fulfilled') setUsage(results[0].value);
-    if (results[1].status === 'fulfilled') setWebhooks(results[1].value?.webhooks || results[1].value || []);
-    if (results[2].status === 'fulfilled') setWebhookLogs(results[2].value?.logs || results[2].value || []);
-    if (results[3].status === 'fulfilled') setPushTokens(results[3].value?.tokens || results[3].value || []);
-    if (results[4].status === 'fulfilled') setSupportedLangs(results[4].value?.languages || results[4].value || []);
-  };
-
-  /**
-   * Register a new webhook endpoint.
-   */
-  const handleCreateWebhook = async () => {
-    if (!newWebhook.url.trim()) return;
-    try {
-      const result = await authService.createWebhook({
-        url: newWebhook.url,
-        events: newWebhook.events.split(',').map((e) => e.trim()).filter(Boolean),
-        description: newWebhook.description || undefined,
-      });
-
-      // Show the one-time secret to the user
-      if (result.secret) {
-        alert(`⚠️ SAVE THIS SECRET — it will only be shown once!\n\nSecret: ${result.secret}`);
-      }
-
-      setShowWebhookModal(false);
-      setNewWebhook({ url: '', events: '', description: '' });
-      loadData();
-    } catch (err) {
-      alert(`Failed to create webhook: ${err.message}`);
-    }
-  };
-
-  /**
-   * Delete a webhook endpoint.
-   */
-  const handleDeleteWebhook = async (id) => {
-    if (!confirm('Are you sure you want to delete this webhook?')) return;
-    try {
-      await authService.deleteWebhook(id);
-      loadData();
-    } catch (err) {
-      alert(`Failed to delete: ${err.message}`);
-    }
-  };
-
-  /**
-   * Regenerate the signing secret for a webhook.
-   */
-  const handleRegenerateSecret = async (id) => {
-    try {
-      const result = await authService.regenerateWebhookSecret(id);
-      if (result.secret) {
-        alert(`⚠️ New secret (shown only once!):\n\n${result.secret}`);
-      }
-    } catch (err) {
-      alert(`Failed to regenerate: ${err.message}`);
-    }
+    if (results[1].status === 'fulfilled') setPushTokens(results[1].value?.tokens || results[1].value || []);
+    if (results[2].status === 'fulfilled') setSupportedLangs(results[2].value?.languages || results[2].value || []);
   };
 
   /**
@@ -161,74 +103,6 @@ export default function SettingsPage() {
             ) : (
               <div className="text-muted">
                 Connect your API key to view usage statistics.
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* ══════════ WEBHOOKS ══════════ */}
-        <div className="settings-section">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h2 className="settings-section-title" style={{ marginBottom: 0 }}>🔗 Webhooks</h2>
-            <button className="btn btn-primary btn-sm" onClick={() => setShowWebhookModal(true)}>
-              + Add Webhook
-            </button>
-          </div>
-
-          <div className="settings-card glass-card">
-            {webhooks.length > 0 ? (
-              <table className="webhook-table">
-                <thead>
-                  <tr>
-                    <th>URL</th>
-                    <th>Events</th>
-                    <th>Status</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {webhooks.map((wh) => (
-                    <tr key={wh.id}>
-                      <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {wh.url}
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                          {(wh.events || []).map((ev) => (
-                            <span key={ev} className="badge badge-primary">{ev}</span>
-                          ))}
-                        </div>
-                      </td>
-                      <td>
-                        <span className={`badge ${wh.is_active ? 'badge-success' : 'badge-danger'}`}>
-                          {wh.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                      <td>
-                        <div className="flex gap-sm">
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => handleRegenerateSecret(wh.id)}
-                            title="Regenerate secret"
-                          >
-                            🔑
-                          </button>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => handleDeleteWebhook(wh.id)}
-                            title="Delete webhook"
-                          >
-                            🗑️
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div className="text-muted text-center" style={{ padding: '24px' }}>
-                No webhooks registered. Add one to receive real-time event notifications.
               </div>
             )}
           </div>
@@ -320,57 +194,6 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* ══════════ CREATE WEBHOOK MODAL ══════════ */}
-      {showWebhookModal && (
-        <div className="modal-overlay" onClick={() => setShowWebhookModal(false)}>
-          <div className="modal animate-slide" onClick={(e) => e.stopPropagation()}>
-            <h3 className="modal-title">Register Webhook</h3>
-
-            <div className="input-group">
-              <label className="input-label">Endpoint URL (HTTPS)</label>
-              <input
-                type="url"
-                className="input-field"
-                placeholder="https://your-server.com/webhooks/hyperbabel"
-                value={newWebhook.url}
-                onChange={(e) => setNewWebhook({ ...newWebhook, url: e.target.value })}
-                required
-              />
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">Events (comma-separated)</label>
-              <input
-                type="text"
-                className="input-field"
-                placeholder="video.session.started, video.session.ended, chat.message.sent"
-                value={newWebhook.events}
-                onChange={(e) => setNewWebhook({ ...newWebhook, events: e.target.value })}
-              />
-            </div>
-
-            <div className="input-group">
-              <label className="input-label">Description (optional)</label>
-              <input
-                type="text"
-                className="input-field"
-                placeholder="Production webhook endpoint"
-                value={newWebhook.description}
-                onChange={(e) => setNewWebhook({ ...newWebhook, description: e.target.value })}
-              />
-            </div>
-
-            <div className="flex gap-sm" style={{ justifyContent: 'flex-end', marginTop: '24px' }}>
-              <button className="btn btn-secondary" onClick={() => setShowWebhookModal(false)}>
-                Cancel
-              </button>
-              <button className="btn btn-primary" onClick={handleCreateWebhook}>
-                Register Webhook
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

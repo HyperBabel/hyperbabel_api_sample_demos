@@ -7,7 +7,7 @@
  * It handles the incoming call flow:
  *
  *  Received event type: CALL_INVITE
- *    ├─ isInCall === true   → busyRejectVideoCall() — no popup shown
+ *    ├─ isInCall === true   → drop silently (server-side busy gate already filtered)
  *    └─ isInCall === false  → setIncomingCall(event) → IncomingCallOverlay renders
  *
  *  Received event type: CALL_ENDED (mid-ring)
@@ -20,7 +20,6 @@
 import { useEffect, useRef } from 'react';
 import { useCall } from '../context/CallContext';
 import realtimeService from '../services/realtimeService';
-import * as unitedChat from '../services/unitedChatService';
 
 export default function IncomingCallListener() {
   const { isInCall, setIncomingCall } = useCall();
@@ -41,11 +40,10 @@ export default function IncomingCallListener() {
           // ── Incoming call invitation ─────────────────────────────────────
           if (event.type === 'CALL_INVITE' || event.type === 'video_call.started') {
             if (isInCallRef.current) {
-              // Already in a call → send busy rejection silently
-              unitedChat.busyRejectVideoCall(
-                event.room_id || event.roomId,
-                user.user_id
-              ).catch(() => {}); // fire-and-forget; non-critical
+              // Already in a call — drop the invite. The server-side busy gate
+              // (POST /unitedchat/rooms/:roomId/video-call) prevents the inviter
+              // from reaching us in the first place; this branch only catches
+              // race conditions where two calls land in the same instant.
             } else {
               setIncomingCall({
                 roomId:       event.room_id      || event.roomId,

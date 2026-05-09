@@ -18,7 +18,7 @@ const BASE = '/unitedchat';
 // ── Types ─────────────────────────────────────────────────────────────────
 
 export type RoomType = '1to1' | 'group' | 'open';
-export type MessageType = 'text' | 'image' | 'file' | 'video' | 'audio' | 'system';
+export type MessageType = 'text' | 'image' | 'file' | 'video' | 'audio' | 'location' | 'contact' | 'system';
 export type MemberRole = 'owner' | 'sub_admin' | 'member';
 
 export interface CreateRoomParams {
@@ -143,12 +143,6 @@ export const joinByCode = (inviteCode: string, userId: string, displayName?: str
   api.post<Room>(`${BASE}/rooms/join-by-code`, { invite_code: inviteCode, user_id: userId, display_name: displayName });
 
 /**
- * Get the org's open room file transfer policy.
- */
-export const getOpenRoomPolicy = () =>
-  api.get<{ files_enabled: boolean; max_file_size_mb: number; allowed_types: string[] }>(`${BASE}/policy`);
-
-/**
  * Join an open (public) room.
  */
 export const joinRoom = (roomId: string, userId: string, displayName?: string) =>
@@ -227,13 +221,6 @@ export const acceptVideoCall = (roomId: string, userId: string) =>
  */
 export const rejectVideoCall = (roomId: string, userId: string) =>
   api.post(`${BASE}/rooms/${roomId}/video-call/reject`, { user_id: userId });
-
-/**
- * Send an automatic busy rejection when the user is already in another call.
- * Called silently by IncomingCallListener — no user interaction required.
- */
-export const busyRejectVideoCall = (roomId: string, userId: string) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/busy`, { user_id: userId });
 
 /**
  * End the video call for ALL participants.

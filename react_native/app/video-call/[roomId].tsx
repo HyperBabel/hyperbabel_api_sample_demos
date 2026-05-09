@@ -24,7 +24,10 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import {
-  createAgoraRtcEngine, IRtcEngine, RtcConnection,
+  // The vendor SDK is imported by package name; specific symbols are renamed
+  // via `import as` so the screen body talks about HyperBabel concepts only.
+  createAgoraRtcEngine as createVideoEngine,
+  IRtcEngine, RtcConnection,
   RtcSurfaceView, VideoSourceType,
   ClientRoleType, ChannelProfileType, IRtcEngineEventHandler,
 } from 'react-native-agora';
@@ -116,7 +119,7 @@ export default function VideoCallScreen() {
 
       setCallData(data);
       setIsInCall(true);
-      await initAgoraEngine(data);
+      await initVideoEngine(data);
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Failed to join call.');
       setIsInCall(false);
@@ -131,14 +134,14 @@ export default function VideoCallScreen() {
     setHasRejoin(false);
     setLoading(true);
     setIsInCall(true);
-    await initAgoraEngine(callData);
+    await initVideoEngine(callData);
     setLoading(false);
   };
 
-  // ── 4. Agora engine init ────────────────────────────────────────────────
+  // ── 4. HyperBabel Video engine init ─────────────────────────────────────
 
-  const initAgoraEngine = async (data: ActiveVideoCall) => {
-    const _engine = createAgoraRtcEngine();
+  const initVideoEngine = async (data: ActiveVideoCall) => {
+    const _engine = createVideoEngine();
     engineRef.current = _engine;
 
     _engine.initialize({

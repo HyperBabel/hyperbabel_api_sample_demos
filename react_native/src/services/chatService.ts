@@ -56,9 +56,19 @@ export interface ThreadMessage {
 
 // ── Channels ──────────────────────────────────────────────────────────────
 
-/** Create or get a channel. */
-export const createChannel = (name: string, members?: string[]) =>
-  api.post<ChatChannel>(`${BASE}/channels`, { name, members });
+/**
+ * Create a channel.
+ *
+ * Wire shape per cf_workers_api/src/routes/chat.ts createChannelSchema:
+ *   - `channel_name` is required and must match `^[a-z0-9:-]+$`
+ *   - `channel_type` defaults to 'group'
+ *   - `members` is optional
+ */
+export const createChannel = (channelName: string, members?: string[]) =>
+  api.post<ChatChannel>(`${BASE}/channels`, {
+    channel_name: channelName,
+    ...(members ? { members } : {}),
+  });
 
 /** List channels for a user. */
 export const listChannels = (userId: string) =>
@@ -92,20 +102,23 @@ export const deleteChannelMessage = (channelId: string, messageId: string, userI
 // ── Reactions ─────────────────────────────────────────────────────────────
 
 /**
- * Add an emoji reaction to a message.
- * Idempotent — calling again removes the reaction (toggle).
+ * Add an emoji reaction to a message. Reactions are message-scoped on the
+ * server (not room-scoped), so the path doesn't need a room id.
+ *
+ * The first arg is kept for source-compat with existing call sites that
+ * still thread the room id around — it's deliberately ignored.
  */
-export const addReaction = (roomId: string, messageId: string, userId: string, emoji: string) =>
-  api.post(`/unitedchat/rooms/${roomId}/messages/${messageId}/reactions`, {
+export const addReaction = (_roomId: string, messageId: string, userId: string, emoji: string) =>
+  api.post(`/chat/messages/${messageId}/reactions`, {
     user_id: userId,
     emoji,
   });
 
 /**
- * Remove an emoji reaction from a message.
+ * Remove an emoji reaction from a message. Same path scoping as addReaction.
  */
-export const removeReaction = (roomId: string, messageId: string, userId: string, emoji: string) =>
-  api.delete(`/unitedchat/rooms/${roomId}/messages/${messageId}/reactions`, {
+export const removeReaction = (_roomId: string, messageId: string, userId: string, emoji: string) =>
+  api.delete(`/chat/messages/${messageId}/reactions`, {
     user_id: userId,
     emoji,
   });
@@ -113,34 +126,44 @@ export const removeReaction = (roomId: string, messageId: string, userId: string
 // ── Threads ───────────────────────────────────────────────────────────────
 
 /**
- * Get thread replies for a parent message.
+ * Get thread replies for a parent message. The thread endpoint lives under
+ * the low-level chat surface (`/chat/channels/:channelId/...`), and a
+ * united-chat room id is the same as its channel id internally.
  */
-export const getThreadReplies = (roomId: string, parentMessageId: string) =>
+export const getThreadReplies = (channelId: string, parentMessageId: string) =>
   api.get<{ replies: ChatMessage[] }>(
-    `/unitedchat/rooms/${roomId}/messages/${parentMessageId}/thread`,
+    `${BASE}/channels/${channelId}/messages/${parentMessageId}/thread`,
   );
 
 /**
  * Post a reply in a thread.
+ *
+ * There's no dedicated "thread reply" POST endpoint — thread replies are
+ * just regular messages with `reply_to` set to the parent message id, and
+ * united-chat's room id is the same as the channel id we send to.
  */
-export const sendThreadReply = (roomId: string, parentMessageId: string, data: {
-  sender_id:  string;
-  content:    string;
-}) =>
+export const sendThreadReply = (
+  channelId: string,
+  parentMessageId: string,
+  data: { sender_id: string; content: string },
+) =>
   api.post<ChatMessage>(
-    `/unitedchat/rooms/${roomId}/messages/${parentMessageId}/thread`,
-    data,
+    `/unitedchat/rooms/${channelId}/messages`,
+    {
+      sender_id: data.sender_id,
+      content: data.content,
+      message_type: 'text',
+      reply_to: parentMessageId,
+    },
   );
 
 // ── Search ────────────────────────────────────────────────────────────────
 
 /**
- * Full-text search for messages in a room.
- * @param roomId   - Room to search in
- * @param query    - Search text
- * @param userId   - Requesting user ID
+ * Full-text search for messages in a room. Path is `/unitedchat/rooms/:id/search`
+ * — the leading-slash variant `/messages/search` does not exist.
  */
 export const searchMessages = (roomId: string, query: string, userId: string) =>
   api.get<{ messages: ChatMessage[] }>(
-    `/unitedchat/rooms/${roomId}/messages/search?q=${encodeURIComponent(query)}&user_id=${userId}`,
+    `/unitedchat/rooms/${roomId}/search?q=${encodeURIComponent(query)}&user_id=${userId}`,
   );

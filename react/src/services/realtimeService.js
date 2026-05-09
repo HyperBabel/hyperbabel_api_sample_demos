@@ -78,7 +78,7 @@ export const init = async (userId, userName, preferredLangCd = 'en') => {
 
   // Pre-fetch the first token to get the orgId.
   // The server issues tokens with clientId = "{orgId}:{userId}" for multi-tenant isolation.
-  // We must tell Ably the same composite clientId to avoid a 403 mismatch.
+  // We must tell HyperBabel Real-Time the same composite clientId to avoid a 403 mismatch.
   const initialToken = await requestToken(userId, userName, preferredLangCd);
   const compositeClientId = _orgId ? `${_orgId}:${userId}` : userId;
 
@@ -148,7 +148,7 @@ const createChannelService = () => ({
 
     const listener = (msg) => {
       if (msg.data) {
-        // Pass both the payload and the Ably event name (type) so the caller
+        // Pass both the payload and the HyperBabel Real-Time event name (type) so the caller
         // can distinguish 'message' events from 'read_receipt' events etc.
         onMessage({ message: msg.data, type: msg.name });
       }

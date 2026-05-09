@@ -96,22 +96,28 @@ function OpenRoomCard({ room, onJoin }: { room: Room; onJoin: () => void }) {
 
 // ── Create Room modal ─────────────────────────────────────────────────────
 
+// Extra "self" option exposed to the modal so users can enter the My Notes
+// room without typing their own user ID. The service still creates a 1:1
+// room — see handleCreateRoom for the special-cased member array.
+type ModalRoomType = RoomType | 'self';
+
 interface CreateRoomModalProps {
   visible: boolean;
   onClose: () => void;
-  onCreate: (type: RoomType, name: string, memberId: string) => Promise<void>;
+  onCreate: (type: ModalRoomType, name: string, memberId: string) => Promise<void>;
 }
 
 function CreateRoomModal({ visible, onClose, onCreate }: CreateRoomModalProps) {
-  const [roomType, setRoomType] = useState<RoomType>('group');
+  const [roomType, setRoomType] = useState<ModalRoomType>('group');
   const [roomName, setRoomName] = useState('');
   const [memberId, setMemberId] = useState('');
   const [loading,  setLoading]  = useState(false);
 
-  const TYPES: { id: RoomType; label: string; icon: string }[] = [
-    { id: '1to1',  label: '1:1',   icon: '👤' },
-    { id: 'group', label: 'Group', icon: '👥' },
-    { id: 'open',  label: 'Open',  icon: '🌐' },
+  const TYPES: { id: ModalRoomType; label: string; icon: string }[] = [
+    { id: 'self',  label: 'My Notes', icon: '📝' },
+    { id: '1to1',  label: '1:1',      icon: '👤' },
+    { id: 'group', label: 'Group',    icon: '👥' },
+    { id: 'open',  label: 'Open',     icon: '🌐' },
   ];
 
   const handleCreate = async () => {
@@ -155,7 +161,7 @@ function CreateRoomModal({ visible, onClose, onCreate }: CreateRoomModalProps) {
           </View>
 
           {/* Room name (group/open) */}
-          {roomType !== '1to1' && (
+          {(roomType === 'group' || roomType === 'open') && (
             <>
               <Text style={styles.fieldLabel}>Room Name</Text>
               <TextInput style={styles.modalInput} placeholder="e.g. Team Chat" placeholderTextColor={colors.textMuted} value={roomName} onChangeText={setRoomName} />
@@ -168,6 +174,14 @@ function CreateRoomModal({ visible, onClose, onCreate }: CreateRoomModalProps) {
               <Text style={styles.fieldLabel}>Recipient User ID</Text>
               <TextInput style={styles.modalInput} placeholder="e.g. user_bob" placeholderTextColor={colors.textMuted} autoCapitalize="none" value={memberId} onChangeText={setMemberId} />
             </>
+          )}
+
+          {/* Self-chat description */}
+          {roomType === 'self' && (
+            <Text style={styles.helperText}>
+              Your private space — notes, reminders, and saved data the demo
+              keeps just for you. No other members.
+            </Text>
           )}
 
           <Button label={loading ? 'Creating...' : 'Create Room'} onPress={handleCreate} disabled={loading} fullWidth style={{ marginTop: spacing[4] }} />
@@ -218,13 +232,21 @@ export default function ChatHubScreen() {
     setRefreshing(false);
   };
 
-  const handleCreateRoom = async (type: RoomType, name: string, memberId: string) => {
+  const handleCreateRoom = async (type: 'self' | RoomType, name: string, memberId: string) => {
     if (!user) return;
+    // Self-chat is a 1:1 room with only the creator on the member list — the
+    // server treats the duplicate ID as a self-chat and surfaces it as
+    // "My Notes" in the demo UI.
+    const isSelf = type === 'self';
+    const apiType: RoomType = isSelf ? '1to1' : type;
+    const members = isSelf
+      ? [user.userId]
+      : (apiType === '1to1' ? [user.userId, memberId] : [user.userId]);
     const created = await unitedChat.createRoom({
-      room_type:  type,
+      room_type:  apiType,
       creator_id: user.userId,
-      room_name:  name || undefined,
-      members:    type === '1to1' ? [user.userId, memberId] : [user.userId],
+      room_name:  isSelf ? 'My Notes' : (name || undefined),
+      members,
     });
     await loadRooms();
     router.push(`/(main)/chat/${created.room_id}`);
@@ -438,6 +460,7 @@ const styles = StyleSheet.create({
   modalBody:         { padding: spacing[5] },
   fieldLabel:        { ...textPresets.caption, color: colors.textSecondary, marginBottom: spacing[2], fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: spacing[4] },
   modalInput:        { ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[4], paddingVertical: spacing[3] },
+  helperText:        { ...textPresets.caption, color: colors.textSecondary, lineHeight: 18, paddingVertical: spacing[2] },
   typeRow:           { flexDirection: 'row', gap: spacing[3] },
   typeChip:          { flex: 1, alignItems: 'center', paddingVertical: spacing[3], borderRadius: borderRadius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, gap: spacing[1] },
   typeChipActive:    { backgroundColor: colors.primary, borderColor: colors.primary },

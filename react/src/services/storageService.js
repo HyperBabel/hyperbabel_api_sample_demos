@@ -18,15 +18,21 @@ const BASE = '/storage';
 /**
  * Step 1 — Pre-validate the file and receive a presigned upload URL.
  *
+ * The server wraps the payload in `{ message, data: { upload_url, key, … } }`
+ * — we unwrap here so callers see a flat object.
+ *
  * @param {object} data
  * @param {string} data.filename  — Original filename with extension
  * @param {string} data.mimeType  — MIME type (e.g. 'image/png')
  * @param {number} data.fileSize  — Size in bytes
  * @param {string} [data.channelId] — Chat channel ID (for chat file uploads)
  * @param {string} [data.folder]    — Custom folder (default: 'uploads')
- * @returns {Promise<{ presigned_url: string, key: string }>}
+ * @returns {Promise<{ upload_url: string, key: string, expires_in?: number, message_type?: string, category?: string }>}
  */
-export const presign = (data) => api.post(`${BASE}/presign`, data);
+export const presign = async (data) => {
+  const resp = await api.post(`${BASE}/presign`, data);
+  return resp?.data ?? resp;
+};
 
 /**
  * Step 2 — Upload the file directly to the presigned URL.
@@ -50,12 +56,18 @@ export const uploadToPresignedUrl = async (presignedUrl, file, mimeType) => {
  * Step 3 — Confirm the upload completed. HyperBabel verifies the file
  * exists in storage and records metadata + usage.
  *
+ * Server wraps the payload in `{ message, data: { key, url, original_name, … } }`
+ * — we unwrap here so callers see a flat object.
+ *
  * @param {object} data
  * @param {string} data.key          — Object key from step 1
  * @param {string} data.originalName — Original filename for metadata
- * @returns {Promise<object>} File metadata
+ * @returns {Promise<{ key: string, url: string, original_name: string, size_bytes: number, mime_type: string, message_type: string }>}
  */
-export const confirmUpload = (data) => api.post(`${BASE}/confirm`, data);
+export const confirmUpload = async (data) => {
+  const resp = await api.post(`${BASE}/confirm`, data);
+  return resp?.data ?? resp;
+};
 
 /**
  * Convenience wrapper: Presign → Upload → Confirm in one call.
@@ -76,7 +88,7 @@ export const uploadFile = async (file, channelId, folder) => {
   });
 
   // Step 2: Upload directly to storage
-  await uploadToPresignedUrl(presignData.presigned_url, file, file.type);
+  await uploadToPresignedUrl(presignData.upload_url, file, file.type);
 
   // Step 3: Confirm upload
   return confirmUpload({

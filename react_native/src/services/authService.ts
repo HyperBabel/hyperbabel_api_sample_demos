@@ -1,7 +1,11 @@
 /**
  * HyperBabel API — Auth & Account Service
  *
- * Fetches API usage statistics and manages webhook configurations.
+ * Fetches API usage statistics for the current billing period.
+ *
+ * Webhook CRUD (POST/GET/PATCH/DELETE /auth/webhooks*) is a tenant-admin
+ * operation and is intentionally not surfaced here. Manage webhooks in the
+ * HyperBabel Console at https://console.hyperbabel.com.
  *
  * Base path: /auth
  */
@@ -29,15 +33,6 @@ export interface UsageStats {
   };
 }
 
-export interface WebhookConfig {
-  webhook_id:   string;
-  url:          string;
-  events:       string[];
-  is_active:    boolean;
-  created_at:   string;
-  secret?:      string;   // Only returned on create/regenerate
-}
-
 // ── Usage ─────────────────────────────────────────────────────────────────
 
 /**
@@ -45,43 +40,3 @@ export interface WebhookConfig {
  */
 export const getUsage = () =>
   api.get<UsageStats>(`${BASE}/usage`);
-
-// ── Webhooks ──────────────────────────────────────────────────────────────
-
-/**
- * List all registered webhooks for the organisation.
- */
-export const listWebhooks = () =>
-  api.get<{ webhooks: WebhookConfig[] }>(`${BASE}/webhooks`);
-
-/**
- * Register a new webhook endpoint.
- */
-export const createWebhook = (url: string, events: string[]) =>
-  api.post<WebhookConfig>(`${BASE}/webhooks`, { url, events });
-
-/**
- * Update an existing webhook's URL or event subscriptions.
- */
-export const updateWebhook = (webhookId: string, data: { url?: string; events?: string[]; is_active?: boolean }) =>
-  api.put(`${BASE}/webhooks/${webhookId}`, data);
-
-/**
- * Delete a webhook endpoint.
- */
-export const deleteWebhook = (webhookId: string) =>
-  api.delete(`${BASE}/webhooks/${webhookId}`);
-
-/**
- * Regenerate the signing secret for a webhook (one-time display).
- */
-export const regenerateSecret = (webhookId: string) =>
-  api.post<{ secret: string }>(`${BASE}/webhooks/${webhookId}/regenerate-secret`);
-
-/**
- * Get delivery logs for a webhook (recent attempts).
- */
-export const getWebhookLogs = (webhookId: string) =>
-  api.get<{ logs: Array<{ event: string; status: number; delivered_at: string }> }>(
-    `${BASE}/webhooks/${webhookId}/logs`,
-  );

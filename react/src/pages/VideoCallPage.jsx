@@ -73,7 +73,11 @@ export default function VideoCallPage() {
   const session  = location.state?.session;
   const roomType = location.state?.roomType || '1to1';
   const roomName = location.state?.roomName || 'Video Call';
-  const rejoin   = location.state?.rejoin || false; // rejoin: re-enter an existing session
+  // rejoin: re-enter an existing session — currently surfaced only via the
+  // navigation state docstring; preserved here so the field is documented at
+  // the entry point even if no branch reads it yet.
+  // eslint-disable-next-line no-unused-vars
+  const rejoin   = location.state?.rejoin || false;
 
   // ── Camera/mic permission pre-check state ────────────────────────────────
   const [permStatus, setPermStatus] = useState(PERM.CHECKING);
@@ -281,7 +285,7 @@ export default function VideoCallPage() {
 
   // ── Auto-exit: detect when group session ends (last participant left) ────
   //
-  // Strategy 1 — RTC trigger: when all remote users leave the Agora channel
+  // Strategy 1 — RTC trigger: when all remote users leave the HyperBabel Video channel
   //   (onRemoteUserLeft fires), wait 2s then confirm via getActiveVideoCall.
   //   If the session is gone/ended → navigate back to chat.
   //

@@ -160,7 +160,7 @@ export default function DashboardPage() {
             <div className="dashboard-card-desc">
               Explore 1:1 Chat, Group Chat, and Open Chat rooms. Video calls are available inside
               1:1 rooms (video call) and group rooms (group video call). All messages are
-              auto-translated to the recipient's language.
+              auto-translated to the recipient&rsquo;s language.
             </div>
             <div style={{ marginTop: '12px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
               <span className="badge badge-primary">1:1 Chat</span>

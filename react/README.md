@@ -28,8 +28,11 @@ A comprehensive React demo application that showcases all features of the **Hype
 | **Presence (Online/Offline)** | Presence — Heartbeat, Status, Bulk Query |
 | **Push Notifications** | Push — Register/Unregister Token |
 | **API Usage Monitoring** | Auth — Usage |
-| **Webhook Management** | Auth — Webhooks CRUD, Logs, Regenerate Secret |
 | **Language Detection** | Translation — Detect |
+
+> Webhook CRUD, billing, and other tenant-admin endpoints aren't in the
+> demo — they require a console-session JWT (not an API key) and are
+> managed in the [HyperBabel Console](https://console.hyperbabel.com).
 
 ## Prerequisites
 
@@ -62,9 +65,9 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 | `VITE_HB_API_URL` | HyperBabel API base URL | `https://api.hyperbabel.com/api/v1` |
 | `VITE_HB_API_KEY` | Your API Key from the Console dashboard | — |
 
-For local development against the HyperBabel API server, set the URL to your local backend:
+If you are running a local HyperBabel API server (e.g. via `wrangler dev` from the platform source), point the demo at it:
 ```
-VITE_HB_API_URL=http://localhost:8080/api/v1
+VITE_HB_API_URL=http://localhost:8787/api/v1
 ```
 
 ### 🔒 CORS & Allowed Origins Security
@@ -139,7 +142,7 @@ path when the callee is already in another call.
 | **Accept** | `POST /unitedchat/rooms/{roomId}/video-call/accept` | Navigate to VideoCallPage |
 | **Reject** | `POST /unitedchat/rooms/{roomId}/video-call/reject` | Dismiss popup |
 | **Timeout (30s)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` | Auto-dismiss |
-| **Busy (in another call)** | `POST /unitedchat/rooms/{roomId}/video-call/busy` | Silent rejection, no popup |
+| **Busy (in another call)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` (with reason) | Silent rejection, no popup |
 
 > The incoming call event arrives via the HyperBabel Real-Time private channel
 > (`hb:{orgId}:private:{userId}`) subscribed by `IncomingCallListener.jsx`.
@@ -241,18 +244,19 @@ import * as storage from './services/storageService';
 const metadata = await storage.uploadFile(fileObject, channelId);
 
 // Or manually:
-// Step 1: Get presigned URL
-const { presigned_url, key } = await storage.presign({
+// Step 1: Get presigned URL — server wraps the payload in `{ message, data }`,
+// the helper unwraps for you so the destructured fields are flat.
+const { upload_url, key } = await storage.presign({
   filename: 'photo.jpg',
   mimeType: 'image/jpeg',
   fileSize: 1024000,
 });
 
 // Step 2: Upload directly to storage
-await storage.uploadToPresignedUrl(presigned_url, file, 'image/jpeg');
+await storage.uploadToPresignedUrl(upload_url, file, 'image/jpeg');
 
-// Step 3: Confirm
-const meta = await storage.confirmUpload({ key, originalName: 'photo.jpg' });
+// Step 3: Confirm — also unwrapped; `url` is a 1-hour signed CDN GET.
+const { url } = await storage.confirmUpload({ key, originalName: 'photo.jpg' });
 ```
 
 ### 6. Presence Heartbeat
@@ -269,30 +273,12 @@ setInterval(() => {
 const { presence: statuses } = await presence.getPresence(['alice', 'bob']);
 ```
 
-### 7. Webhooks
-
-```javascript
-import * as auth from './services/authService';
-
-// Register an endpoint (save the one-time secret!)
-const { secret } = await auth.createWebhook({
-  url: 'https://your-server.com/webhooks',
-  events: ['video.session.started', 'chat.message.sent'],
-});
-
-// List all webhooks
-const webhooks = await auth.listWebhooks();
-
-// View delivery logs
-const logs = await auth.getWebhookLogs({ page: 1, limit: 20 });
-```
-
 ## Customization
 
 - **Styling**: Edit `src/index.css` to match your brand. All colors, radii, and shadows are defined as CSS custom properties.
 - **API URL**: Change `VITE_HB_API_URL` in `.env` to point to your environment.
 - **Languages**: Add more languages to the dropdowns in `LoginPage.jsx` and `DashboardPage.jsx`.
-- **Real-time**: This demo uses polling for message updates. For production, integrate HyperBabel's real-time channel subscriptions.
+- **Real-time**: New messages, typing indicators, edits, deletes, and call invitations all arrive via the HyperBabel Real-Time channel subscription wired up in `services/realtimeService.js` and `components/IncomingCallListener.jsx` — no polling.
 
 ## License
 

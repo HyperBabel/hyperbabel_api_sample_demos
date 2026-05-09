@@ -19,15 +19,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-// Sample_demos i18n convention: Korean if device language is Korean, otherwise English
-const isKo = navigator.language?.startsWith('ko');
-const t = (en, ko) => isKo ? ko : en;
+// Sample demo is English-only; this stub keeps the locale-aware lookup at
+// line ~1071 (raw[isKo ? 'ko' : 'en']) compiling without a localisation
+// dependency.
+const isKo = false;
 
 import Header from '../components/Header';
 import ChatMessageList from '../components/ChatMessageList';
 import ChatInput from '../components/ChatInput';
 import * as unitedChat from '../services/unitedChatService';
-import * as chatService from '../services/chatService';
 import * as storageService from '../services/storageService';
 import * as presenceService from '../services/presenceService';
 import realtimeService from '../services/realtimeService';
@@ -69,7 +69,7 @@ export default function ChatHubPage() {
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   // Copy toast state
   const [copyToastMsgId, setCopyToastMsgId] = useState(null);
-  const copyToastText = isKo ? '클립보드에 복사되었습니다' : 'Copied to clipboard';
+  const copyToastText = 'Copied to clipboard';
   // ── Typing prefs state ──
   const [typingPrefs, setTypingPrefs] = useState({}); // { [userId]: { send, recv } }
   const [showRoomSettings, setShowRoomSettings] = useState(false);
@@ -91,7 +91,6 @@ export default function ChatHubPage() {
   // replySnapshots: map of original message data for rendering quote boxes
   const [replyTo, setReplyTo] = useState(null);
   const [replySnapshots, setReplySnapshots] = useState({});
-  const [replyToastVisible, setReplyToastVisible] = useState(false);
   // ── Group Video Call Modal state ──
   const [showGroupCallModal, setShowGroupCallModal] = useState(false);
   const [groupCallTargets, setGroupCallTargets] = useState([]);  // selected user_ids
@@ -113,18 +112,17 @@ export default function ChatHubPage() {
   // ref: prevents stale closure in subscribeToTyping callback (myTypingPrefs changes after prefs load)
   const myTypingPrefsRef = useRef(myTypingPrefs);
   useEffect(() => { myTypingPrefsRef.current = myTypingPrefs; }, [myTypingPrefs.send, myTypingPrefs.recv]);
-  // i18n helper for room settings (ko/en/es/hi based on preferred_lang_cd)
-  const _lang = user?.preferred_lang_cd || 'en';
+  // Static English label dictionary for the room-settings panel.
   const roomSettingsT = (key) => ({
-    roomSettings:   { ko: '채팅방 설정',       en: 'Room Settings',             es: 'Configuración de sala',             hi: 'रूम सेटिंग्स' },
-    markAllRead:    { ko: '모두 읽음 처리',     en: 'Mark All as Read',          es: 'Marcar todo como leído',           hi: 'सब पढ़ा हुआ मार्क करें' },
-    typingIndicator:{ ko: '타이핑 인디케이터', en: 'Typing Indicator',           es: 'Indicador de escritura',           hi: 'टाइ핑 संकेतक' },
-    send:           { ko: '📤 발신',            en: '📤 Send',                    es: '📤 Enviar',               hi: '📤 भेजें' },
-    sendDesc:       { ko: '타이핑 시 상대방에게 알림', en: 'Notify others when you type',    es: 'Notificar a otros cuando escribas', hi: 'टाइप करते समय अन्यों को सूचित करें' },
-    recv:           { ko: '📥 수신',            en: '📥 Receive',                 es: '📥 Recibir',              hi: '📥 प्राप्त करें' },
-    recvDesc:       { ko: '상대방 타이핑 알림 표시', en: 'Show when others are typing',    es: 'Mostrar cuando otros escriban',   hi: 'जब अन्य टाइप कर रहे हों तो दिखाएं' },
-    footer:         { ko: '이 채팅방에만 적용됩니다', en: 'Settings apply to this room only', es: 'La configuración aplica solo a esta sala', hi: 'सेटिंग्स केवल इस रूम पर लागू होती हैं' },
-  })[key]?.[isKo ? 'ko' : 'en'] || ({ roomSettings:'Room Settings', markAllRead:'Mark All as Read', typingIndicator:'Typing Indicator', send:'📤 Send', sendDesc:'Notify others when you type', recv:'📥 Receive', recvDesc:'Show when others are typing', footer:'Settings apply to this room only' })[key] || key;
+    roomSettings:    'Room Settings',
+    markAllRead:     'Mark All as Read',
+    typingIndicator: 'Typing Indicator',
+    send:            '📤 Send',
+    sendDesc:        'Notify others when you type',
+    recv:            '📥 Receive',
+    recvDesc:        'Show when others are typing',
+    footer:          'Settings apply to this room only',
+  })[key] || key;
   // Cached online status of the 1:1 counterpart (fetched on room entry)
   const [counterpartOnline, setCounterpartOnline] = useState(false);
   // ── Pin handlers ─────────────────────────────────────────────────
@@ -163,7 +161,7 @@ export default function ChatHubPage() {
         return <span style={{ display:'flex', alignItems:'center', gap:'6px' }}><span>👤</span><span style={{ fontWeight:500, color:'#92400e', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{msg.metadata?.name || 'Contact'}</span></span>;
       default: {
         const c = msg.content;
-        const text = c && typeof c === 'object' ? (c[isKo ? 'ko' : 'en'] || c['en'] || Object.values(c)[0] || '') : (c || '');
+        const text = c && typeof c === 'object' ? (c['en'] || c['en'] || Object.values(c)[0] || '') : (c || '');
         return <span style={{ fontWeight:500, color:'#92400e', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{text}</span>;
       }
     }
@@ -697,7 +695,7 @@ export default function ChatHubPage() {
     }
   };
 
-  const handleTyping = async (isTypingNow) => {
+  const handleTyping = async (_isTypingNow) => {
     if (!activeRoom) return;
     const isSelfChat = activeRoom.room_type === '1to1' && (activeRoom.members?.length ?? 0) === 1;
     if (isSelfChat) return;                        // self-chat room — no counterpart, publish unnecessary
@@ -754,7 +752,7 @@ export default function ChatHubPage() {
       await unitedChat.sendMessage(activeRoom.id, payload);
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'sent' } : m));
       refreshReadStatuses();
-    } catch (err) {
+    } catch {
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'failed' } : m));
     }
   };
@@ -788,7 +786,7 @@ export default function ChatHubPage() {
       await unitedChat.sendMessage(activeRoom.id, payload);
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'sent' } : m));
       refreshReadStatuses();
-    } catch (err) {
+    } catch {
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'failed' } : m));
     }
   };
@@ -968,7 +966,7 @@ export default function ChatHubPage() {
   // Display name for a room (returns 'Me' / language-localised equivalent for self-chat)
   const getRoomDisplayName = (room) => {
     if (!room) return 'Chat';
-    if (isSelfChatRoom(room)) return navigator.language.startsWith('ko') ? '나에게' : 'Me';
+    if (isSelfChatRoom(room)) return 'Me';
     return room.room_name || room.display_name || room.id?.slice(0, 8) || 'Chat';
   };
 
@@ -1020,7 +1018,7 @@ export default function ChatHubPage() {
             <div style={{ display: 'flex', gap: '6px' }}>
               <button
                 className="btn btn-secondary btn-sm"
-                title={navigator.language.startsWith('ko') ? '나만의 메모방' : 'My Notes (Self Chat)'}
+                title={'My Notes (Self Chat)'}
                 onClick={handleCreateSelfChat}
                 style={{ fontSize: '16px', padding: '4px 8px' }}
               >📝</button>
@@ -1070,7 +1068,7 @@ export default function ChatHubPage() {
                           ? (raw[isKo ? 'ko' : 'en'] || raw['en'] || Object.values(raw)[0])
                           : raw;
                         return text || (isSelfChatRoom(room)
-                          ? (isKo ? '📝나만의 메모방' : '📝 My Notes')
+                          ? ('📝 My Notes')
                           : 'No messages yet');
                       })()}
                     </div>
@@ -1138,7 +1136,7 @@ export default function ChatHubPage() {
               onMouseLeave={e => { if (!showBlockMgmt) { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--hb-text-dim)'; }}}
             >
               <span style={{ fontSize: '15px', flexShrink: 0 }}>🚫</span>
-              <span>{isKo ? '차단 관리' : 'Block Management'}</span>
+              <span>{'Block Management'}</span>
               {blockedUsers.length > 0 && (
                 <span style={{ marginLeft: 'auto', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '12px', background: 'rgba(239,68,68,0.25)', color: '#f87171' }}>
                   {blockedUsers.length}
@@ -1166,7 +1164,7 @@ export default function ChatHubPage() {
               onMouseLeave={e => { if (!showBlockMgmt) { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--hb-text-dim)'; }}}
             >
               <span style={{ fontSize: '15px', flexShrink: 0 }}>🚫</span>
-              <span>{isKo ? '차단 관리' : 'Block Management'}</span>
+              <span>{'Block Management'}</span>
               {blockedUsers.length > 0 && (
                 <span style={{ marginLeft: 'auto', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '12px', background: 'rgba(239,68,68,0.25)', color: '#f87171' }}>
                   {blockedUsers.length}
@@ -1188,10 +1186,10 @@ export default function ChatHubPage() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <h2 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--hb-text)' }}>
-                    {isKo ? '차단 관리' : 'Block Management'}
+                    {'Block Management'}
                   </h2>
                   <p style={{ margin: 0, fontSize: '12px', color: 'var(--hb-text-dim)', marginTop: '2px' }}>
-                    {isKo ? '전역 차단된 사용자 목록. 해제하면 모든 채팅방에 즉시 반영됩니다.' : 'Globally blocked users. Unblocking takes effect across all rooms immediately.'}
+                    {'Globally blocked users. Unblocking takes effect across all rooms immediately.'}
                   </p>
                 </div>
                 {blockedUsers.length > 0 && (
@@ -1213,7 +1211,7 @@ export default function ChatHubPage() {
                     type="text"
                     value={blockMgmtSearch}
                     onChange={e => { setBlockMgmtSearch(e.target.value); setBlockMgmtPage(1); }}
-                    placeholder={isKo ? '이름 또는 ID 검색...' : 'Search by name or ID...'}
+                    placeholder={'Search by name or ID...'}
                     style={{ width: '100%', paddingLeft: '32px', paddingRight: blockMgmtSearch ? '32px' : '12px', paddingTop: '8px', paddingBottom: '8px', fontSize: '13px', background: 'var(--hb-surface)', border: '1px solid var(--hb-border)', borderRadius: '10px', color: 'var(--hb-text)', outline: 'none', boxSizing: 'border-box' }}
                   />
                   {blockMgmtSearch && (
@@ -1222,7 +1220,7 @@ export default function ChatHubPage() {
                   )}
                 </div>
                 <p style={{ margin: '8px 0 0', fontSize: '11px', color: 'var(--hb-text-dim)' }}>
-                  ⚠️ {isKo ? '차단은 이 방뿐만 아니라 모든 채팅방에 적용됩니다.' : 'Blocks apply across all rooms, not just one.'}
+                  ⚠️ {'Blocks apply across all rooms, not just one.'}
                 </p>
               </div>
 
@@ -1239,7 +1237,7 @@ export default function ChatHubPage() {
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 0', gap: '12px' }}>
                       <span style={{ fontSize: '40px' }}>🛡️</span>
                       <p style={{ color: 'var(--hb-text-dim)', fontSize: '14px', margin: 0 }}>
-                        {blockMgmtSearch ? (isKo ? '검색 결과가 없습니다.' : 'No results found.') : (isKo ? '차단된 사용자가 없습니다.' : 'No blocked users.')}
+                        {blockMgmtSearch ? ('No results found.') : ('No blocked users.')}
                       </p>
                     </div>
                   );
@@ -1267,7 +1265,7 @@ export default function ChatHubPage() {
                                 </p>
                                 {u.created_at && (
                                   <p style={{ margin: '2px 0 0', fontSize: '11px', color: 'var(--hb-text-dim)' }}>
-                                    {isKo ? '차단 일시' : 'Blocked at'}: {new Date(u.created_at).toLocaleString()}
+                                    {'Blocked at'}: {new Date(u.created_at).toLocaleString()}
                                   </p>
                                 )}
                               </div>
@@ -1278,7 +1276,7 @@ export default function ChatHubPage() {
                                 onMouseEnter={e => { e.currentTarget.style.background='rgba(239,68,68,0.1)'; e.currentTarget.style.color='#f87171'; e.currentTarget.style.borderColor='rgba(239,68,68,0.3)'; }}
                                 onMouseLeave={e => { e.currentTarget.style.background='var(--hb-bg)'; e.currentTarget.style.color='var(--hb-text)'; e.currentTarget.style.borderColor='var(--hb-border)'; }}
                               >
-                                {isKo ? '차단 해제' : 'Unblock'}
+                                {'Unblock'}
                               </button>
                             </div>
                           );
@@ -1289,12 +1287,12 @@ export default function ChatHubPage() {
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '16px', paddingTop: '12px', borderTop: '1px solid var(--hb-border)' }}>
                           <button onClick={() => setBlockMgmtPage(p => Math.max(1, p - 1))} disabled={blockMgmtPage === 1}
                             style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--hb-border)', background: 'var(--hb-surface)', color: 'var(--hb-text)', fontSize: '12px', cursor: blockMgmtPage === 1 ? 'not-allowed' : 'pointer', opacity: blockMgmtPage === 1 ? 0.4 : 1 }}>
-                            ← {isKo ? '이전' : 'Prev'}
+                            ← {'Prev'}
                           </button>
                           <span style={{ fontSize: '12px', color: 'var(--hb-text-dim)' }}>{blockMgmtPage} / {totalPages}</span>
                           <button onClick={() => setBlockMgmtPage(p => Math.min(totalPages, p + 1))} disabled={blockMgmtPage === totalPages}
                             style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--hb-border)', background: 'var(--hb-surface)', color: 'var(--hb-text)', fontSize: '12px', cursor: blockMgmtPage === totalPages ? 'not-allowed' : 'pointer', opacity: blockMgmtPage === totalPages ? 0.4 : 1 }}>
-                            {isKo ? '다음' : 'Next'} →
+                            {'Next'} →
                           </button>
                         </div>
                       )}
@@ -1328,7 +1326,7 @@ export default function ChatHubPage() {
                     ) : (
                       <div className="chat-header-name" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         {isSelfChatRoom(activeRoom)
-                          ? <><span>📝</span><span>{navigator.language.startsWith('ko') ? '나에게 (나만의 메모방)' : 'Me — My Notes'}</span></>
+                          ? <><span>📝</span><span>{'Me — My Notes'}</span></>
                           : <>
                               {getRoomDisplayName(activeRoom)}
                               {(activeRoom.room_type === '1to1' || activeRoom.room_type === 'group') && (
@@ -1344,7 +1342,7 @@ export default function ChatHubPage() {
                     )}
                     <div className="chat-header-status">
                       {isSelfChatRoom(activeRoom)
-                        ? (navigator.language.startsWith('ko') ? '나만의 작업 공간 — 메모 및 데이터 보관' : 'Your private space — notes & saved data')
+                        ? ('Your private space — notes & saved data')
                         : activeRoom.room_type === 'open'
                           ? `🌐 Open · ${members.length} members${(activeRoom.description_translated || activeRoom.description) ? ` · ${(activeRoom.description_translated || activeRoom.description).slice(0, 60)}${(activeRoom.description_translated || activeRoom.description).length > 60 ? '…' : ''}` : ''}`
                           : `${members.length} members • ${activeRoom.room_type} room`
@@ -1436,13 +1434,13 @@ export default function ChatHubPage() {
                   >
                     <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
                       <span>📹</span>
-                      {isKo ? '영상통화 진행 중' : 'Video call in progress'}
+                      {'Video call in progress'}
                       {activePCount > 0 && (
                         <span style={{
                           background: 'rgba(255,255,255,0.25)', borderRadius: 999,
                           padding: '1px 8px', fontSize: 11,
                         }}>
-                          {activePCount}{isKo ? '명' : ' active'}
+                          {activePCount}{' active'}
                         </span>
                       )}
                     </span>
@@ -1452,11 +1450,11 @@ export default function ChatHubPage() {
                         padding: '3px 10px', fontSize: 12, fontWeight: 600,
                         border: '1px solid rgba(255,255,255,0.35)',
                       }}>
-                        {isKo ? '재참여' : 'Join'}
+                        {'Join'}
                       </span>
                     ) : (
                       <span style={{ fontSize: 12, opacity: 0.8 }}>
-                        {isKo ? '초대받지 않음' : 'Not invited'}
+                        {'Not invited'}
                       </span>
                     )}
                   </div>
@@ -1576,9 +1574,9 @@ export default function ChatHubPage() {
                     >
                       <style>{`@keyframes slideUpFade { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }`}</style>
                       {[
-                        { icon: '📍', label: isKo ? '위치'   : 'Location', color: '#059669', bg: '#f0fdf4', action: () => { setShowPlusMenu(false); setShowLocationModal(true); } },
-                        { icon: '👤', label: isKo ? '연락처' : 'Contact',  color: '#6366f1', bg: '#f5f3ff', action: () => { setShowPlusMenu(false); setShowContactModal(true); } },
-                        { icon: '📎', label: isKo ? '파일'   : 'File',     color: '#0ea5e9', bg: '#f0f9ff', action: () => { setShowPlusMenu(false); document.getElementById('chat-file-input')?.click(); } },
+                        { icon: '📍', label: 'Location', color: '#059669', bg: '#f0fdf4', action: () => { setShowPlusMenu(false); setShowLocationModal(true); } },
+                        { icon: '👤', label: 'Contact',  color: '#6366f1', bg: '#f5f3ff', action: () => { setShowPlusMenu(false); setShowContactModal(true); } },
+                        { icon: '📎', label: 'File',     color: '#0ea5e9', bg: '#f0f9ff', action: () => { setShowPlusMenu(false); document.getElementById('chat-file-input')?.click(); } },
                       ].map(({ icon, label, color, bg, action }) => (
                         <button key={label} onClick={action}
                           style={{ display:'flex', alignItems:'center', gap:'12px', padding:'10px 14px', borderRadius:'12px', border:'none', background:'none', cursor:'pointer', textAlign:'left', transition:'background 0.12s' }}
@@ -1594,7 +1592,7 @@ export default function ChatHubPage() {
                   {/* The "+" button itself */}
                   <button
                     onClick={() => setShowPlusMenu(v => !v)}
-                    title={isKo ? '더 보기' : 'More options'}
+                    title={'More options'}
                     style={{
                       width: '38px', height: '38px', borderRadius: '50%',
                       background: showPlusMenu ? '#1e293b' : '#64748b',
@@ -1650,22 +1648,22 @@ export default function ChatHubPage() {
       {pinConfirm && (
         <div className="modal-overlay" onClick={() => setPinConfirm(null)}>
           <div className="modal animate-slide" style={{ maxWidth: '360px' }} onClick={e => e.stopPropagation()}>
-            <h3 className="modal-title">📌 {navigator.language.startsWith('ko') ? '고정 메시지 교체' : 'Replace Pinned Message?'}</h3>
+            <h3 className="modal-title">📌 {'Replace Pinned Message?'}</h3>
             <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
-              {navigator.language.startsWith('ko') ? '이미 고정된 메시지가 있습니다. 교체하시겠습니까?' : 'A message is already pinned. Replace it with this one?'}
+              {'A message is already pinned. Replace it with this one?'}
             </p>
             {pinnedMsg && (
               <div style={{ background:'#fffbeb', border:'1px solid #fde68a', borderRadius:'8px', padding:'8px 12px', fontSize:'12px', color:'#92400e', marginBottom:'16px', display:'flex', alignItems:'center', gap:'6px' }}>
-                <strong style={{ flexShrink:0 }}>{isKo ? '현재 고정: ' : 'Currently pinned: '}</strong>
+                <strong style={{ flexShrink:0 }}>{'Currently pinned: '}</strong>
                 <div style={{ minWidth:0, flex:1, display:'flex', alignItems:'center' }}>{pinnedBannerContent(pinnedMsg)}</div>
               </div>
             )}
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button className="btn btn-secondary btn-sm" onClick={() => setPinConfirm(null)}>
-                {navigator.language.startsWith('ko') ? '취소' : 'Cancel'}
+                {'Cancel'}
               </button>
               <button className="btn btn-primary btn-sm" onClick={() => doPinMessage(pinConfirm.msgId)} disabled={isPinning}>
-                {isPinning ? '...' : (navigator.language.startsWith('ko') ? '교체' : 'Replace')}
+                {isPinning ? '...' : ('Replace')}
               </button>
             </div>
           </div>
@@ -1676,7 +1674,7 @@ export default function ChatHubPage() {
       {showGroupCallModal && activeRoom?.room_type === 'group' && (
         <div className="modal-overlay" onClick={() => setShowGroupCallModal(false)}>
           <div className="modal animate-slide" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
-            <h3 className="modal-title">📹 {isKo ? '그룹 영상통화' : 'Group Video Call'}</h3>
+            <h3 className="modal-title">📹 {'Group Video Call'}</h3>
 
             {/* Selected member chips */}
             {groupCallTargets.length > 0 && (
@@ -1706,7 +1704,7 @@ export default function ChatHubPage() {
               <input
                 className="input"
                 type="text"
-                placeholder={isKo ? '멤버 이름 검색...' : 'Search members...'}
+                placeholder={'Search members...'}
                 value={callMemberSearch}
                 onChange={(e) => setCallMemberSearch(e.target.value)}
               />
@@ -1714,9 +1712,7 @@ export default function ChatHubPage() {
 
             {/* Counter */}
             <p style={{ fontSize: 12, color: 'var(--hb-text-muted)', marginBottom: 8 }}>
-              {isKo
-                ? `최대 ${MAX_CALL_TARGETS}명 선택 (${groupCallTargets.length}/${MAX_CALL_TARGETS})`
-                : `Select up to ${MAX_CALL_TARGETS} members (${groupCallTargets.length}/${MAX_CALL_TARGETS})`}
+              {`Select up to ${MAX_CALL_TARGETS} members (${groupCallTargets.length}/${MAX_CALL_TARGETS})`}
             </p>
 
             {/* Member list */}
@@ -1757,7 +1753,7 @@ export default function ChatHubPage() {
                 })}
               {members.filter((m) => m.user_id !== user.user_id && (!callMemberSearch || (m.user_name || '').toLowerCase().includes(callMemberSearch.toLowerCase()))).length === 0 && (
                 <p style={{ textAlign: 'center', color: 'var(--hb-text-muted)', fontSize: 13, padding: '16px 0' }}>
-                  {isKo ? '검색 결과가 없습니다' : 'No members found'}
+                  {'No members found'}
                 </p>
               )}
             </div>
@@ -1765,7 +1761,7 @@ export default function ChatHubPage() {
             {/* Footer buttons */}
             <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
               <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowGroupCallModal(false)}>
-                {isKo ? '취소' : 'Cancel'}
+                {'Cancel'}
               </button>
               <button
                 className="btn btn-primary"
@@ -1773,7 +1769,7 @@ export default function ChatHubPage() {
                 disabled={groupCallTargets.length === 0}
                 onClick={confirmGroupCall}
               >
-                📹 {isKo ? `영상통화 시작 (${groupCallTargets.length}명)` : `Start Call (${groupCallTargets.length})`}
+                📹 {`Start Call (${groupCallTargets.length})`}
               </button>
             </div>
           </div>
@@ -1994,18 +1990,18 @@ export default function ChatHubPage() {
               {!isSelfChatRoom(activeRoom) && (
                 <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '16px', marginTop: '8px' }}>
                   <p style={{ fontSize: '11px', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '12px' }}>
-                    {t('Notifications', '알림 설정')}
+                    {'Notifications'}
                   </p>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                     <div>
                       <p style={{ fontWeight: 600, fontSize: '13px', color: '#1e293b', marginBottom: '2px' }}>
-                        {isMuted ? '🔕' : '🔔'} {t('Mute Notifications', '알림 뮤트')}
+                        {isMuted ? '🔕' : '🔔'} {'Mute Notifications'}
                       </p>
                       {isMuted && (
                         <p style={{ fontSize: '11px', color: '#d97706' }}>
                           {mutedUntil
-                            ? `${t('Until', '해제')}: ${new Date(mutedUntil).toLocaleString()}`
-                            : t('Muted indefinitely', '영구 뮤트')}
+                            ? `${'Until'}: ${new Date(mutedUntil).toLocaleString()}`
+                            : 'Muted indefinitely'}
                         </p>
                       )}
                     </div>
@@ -2021,10 +2017,10 @@ export default function ChatHubPage() {
                   {!isMuted && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                       {[
-                        { label: t('1 hour', '1시간'), mins: 60 },
-                        { label: t('8 hours', '8시간'), mins: 480 },
-                        { label: t('24 hours', '24시간'), mins: 1440 },
-                        { label: t('Forever', '영구'), mins: null },
+                        { label: '1 hour', mins: 60 },
+                        { label: '8 hours', mins: 480 },
+                        { label: '24 hours', mins: 1440 },
+                        { label: 'Forever', mins: null },
                       ].map(({ label, mins }) => (
                         <button key={label} onClick={() => handleToggleMute(mins)} disabled={isMuteLoading}
                           style={{ fontSize: '11px', padding: '4px 10px', borderRadius: '20px', border: '1px solid #e2e8f0', background: '#fff', color: '#64748b', cursor: isMuteLoading ? 'not-allowed' : 'pointer', opacity: isMuteLoading ? 0.5 : 1 }}
@@ -2038,7 +2034,7 @@ export default function ChatHubPage() {
               {/* ── Blocked Users Section ── */}
               <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: '16px', marginTop: '8px' }}>
                 <p style={{ fontSize: '11px', fontWeight: 700, color: '#9ca3af', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: '12px' }}>
-                  {t('User Block', '사용자 차단')}
+                  {'User Block'}
                   {blockedUsers.length > 0 && (
                     <span style={{ marginLeft: '6px', fontSize: '10px', background: '#e2e8f0', color: '#64748b', borderRadius: '10px', padding: '1px 6px' }}>{blockedUsers.length}</span>
                   )}
@@ -2059,7 +2055,7 @@ export default function ChatHubPage() {
                             disabled={isBlockLoading}
                             style={{ fontSize: '11px', padding: '3px 10px', borderRadius: '20px', border: 'none', cursor: isBlockLoading ? 'not-allowed' : 'pointer', opacity: isBlockLoading ? 0.5 : 1, background: isBlocked ? '#f1f5f9' : '#fef2f2', color: isBlocked ? '#64748b' : '#ef4444', fontWeight: 600 }}
                           >
-                            {isBlocked ? t('Unblock', '차단 해제') : t('Block', '차단')}
+                            {isBlocked ? 'Unblock' : 'Block'}
                           </button>
                         </div>
                       );
@@ -2067,19 +2063,19 @@ export default function ChatHubPage() {
                   </div>
                 ) : (
                   <p style={{ fontSize: '12px', color: '#94a3b8', textAlign: 'center', padding: '8px 0' }}>
-                    {t('No other members in this room', '이 방에 다른 멤버가 없습니다')}
+                    {'No other members in this room'}
                   </p>
                 )}
 
                 {/* Global scope note */}
                 <p style={{ fontSize: '10px', color: '#94a3b8', marginTop: '8px' }}>
-                  {t('⚠️ Blocks apply across all rooms, not just this one.', '⚠️ 차단은 모든 채팅방에 적용됩니다.')}
+                  {'⚠️ Blocks apply across all rooms, not just this one.'}
                 </p>
               </div>
             </div>
             <div style={{ padding: '0 24px 20px', textAlign: 'center' }}>
               <p style={{ fontSize: '11px', color: '#94a3b8' }}>
-                {t('Mute settings apply to this room only', '알림 뮤트 설정은 이 채팅방에만 적용됩니다')}
+                {'Mute settings apply to this room only'}
               </p>
             </div>
           </div>
@@ -2101,7 +2097,7 @@ export default function ChatHubPage() {
             <div style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{ fontSize: '18px' }}>🛡️</span>
-                 <span style={{ color: '#fff', fontWeight: 700, fontSize: '15px' }}>{t('Member Management', '멤버 관리')}</span>
+                 <span style={{ color: '#fff', fontWeight: 700, fontSize: '15px' }}>{'Member Management'}</span>
               </div>
               <button onClick={() => setShowMembersModal(false)} style={{ background: 'rgba(255,255,255,0.2)', border: 'none', borderRadius: '50%', width: '28px', height: '28px', cursor: 'pointer', color: '#fff', fontSize: '16px' }}>✕</button>
             </div>
@@ -2125,7 +2121,7 @@ export default function ChatHubPage() {
                       {copiedInvite ? '✓ Copied' : '📋 Copy Link'}
                     </button>
                   </div>
-                   <p style={{ fontSize: '10px', color: '#475569', marginTop: '4px' }}>{t('Share this code or link to invite others to join', '이 코드 또는 링크를 공유하여 다른 사람을 초대하세요')}</p>
+                   <p style={{ fontSize: '10px', color: '#475569', marginTop: '4px' }}>{'Share this code or link to invite others to join'}</p>
                 </div>
               )}
 
@@ -2140,7 +2136,7 @@ export default function ChatHubPage() {
               {/* Members List */}
               <div>
                 <p style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>
-                  {t('Members', '멤버')}
+                  {'Members'}
                   {' '}({memberSearch.trim() ? `${(() => { const q = memberSearch.trim().toLowerCase(); return members.filter(m => (m.user_name || m.user_id).toLowerCase().includes(q) || m.user_id.toLowerCase().includes(q)); })().length}/` : ''}{members.length})
                 </p>
                 {/* Search input */}
@@ -2150,7 +2146,7 @@ export default function ChatHubPage() {
                     type="text"
                     value={memberSearch}
                     onChange={e => { setMemberSearch(e.target.value); setMemberPage(0); }}
-                    placeholder={t('Search members...', '멤버 검색...')}
+                    placeholder={'Search members...'}
                     style={{ width: '100%', paddingLeft: '28px', paddingRight: memberSearch ? '28px' : '8px', paddingTop: '6px', paddingBottom: '6px', fontSize: '12px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '6px', color: '#e2e8f0', outline: 'none', boxSizing: 'border-box' }}
                   />
                   {memberSearch && (
@@ -2207,10 +2203,10 @@ export default function ChatHubPage() {
                       {totalPages > 1 && (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #1e293b' }}>
                           <button onClick={() => setMemberPage(p => Math.max(0, p - 1))} disabled={memberPage === 0}
-                            style={{ padding: '4px 10px', background: '#1e293b', border: 'none', borderRadius: '5px', color: memberPage === 0 ? '#475569' : '#94a3b8', fontSize: '11px', cursor: memberPage === 0 ? 'default' : 'pointer' }}>← {t('Prev', '이전')}</button>
+                            style={{ padding: '4px 10px', background: '#1e293b', border: 'none', borderRadius: '5px', color: memberPage === 0 ? '#475569' : '#94a3b8', fontSize: '11px', cursor: memberPage === 0 ? 'default' : 'pointer' }}>← {'Prev'}</button>
                           <span style={{ fontSize: '11px', color: '#64748b' }}>{memberPage + 1} / {totalPages}</span>
                           <button onClick={() => setMemberPage(p => Math.min(totalPages - 1, p + 1))} disabled={memberPage === totalPages - 1}
-                            style={{ padding: '4px 10px', background: '#1e293b', border: 'none', borderRadius: '5px', color: memberPage === totalPages - 1 ? '#475569' : '#94a3b8', fontSize: '11px', cursor: memberPage === totalPages - 1 ? 'default' : 'pointer' }}>{t('Next', '다음')} →</button>
+                            style={{ padding: '4px 10px', background: '#1e293b', border: 'none', borderRadius: '5px', color: memberPage === totalPages - 1 ? '#475569' : '#94a3b8', fontSize: '11px', cursor: memberPage === totalPages - 1 ? 'default' : 'pointer' }}>{'Next'} →</button>
                         </div>
                       )}
                     </>
@@ -2235,7 +2231,7 @@ export default function ChatHubPage() {
                         <button
                           onClick={() => setPendingMemberAction({ type: 'unban', userId: b.user_id, userName: b.user_id })}
                           style={{ padding: '3px 8px', background: '#052e16', border: 'none', borderRadius: '5px', color: '#4ade80', fontSize: '11px', cursor: 'pointer' }}
-                        >{t('Unban', '차단 해제')}</button>
+                        >{'Unban'}</button>
                       </div>
                     ))}
                   </div>
@@ -2257,10 +2253,10 @@ export default function ChatHubPage() {
                   {/* Message */}
                   <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: 1.6, marginBottom: '16px' }}>
                     {{
-                      ban:     t('Ban this member? They will be removed from the room and cannot rejoin.', '이 멤버를 차단하시겠습니까? 해당 멤버는 방에서 나가고 다시 입장할 수 없게 됩니다.'),
-                      unban:   t('Remove the ban on this member? They will be able to rejoin the room.', '이 멤버의 차단을 해제하시겠습니까? 해당 멤버는 다시 방에 입장할 수 있게 됩니다.'),
-                      promote: t('Promote this member to Sub-Admin?', '이 멤버를 부관리자로 승격하시겠습니까?'),
-                      demote:  t('Remove Sub-Admin privileges from this member?', '이 멤버의 부관리자 권한을 해제하시겠습니까?'),
+                      ban:     'Ban this member? They will be removed from the room and cannot rejoin.',
+                      unban:   'Remove the ban on this member? They will be able to rejoin the room.',
+                      promote: 'Promote this member to Sub-Admin?',
+                      demote:  'Remove Sub-Admin privileges from this member?',
                     }[pendingMemberAction.type]}
                   </p>
                   {/* Buttons */}
@@ -2268,7 +2264,7 @@ export default function ChatHubPage() {
                     <button
                       onClick={() => setPendingMemberAction(null)}
                       style={{ height: '32px', padding: '0 16px', borderRadius: '8px', border: 'none', background: '#334155', color: '#94a3b8', fontSize: '12px', cursor: 'pointer' }}
-                    >{t('Cancel', '취소')}</button>
+                    >{'Cancel'}</button>
                     <button
                       onClick={async () => {
                         const { type, userId } = pendingMemberAction;
@@ -2283,7 +2279,7 @@ export default function ChatHubPage() {
                         background: pendingMemberAction.type === 'ban' ? '#dc2626' : pendingMemberAction.type === 'unban' ? '#16a34a' : '#7c3aed',
                         color: '#fff',
                       }}
-                    >{t('Confirm', '확인')}</button>
+                    >{'Confirm'}</button>
                   </div>
                 </div>
               </div>
@@ -2318,7 +2314,7 @@ export default function ChatHubPage() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--hb-text, #f1f5f9)' }}>
-                    {isKo ? '차단 해제 확인' : 'Confirm Unblock'}
+                    {'Confirm Unblock'}
                   </h3>
                   <p style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: 600, color: 'var(--hb-text, #cbd5e1)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {unblockTarget.user_name || unblockTarget.user_id}
@@ -2330,9 +2326,7 @@ export default function ChatHubPage() {
               <div style={{ display: 'flex', gap: '10px', padding: '12px 14px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', marginBottom: '20px' }}>
                 <span style={{ fontSize: '15px', flexShrink: 0, marginTop: '1px' }}>⚠️</span>
                 <p style={{ margin: 0, fontSize: '12px', color: '#f59e0b', lineHeight: 1.6 }}>
-                  {isKo
-                    ? '해당 사용자의 차단을 해제하면 모든 채팅방에서 메시지를 주고받을 수 있게 됩니다.'
-                    : 'Unblocking this user will allow them to message you in all chat rooms again.'}
+                  {'Unblocking this user will allow them to message you in all chat rooms again.'}
                 </p>
               </div>
 
@@ -2342,7 +2336,7 @@ export default function ChatHubPage() {
                   onClick={() => setUnblockTarget(null)}
                   style={{ flex: 1, padding: '11px', borderRadius: '12px', border: '1px solid var(--hb-border, #334155)', background: 'transparent', color: 'var(--hb-text, #cbd5e1)', fontSize: '13px', fontWeight: 500, cursor: 'pointer' }}
                 >
-                  {isKo ? '취소' : 'Cancel'}
+                  {'Cancel'}
                 </button>
                 <button
                   onClick={() => handleUnblockUser(unblockTarget.user_id)}
@@ -2350,8 +2344,8 @@ export default function ChatHubPage() {
                   style={{ flex: 1, padding: '11px', borderRadius: '12px', border: 'none', background: '#ef4444', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: isBlockLoading ? 'not-allowed' : 'pointer', opacity: isBlockLoading ? 0.7 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                 >
                   {isBlockLoading
-                    ? <><span style={{ width: '13px', height: '13px', border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />{isKo ? '해제 중...' : 'Unblocking...'}</>
-                    : (isKo ? '차단 해제하기' : 'Unblock User')
+                    ? <><span style={{ width: '13px', height: '13px', border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />{'Unblocking...'}</>
+                    : ('Unblock User')
                   }
                 </button>
               </div>
@@ -2386,7 +2380,7 @@ export default function ChatHubPage() {
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--hb-text, #f1f5f9)' }}>
-                    {isKo ? '차단 해제 확인' : 'Confirm Unblock'}
+                    {'Confirm Unblock'}
                   </h3>
                   <p style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: 600, color: 'var(--hb-text, #cbd5e1)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {unblockTarget.user_name || unblockTarget.user_id}
@@ -2398,9 +2392,7 @@ export default function ChatHubPage() {
               <div style={{ display: 'flex', gap: '10px', padding: '12px 14px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', marginBottom: '20px' }}>
                 <span style={{ fontSize: '15px', flexShrink: 0, marginTop: '1px' }}>⚠️</span>
                 <p style={{ margin: 0, fontSize: '12px', color: '#f59e0b', lineHeight: 1.6 }}>
-                  {isKo
-                    ? '해당 사용자의 차단을 해제하면 모든 채팅방에서 메시지를 주고받을 수 있게 됩니다.'
-                    : 'Unblocking this user will allow them to message you in all chat rooms again.'}
+                  {'Unblocking this user will allow them to message you in all chat rooms again.'}
                 </p>
               </div>
 
@@ -2410,7 +2402,7 @@ export default function ChatHubPage() {
                   onClick={() => setUnblockTarget(null)}
                   style={{ flex: 1, padding: '11px', borderRadius: '12px', border: '1px solid var(--hb-border, #334155)', background: 'transparent', color: 'var(--hb-text, #cbd5e1)', fontSize: '13px', fontWeight: 500, cursor: 'pointer' }}
                 >
-                  {isKo ? '취소' : 'Cancel'}
+                  {'Cancel'}
                 </button>
                 <button
                   onClick={() => handleUnblockUser(unblockTarget.user_id)}
@@ -2418,8 +2410,8 @@ export default function ChatHubPage() {
                   style={{ flex: 1, padding: '11px', borderRadius: '12px', border: 'none', background: '#ef4444', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: isBlockLoading ? 'not-allowed' : 'pointer', opacity: isBlockLoading ? 0.7 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
                 >
                   {isBlockLoading
-                    ? <><span style={{ width: '13px', height: '13px', border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />{isKo ? '해제 중...' : 'Unblocking...'}</>
-                    : (isKo ? '차단 해제하기' : 'Unblock User')
+                    ? <><span style={{ width: '13px', height: '13px', border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />{'Unblocking...'}</>
+                    : ('Unblock User')
                   }
                 </button>
               </div>

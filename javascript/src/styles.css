@@ -1,0 +1,131 @@
+:root {
+  --hb-bg: #0f172a;
+  --hb-surface: #1e293b;
+  --hb-surface-alt: #334155;
+  --hb-text: #f1f5f9;
+  --hb-text-muted: #94a3b8;
+  --hb-border: #334155;
+  --hb-primary: #14b8a6;
+  --hb-primary-hover: #0d9488;
+  --hb-danger: #ef4444;
+  --hb-radius: 12px;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--hb-bg);
+  color: var(--hb-text);
+  min-height: 100vh;
+}
+
+.app-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--hb-border);
+  background: var(--hb-surface);
+}
+.brand { font-weight: 700; font-size: 1.05rem; }
+.app-header nav { display: flex; gap: 12px; }
+.app-header nav a {
+  color: var(--hb-text-muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.app-header nav a.active { color: var(--hb-primary); }
+
+main { max-width: 880px; margin: 0 auto; padding: 24px; }
+
+.card {
+  background: var(--hb-surface);
+  border: 1px solid var(--hb-border);
+  border-radius: var(--hb-radius);
+  padding: 20px;
+  margin-bottom: 16px;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--hb-surface-alt);
+  color: var(--hb-text);
+  border: 1px solid var(--hb-border);
+  border-radius: 8px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+label { display: block; font-size: 0.85rem; color: var(--hb-text-muted); margin-bottom: 4px; }
+
+button {
+  background: var(--hb-primary);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover { background: var(--hb-primary-hover); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.btn-ghost { background: transparent; border: 1px solid var(--hb-border); color: var(--hb-text); }
+button.btn-danger { background: var(--hb-danger); }
+
+.room-list { display: flex; flex-direction: column; gap: 8px; }
+.room-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 14px;
+  background: var(--hb-surface-alt);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.room-item:hover { background: #475569; }
+.room-item .meta { font-size: 0.78rem; color: var(--hb-text-muted); }
+
+.chat-container { display: flex; flex-direction: column; height: calc(100vh - 160px); }
+.chat-messages {
+  flex: 1; overflow-y: auto;
+  padding: 16px; background: var(--hb-surface); border-radius: var(--hb-radius);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.msg {
+  max-width: 70%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 14px;
+  word-wrap: break-word;
+}
+.msg.own { align-self: flex-end; background: var(--hb-primary); color: white; }
+.msg.other { align-self: flex-start; background: var(--hb-surface-alt); }
+.msg .sender { font-size: 0.7rem; color: var(--hb-text-muted); margin-bottom: 2px; }
+.msg .translation { font-size: 0.78rem; color: var(--hb-text-muted); margin-top: 4px; font-style: italic; }
+
+.chat-input-row { display: flex; gap: 8px; margin-top: 12px; }
+.chat-input-row input { flex: 1; margin-bottom: 0; }
+
+.video-stage {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  background: #000; border-radius: var(--hb-radius); overflow: hidden;
+  min-height: 320px;
+}
+.video-tile { aspect-ratio: 16/9; background: #1e293b; position: relative; }
+.video-tile .label {
+  position: absolute; bottom: 8px; left: 8px;
+  background: rgba(0,0,0,0.5); color: white;
+  padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;
+}
+
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--hb-surface); border: 1px solid var(--hb-border);
+  padding: 12px 16px; border-radius: 8px;
+  font-size: 0.85rem; color: var(--hb-text);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  z-index: 100;
+}
+.error { color: var(--hb-danger); font-size: 0.85rem; margin-top: 8px; }
+.muted { color: var(--hb-text-muted); }
+.row { display: flex; gap: 12px; align-items: center; }
+.row > * { flex: 1; }

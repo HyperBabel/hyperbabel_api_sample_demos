@@ -90,7 +90,7 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
       el.classList.add('reply-highlight-pulse');
       setTimeout(() => el.classList.remove('reply-highlight-pulse'), 2000);
     } else {
-      replyToastMsgRef.current = lang === 'ko' ? '원본 메시지가 현재 목록에 없습니다' : 'Original message is not in the current view';
+      replyToastMsgRef.current = 'Original message is not in the current view';
       setReplyToast(true);
       setTimeout(() => setReplyToast(false), 2500);
     }
@@ -366,7 +366,7 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
     // ── Default: text (with optional translation) ────────────────
     // Deleted message: render tombstone placeholder
     if (msg.deleted_at) {
-      const deletedText = lang === 'ko' ? '이 메시지는 삭제되었습니다.' : 'This message has been deleted.';
+      const deletedText = 'This message has been deleted.';
       return <span style={{ color: '#9ca3af', fontStyle: 'italic', fontSize: '13px' }}>🗑 {deletedText}</span>;
     }
 
@@ -600,11 +600,11 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
                               <button
                                 onClick={() => onDelete(msg.id)}
                                 style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: '10px', padding: '2px 8px', fontSize: '11px', cursor: 'pointer' }}
-                              >삭제</button>
+                              >Delete</button>
                               <button
                                 onClick={() => setDeleteConfirmId(null)}
                                 style={{ background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: '10px', padding: '2px 8px', fontSize: '11px', cursor: 'pointer' }}
-                              >취소</button>
+                              >Cancel</button>
                             </span>
                           ) : (
                             <button
@@ -668,11 +668,11 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
                         >
                           {!snap ? (
                             <span style={{ fontSize:'11px', fontStyle:'italic', color: '#94a3b8' }}>
-                              {lang === 'ko' ? '원본 메시지를 불러올 수 없습니다' : 'Cannot load original message'}
+                              {'Cannot load original message'}
                             </span>
                           ) : snap.deleted_at ? (
                             <span style={{ fontSize:'11px', fontStyle:'italic', color: '#94a3b8' }}>
-                              🗑 {lang === 'ko' ? '삭제된 메시지입니다' : 'Deleted message'}
+                              🗑 {'Deleted message'}
                             </span>
                           ) : (
                             <>
@@ -711,11 +711,11 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
                           <button
                             onClick={() => onEdit('cancel')}
                             style={{ background: '#f3f4f6', color: '#374151', border: 'none', borderRadius: '12px', padding: '3px 12px', fontSize: '12px', cursor: 'pointer' }}
-                          >취소</button>
+                          >Cancel</button>
                           <button
                             onClick={() => onEdit('save', msg.id, editingContent)}
                             style={{ background: '#10b981', color: '#fff', border: 'none', borderRadius: '12px', padding: '3px 12px', fontSize: '12px', cursor: 'pointer' }}
-                          >저장</button>
+                          >Save</button>
                         </div>
                       </div>
                     ) : renderContent(msg, isOwn)}

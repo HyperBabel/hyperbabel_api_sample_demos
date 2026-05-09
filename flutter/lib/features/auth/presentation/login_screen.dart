@@ -1,9 +1,13 @@
+import 'dart:io' show Platform;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../core/network/api_client.dart';
-import '../../shared/widgets/glass_container.dart';
+
+import '../../../core/network/push_repository.dart';
+import '../../../shared/widgets/glass_container.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -42,10 +46,40 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     await prefs.setString('hb_api_key', apiKey);
     await prefs.setString('hb_user_id', userId);
 
-    // After setting the active credentials, navigate to home.
+    // Auto-register a push token so notifications start arriving as soon as
+    // the app is in the background. Production apps swap the synthetic
+    // token below for the real FCM / APNs token from
+    // `firebase_messaging.getToken()` (or platform equivalent) — see the
+    // README for the full integration path.
+    _autoRegisterPushToken(userId).catchError((_) {});
+
     if (mounted) {
       context.go('/home');
     }
+  }
+
+  Future<void> _autoRegisterPushToken(String userId) async {
+    final platform = _detectPlatform();
+    final prefs = await SharedPreferences.getInstance();
+    var token = prefs.getString('hb_push_token');
+    if (token == null) {
+      // Synthetic token — replace with the real FCM / APNs token. Persisted
+      // so the same device id is used across sessions.
+      token = 'demo-flutter-${platform}-${DateTime.now().millisecondsSinceEpoch}';
+      await prefs.setString('hb_push_token', token);
+    }
+    await PushRepository().registerToken(
+      userId: userId,
+      token: token,
+      platform: platform,
+    );
+  }
+
+  String _detectPlatform() {
+    if (kIsWeb) return 'web';
+    if (Platform.isIOS) return 'ios';
+    if (Platform.isAndroid) return 'android';
+    return 'web';
   }
 
   @override

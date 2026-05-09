@@ -48,7 +48,7 @@
  *  /video-call/:roomId  — Video call (1:1 or group)
  *  /live-stream/host    — Live stream host mode
  *  /live-stream/viewer/:sessionId — Live stream viewer mode
- *  /settings            — Settings, webhooks, usage
+ *  /settings            — Usage, push tokens, language detection
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';

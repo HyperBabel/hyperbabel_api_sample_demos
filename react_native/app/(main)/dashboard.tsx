@@ -69,7 +69,7 @@ const FEATURES = [
     id:       'settings',
     icon:     '⚙️',
     title:    'Settings',
-    subtitle: 'Usage, Webhooks, Push',
+    subtitle: 'Usage, Push, Privacy',
     gradient: ['#475569', '#64748b'] as [string, string],
     onPress:  () => router.push('/(main)/settings'),
   },

@@ -36,6 +36,12 @@ flutter run
 
 When the app launches, enter your **API Key** directly in the setup screen to connect to the HyperBabel backend.
 
+> The setup screen accepts a Live API key (`hb_live_…`). API keys for this demo should be treated as sandbox-only — do not embed a production key in a binary you ship.
+
+### Allowed Origins
+
+Starting in Production, HyperBabel APIs enforce **Strict Origin Validation (Zero Trust)** for API Keys. Mobile builds typically do not send a browser-style `Origin` header, so they are accepted by default. If you have configured **Allowed Origins** for your API Key in the HyperBabel Console, make sure the list either includes your test environment or remains empty (which permits any origin).
+
 ## Architecture & Project Structure
 
 This project follows a clean architecture pattern utilizing `Riverpod` for state management, `GoRouter` for deep-linking and navigation, and a bespoke "Glassmorphism" UI rendering engine.

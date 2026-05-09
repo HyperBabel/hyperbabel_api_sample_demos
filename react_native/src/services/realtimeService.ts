@@ -78,7 +78,7 @@ export const init = async (
 
   // Pre-fetch the first token to get the orgId.
   // The server issues tokens with clientId = "{orgId}:{userId}" for multi-tenant isolation.
-  // We must tell Ably the same composite clientId to avoid a 403 mismatch.
+  // We must tell HyperBabel Real-Time the same composite clientId to avoid a 403 mismatch.
   const initialToken = await requestToken(userId, userName, preferredLangCd);
   const compositeClientId = _orgId ? `${_orgId}:${userId}` : userId;
   let initialTokenConsumed = false;

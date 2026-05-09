@@ -29,6 +29,19 @@ export default [
       ...react.configs['jsx-runtime'].rules,
       ...reactHooks.configs.recommended.rules,
       'react/jsx-no-target-blank': 'off',
+      // PropTypes runtime validation is being phased out by the React team
+      // and this demo is plain JavaScript without PropTypes declarations.
+      // Keep the rule disabled so cleanup work focuses on real bugs.
+      'react/prop-types': 'off',
+      // Allow intentionally-unused args / catch bindings prefixed with `_`.
+      // This is the standard convention for parameters kept for documentation
+      // (e.g., handler signatures that match a callback contract) and for
+      // discarded catch bindings.
+      'no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        caughtErrorsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+      }],
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },

@@ -24,6 +24,7 @@ import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   TouchableWithoutFeedback, StyleSheet, SafeAreaView,
   KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
+  Modal, ScrollView,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -86,6 +87,44 @@ function MessageBubble({ msg, isSelf, translated, onDelete, onReply, onOpenThrea
             <Text style={styles.fileMsg}>🖼 Image</Text>
           ) : msg.message_type === 'file' ? (
             <Text style={styles.fileMsg}>📎 File</Text>
+          ) : msg.message_type === 'location' ? (
+            <View style={styles.metaCard}>
+              <Text style={styles.metaCardIcon}>📍</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.metaCardTitle} numberOfLines={1}>
+                  {(msg.metadata as any)?.name ?? 'Location'}
+                </Text>
+                {!!(msg.metadata as any)?.address && (
+                  <Text style={styles.metaCardSub} numberOfLines={2}>
+                    {(msg.metadata as any).address}
+                  </Text>
+                )}
+                {(msg.metadata as any)?.latitude != null && (msg.metadata as any)?.longitude != null && (
+                  <Text style={styles.metaCardCoord}>
+                    {Number((msg.metadata as any).latitude).toFixed(4)}, {Number((msg.metadata as any).longitude).toFixed(4)}
+                  </Text>
+                )}
+              </View>
+            </View>
+          ) : msg.message_type === 'contact' ? (
+            <View style={styles.metaCard}>
+              <Text style={styles.metaCardIcon}>👤</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.metaCardTitle} numberOfLines={1}>
+                  {(msg.metadata as any)?.name ?? 'Contact'}
+                </Text>
+                {!!(msg.metadata as any)?.phone && (
+                  <Text style={styles.metaCardSub} numberOfLines={1}>
+                    📞 {(msg.metadata as any).phone}
+                  </Text>
+                )}
+                {!!(msg.metadata as any)?.email && (
+                  <Text style={styles.metaCardSub} numberOfLines={1}>
+                    ✉️ {(msg.metadata as any).email}
+                  </Text>
+                )}
+              </View>
+            </View>
           ) : (
             <Text style={styles.bubbleText}>{msg.content}</Text>
           )}
@@ -163,6 +202,18 @@ export default function ChatRoomScreen() {
   const [reactTarget,    setReactTarget]= useState<Message | null>(null);
   const [showMembers,    setShowMembers]= useState(false);
   const [uploading,      setUploading]  = useState(false);
+  // Group call member selector (group / open rooms with 2+ peers)
+  const [showCallSelector, setShowCallSelector] = useState(false);
+  const [callTargets,    setCallTargets] = useState<string[]>([]);
+  const [memberSearch,   setMemberSearch] = useState('');
+  const MAX_CALL_TARGETS = 4;
+  // Plus menu (location / contact / file)
+  const [showPlusMenu,    setShowPlusMenu]    = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+  const [showContactModal,  setShowContactModal]  = useState(false);
+  const [locationForm,    setLocationForm]   = useState({ name: '', address: '', latitude: '', longitude: '' });
+  const [contactForm,     setContactForm]    = useState({ name: '', phone: '', email: '' });
+  const [sendingMeta,     setSendingMeta]    = useState(false);
 
   const flatRef        = useRef<FlatList>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -202,33 +253,64 @@ export default function ChatRoomScreen() {
   useEffect(() => {
     if (!channelService || !roomId || !user) return;
 
+    // The HyperBabel Real-Time backend wraps every per-room broadcast as
+    //   { type: 'message' | 'typing' | …, data: <payload>, timestamp: … }
+    // and publishes it under event-name 'message'. Other event names
+    // ('message.deleted', 'message.updated', …) carry an un-wrapped payload.
     const unsubRoom = channelService.subscribeToRoom(roomId, ({ message, type }) => {
-      const msg = message as Message;
-      if (type === 'message' || !type) {
-        if (!msg || !msg.message_id || !msg.created_at) return;
-        setMessages((prev) => {
-          if (prev.some((m) => m.message_id === msg.message_id)) return prev;
-          const next = [...prev, msg];
-          translateMessages([msg.message_id]);
-          return next;
-        });
-        unitedChat.markAsRead(roomId, user.userId).catch(() => {});
-        setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 80);
-      } else if (type === 'message_deleted') {
-        setMessages((prev) =>
-          prev.map((m) => m.message_id === msg.message_id ? { ...m, deleted_at: new Date().toISOString() } : m),
-        );
+      const envelope = (message ?? {}) as Record<string, any>;
+
+      if (type === 'message' && envelope?.type === 'typing') {
+        const fromId = envelope.userId as string | undefined;
+        if (!fromId || fromId === user.userId) return;
+        setTyping(fromId);
+        if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = setTimeout(() => setTyping(null), 4000);
+        return;
       }
+
+      if (type === 'message.deleted' || (type === 'message' && envelope?.type === 'message.deleted')) {
+        const payload = (envelope?.data ?? envelope) as Record<string, any>;
+        const id = (payload?.message_id ?? payload?.id) as string | undefined;
+        if (!id) return;
+        setMessages((prev) =>
+          prev.map((m) => m.message_id === id ? { ...m, deleted_at: new Date().toISOString() } : m),
+        );
+        return;
+      }
+
+      if (type === 'message.updated' || (type === 'message' && envelope?.type === 'message.updated')) {
+        const payload = (envelope?.data ?? envelope) as Record<string, any>;
+        const id = (payload?.message_id ?? payload?.id) as string | undefined;
+        const content = payload?.content as string | undefined;
+        if (!id || !content) return;
+        setMessages((prev) =>
+          prev.map((m) => m.message_id === id ? { ...m, content, edited_at: new Date().toISOString() } as Message : m),
+        );
+        return;
+      }
+
+      // Real chat message — Workers wraps as { type: 'message', data: <Message> }.
+      // Older backends publish the message object directly.
+      const msg = (
+        type === 'message' && envelope?.type === 'message' && envelope?.data
+          ? envelope.data
+          : envelope?.message_id
+            ? envelope
+            : null
+      ) as Message | null;
+      if (!msg || !msg.message_id || !msg.created_at) return;
+      setMessages((prev) => {
+        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        const next = [...prev, msg];
+        translateMessages([msg.message_id]);
+        return next;
+      });
+      unitedChat.markAsRead(roomId, user.userId).catch(() => {});
+      setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 80);
     });
 
-    const unsubTyping = channelService.subscribeToTyping(roomId, ({ user_id, is_typing }) => {
-      if (user_id === user.userId) return;
-      setTyping(is_typing ? user_id : null);
-      if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-      if (is_typing) typingTimerRef.current = setTimeout(() => setTyping(null), 4000);
-    });
-
-    return () => { unsubRoom(); unsubTyping(); if (typingTimerRef.current) clearTimeout(typingTimerRef.current); };
+    return () => { unsubRoom(); if (typingTimerRef.current) clearTimeout(typingTimerRef.current); };
   }, [channelService, roomId, user]);
 
   // ── Pagination ────────────────────────────────────────────────────────────
@@ -325,6 +407,61 @@ export default function ChatRoomScreen() {
 
   // ── File upload ───────────────────────────────────────────────────────────
 
+  // ── Location / Contact senders ─────────────────────────────────────────────
+
+  const handleSendLocation = async () => {
+    if (!user || !roomId) return;
+    const name = locationForm.name.trim();
+    if (!name) { Alert.alert('Missing field', 'Please enter a location name.'); return; }
+    setSendingMeta(true);
+    try {
+      const lat = parseFloat(locationForm.latitude);
+      const lon = parseFloat(locationForm.longitude);
+      await unitedChat.sendMessage(roomId, {
+        sender_id:    user.userId,
+        content:      name,
+        message_type: 'location',
+        metadata: {
+          name,
+          address: locationForm.address.trim() || undefined,
+          ...(Number.isFinite(lat) ? { latitude: lat } : {}),
+          ...(Number.isFinite(lon) ? { longitude: lon } : {}),
+        },
+      });
+      setLocationForm({ name: '', address: '', latitude: '', longitude: '' });
+      setShowLocationModal(false);
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Failed to send location.');
+    } finally {
+      setSendingMeta(false);
+    }
+  };
+
+  const handleSendContact = async () => {
+    if (!user || !roomId) return;
+    const name = contactForm.name.trim();
+    if (!name) { Alert.alert('Missing field', 'Please enter a contact name.'); return; }
+    setSendingMeta(true);
+    try {
+      await unitedChat.sendMessage(roomId, {
+        sender_id:    user.userId,
+        content:      name,
+        message_type: 'contact',
+        metadata: {
+          name,
+          phone: contactForm.phone.trim() || undefined,
+          email: contactForm.email.trim() || undefined,
+        },
+      });
+      setContactForm({ name: '', phone: '', email: '' });
+      setShowContactModal(false);
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Failed to send contact.');
+    } finally {
+      setSendingMeta(false);
+    }
+  };
+
   const handleAttach = async () => {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
@@ -343,9 +480,11 @@ export default function ChatRoomScreen() {
 
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
-        content:      confirmed.cdn_url,
+        // cf_workers_api confirm response field is `url` (a signed CDN GET).
+        // Older hb_api builds called it `cdn_url`; fall back for compat.
+        content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
         message_type: 'image',
-        metadata:     { cdn_url: confirmed.cdn_url, filename },
+        metadata:     { url: confirmed.url, filename },
       });
     } catch (err: any) {
       Alert.alert('Upload Failed', err.message ?? 'Could not upload file.');
@@ -357,13 +496,50 @@ export default function ChatRoomScreen() {
   // ── Video call ────────────────────────────────────────────────────────────
 
   const handleStartCall = async () => {
+    if (!user || !roomId || !room) return;
+    // 1:1 rooms only have one peer — start immediately. Group/open rooms with
+    // more than one other member open a selector so the caller picks who to
+    // ring (max 4 simultaneous callees).
+    const peers = (room.members ?? []).filter((m) => m.user_id !== user.userId);
+    if (room.room_type === '1to1' || peers.length <= 1) {
+      try {
+        await unitedChat.startVideoCall(roomId, user.userId);
+        router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
+      } catch (err: any) {
+        Alert.alert('Error', err.message ?? 'Failed to start call.');
+      }
+      return;
+    }
+    // Open the picker for group / open rooms.
+    setCallTargets([]);
+    setMemberSearch('');
+    setShowCallSelector(true);
+  };
+
+  const confirmGroupCall = async () => {
     if (!user || !roomId) return;
+    if (callTargets.length === 0) {
+      Alert.alert('Pick at least one member', 'Select up to 4 members to invite.');
+      return;
+    }
+    setShowCallSelector(false);
     try {
-      await unitedChat.startVideoCall(roomId, user.userId);
+      await unitedChat.startVideoCall(roomId, user.userId, callTargets);
       router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Failed to start call.');
     }
+  };
+
+  const toggleCallTarget = (userId: string) => {
+    setCallTargets((prev) => {
+      if (prev.includes(userId)) return prev.filter((id) => id !== userId);
+      if (prev.length >= MAX_CALL_TARGETS) {
+        Alert.alert('Limit reached', `You can invite up to ${MAX_CALL_TARGETS} members at once.`);
+        return prev;
+      }
+      return [...prev, userId];
+    });
   };
 
   // ── Room freeze/unfreeze helpers ──────────────────────────────────────────
@@ -482,11 +658,42 @@ export default function ChatRoomScreen() {
           </View>
         )}
 
+        {/* Plus popover (anchored above the input bar) */}
+        {showPlusMenu && !room?.is_frozen && (
+          <View style={styles.plusMenu}>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); setShowLocationModal(true); }}
+            >
+              <Text style={styles.plusIcon}>📍</Text>
+              <Text style={styles.plusLabel}>Location</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); setShowContactModal(true); }}
+            >
+              <Text style={styles.plusIcon}>👤</Text>
+              <Text style={styles.plusLabel}>Contact</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); handleAttach(); }}
+            >
+              <Text style={styles.plusIcon}>📎</Text>
+              <Text style={styles.plusLabel}>File</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
         {/* Input bar */}
         <View style={styles.inputBar}>
           {!room?.is_frozen && (
-            <TouchableOpacity onPress={handleAttach} style={styles.attachBtn} disabled={uploading}>
-              <Text style={styles.attachIcon}>{uploading ? '⏳' : '📎'}</Text>
+            <TouchableOpacity
+              onPress={() => setShowPlusMenu((v) => !v)}
+              style={styles.attachBtn}
+              disabled={uploading}
+            >
+              <Text style={styles.attachIcon}>{uploading ? '⏳' : (showPlusMenu ? '×' : '+')}</Text>
             </TouchableOpacity>
           )}
           <TextInput
@@ -536,9 +743,250 @@ export default function ChatRoomScreen() {
         currentRole={myRole as any}
         onClose={() => setShowMembers(false)}
       />
+
+      {/* Group call member selector (group / open rooms only) */}
+      <Modal
+        visible={showCallSelector}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowCallSelector(false)}
+      >
+        <SafeAreaView style={callSelectorStyles.modal}>
+          <View style={callSelectorStyles.header}>
+            <Text style={callSelectorStyles.title}>📹 Group Video Call</Text>
+            <TouchableOpacity onPress={() => setShowCallSelector(false)}>
+              <Text style={callSelectorStyles.close}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          <Text style={callSelectorStyles.counter}>
+            {`Select up to ${MAX_CALL_TARGETS} members  (${callTargets.length}/${MAX_CALL_TARGETS})`}
+          </Text>
+
+          <TextInput
+            style={callSelectorStyles.search}
+            placeholder="Search members…"
+            placeholderTextColor={colors.textMuted}
+            value={memberSearch}
+            onChangeText={setMemberSearch}
+            autoCapitalize="none"
+          />
+
+          <ScrollView style={callSelectorStyles.list}>
+            {(room?.members ?? [])
+              .filter((m) => m.user_id !== user?.userId)
+              .filter((m) => {
+                const q = memberSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  m.user_id.toLowerCase().includes(q) ||
+                  (m.user_name ?? '').toLowerCase().includes(q)
+                );
+              })
+              .map((m) => {
+                const selected = callTargets.includes(m.user_id);
+                return (
+                  <TouchableOpacity
+                    key={m.user_id}
+                    style={[callSelectorStyles.row, selected && callSelectorStyles.rowSelected]}
+                    onPress={() => toggleCallTarget(m.user_id)}
+                    activeOpacity={0.7}
+                  >
+                    <Avatar name={m.user_name ?? m.user_id} size={36} />
+                    <View style={{ flex: 1, marginLeft: spacing[3] }}>
+                      <Text style={callSelectorStyles.name}>{m.user_name ?? m.user_id}</Text>
+                      <Text style={callSelectorStyles.meta}>{m.role}</Text>
+                    </View>
+                    <Text style={callSelectorStyles.checkbox}>{selected ? '☑' : '☐'}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            {(room?.members ?? []).filter((m) => m.user_id !== user?.userId).length === 0 && (
+              <Text style={callSelectorStyles.empty}>No other members in this room.</Text>
+            )}
+          </ScrollView>
+
+          <View style={callSelectorStyles.footer}>
+            <TouchableOpacity
+              style={callSelectorStyles.cancelBtn}
+              onPress={() => setShowCallSelector(false)}
+            >
+              <Text style={callSelectorStyles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                callSelectorStyles.startBtn,
+                callTargets.length === 0 && { opacity: 0.5 },
+              ]}
+              disabled={callTargets.length === 0}
+              onPress={confirmGroupCall}
+            >
+              <Text style={callSelectorStyles.startText}>
+                {`📹 Start Call (${callTargets.length})`}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Send Location modal */}
+      <Modal
+        visible={showLocationModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowLocationModal(false)}
+      >
+        <SafeAreaView style={metaModalStyles.modal}>
+          <View style={metaModalStyles.header}>
+            <Text style={metaModalStyles.title}>📍 Send Location</Text>
+            <TouchableOpacity onPress={() => setShowLocationModal(false)}>
+              <Text style={metaModalStyles.close}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={metaModalStyles.body} keyboardShouldPersistTaps="handled">
+            <Text style={metaModalStyles.fieldLabel}>Name</Text>
+            <TextInput
+              style={metaModalStyles.input}
+              placeholder="e.g. Office HQ"
+              placeholderTextColor={colors.textMuted}
+              value={locationForm.name}
+              onChangeText={(t) => setLocationForm((p) => ({ ...p, name: t }))}
+            />
+            <Text style={metaModalStyles.fieldLabel}>Address (optional)</Text>
+            <TextInput
+              style={metaModalStyles.input}
+              placeholder="Street, city, country"
+              placeholderTextColor={colors.textMuted}
+              value={locationForm.address}
+              onChangeText={(t) => setLocationForm((p) => ({ ...p, address: t }))}
+            />
+            <View style={{ flexDirection: 'row', gap: spacing[3] }}>
+              <View style={{ flex: 1 }}>
+                <Text style={metaModalStyles.fieldLabel}>Latitude</Text>
+                <TextInput
+                  style={metaModalStyles.input}
+                  placeholder="37.5665"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="decimal-pad"
+                  value={locationForm.latitude}
+                  onChangeText={(t) => setLocationForm((p) => ({ ...p, latitude: t }))}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={metaModalStyles.fieldLabel}>Longitude</Text>
+                <TextInput
+                  style={metaModalStyles.input}
+                  placeholder="126.9780"
+                  placeholderTextColor={colors.textMuted}
+                  keyboardType="decimal-pad"
+                  value={locationForm.longitude}
+                  onChangeText={(t) => setLocationForm((p) => ({ ...p, longitude: t }))}
+                />
+              </View>
+            </View>
+            <TouchableOpacity
+              style={[metaModalStyles.sendBtn, sendingMeta && { opacity: 0.5 }]}
+              onPress={handleSendLocation}
+              disabled={sendingMeta}
+            >
+              <Text style={metaModalStyles.sendText}>{sendingMeta ? 'Sending…' : 'Send Location'}</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Send Contact modal */}
+      <Modal
+        visible={showContactModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowContactModal(false)}
+      >
+        <SafeAreaView style={metaModalStyles.modal}>
+          <View style={metaModalStyles.header}>
+            <Text style={metaModalStyles.title}>👤 Send Contact</Text>
+            <TouchableOpacity onPress={() => setShowContactModal(false)}>
+              <Text style={metaModalStyles.close}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={metaModalStyles.body} keyboardShouldPersistTaps="handled">
+            <Text style={metaModalStyles.fieldLabel}>Name</Text>
+            <TextInput
+              style={metaModalStyles.input}
+              placeholder="e.g. Alice Kim"
+              placeholderTextColor={colors.textMuted}
+              value={contactForm.name}
+              onChangeText={(t) => setContactForm((p) => ({ ...p, name: t }))}
+            />
+            <Text style={metaModalStyles.fieldLabel}>Phone (optional)</Text>
+            <TextInput
+              style={metaModalStyles.input}
+              placeholder="+1 555 1234"
+              placeholderTextColor={colors.textMuted}
+              keyboardType="phone-pad"
+              value={contactForm.phone}
+              onChangeText={(t) => setContactForm((p) => ({ ...p, phone: t }))}
+            />
+            <Text style={metaModalStyles.fieldLabel}>Email (optional)</Text>
+            <TextInput
+              style={metaModalStyles.input}
+              placeholder="alice@example.com"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              value={contactForm.email}
+              onChangeText={(t) => setContactForm((p) => ({ ...p, email: t }))}
+            />
+            <TouchableOpacity
+              style={[metaModalStyles.sendBtn, sendingMeta && { opacity: 0.5 }]}
+              onPress={handleSendContact}
+              disabled={sendingMeta}
+            >
+              <Text style={metaModalStyles.sendText}>{sendingMeta ? 'Sending…' : 'Send Contact'}</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
+
+// ── Group call selector styles ────────────────────────────────────────────────
+
+const callSelectorStyles = StyleSheet.create({
+  modal:        { flex: 1, backgroundColor: colors.background },
+  header:       { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing[5], paddingVertical: spacing[4], borderBottomWidth: 1, borderBottomColor: colors.border },
+  title:        { ...textPresets.h4, color: colors.text },
+  close:        { ...textPresets.h4, color: colors.textMuted, fontSize: 20 },
+  counter:      { ...textPresets.caption, color: colors.textSecondary, paddingHorizontal: spacing[5], paddingTop: spacing[3] },
+  search:       { ...textPresets.body, color: colors.text, marginHorizontal: spacing[5], marginVertical: spacing[3], backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[2] },
+  list:         { flex: 1, paddingHorizontal: spacing[5] },
+  row:          { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing[3], paddingHorizontal: spacing[3], borderRadius: borderRadius.lg, marginBottom: spacing[2], backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border },
+  rowSelected:  { borderColor: colors.primary, backgroundColor: colors.surface },
+  name:         { ...textPresets.label, color: colors.text, fontWeight: '600' },
+  meta:         { ...textPresets.caption, color: colors.textMuted, marginTop: 2 },
+  checkbox:     { fontSize: 22, color: colors.primary },
+  empty:        { ...textPresets.label, color: colors.textMuted, textAlign: 'center', paddingVertical: spacing[6] },
+  footer:       { flexDirection: 'row', gap: spacing[3], padding: spacing[5], borderTopWidth: 1, borderTopColor: colors.border },
+  cancelBtn:    { flex: 1, alignItems: 'center', paddingVertical: spacing[3], borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border },
+  cancelText:   { ...textPresets.label, color: colors.textSecondary },
+  startBtn:     { flex: 2, alignItems: 'center', paddingVertical: spacing[3], borderRadius: borderRadius.lg, backgroundColor: colors.primary },
+  startText:    { ...textPresets.label, color: colors.white, fontWeight: '700' },
+});
+
+// ── Location / Contact send modal styles ────────────────────────────────────
+
+const metaModalStyles = StyleSheet.create({
+  modal:      { flex: 1, backgroundColor: colors.background },
+  header:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing[5], paddingVertical: spacing[4], borderBottomWidth: 1, borderBottomColor: colors.border },
+  title:      { ...textPresets.h4, color: colors.text },
+  close:      { ...textPresets.h4, color: colors.textMuted, fontSize: 20 },
+  body:       { padding: spacing[5] },
+  fieldLabel: { ...textPresets.caption, color: colors.textSecondary, marginBottom: spacing[2], marginTop: spacing[3], fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+  input:      { ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[3] },
+  sendBtn:    { marginTop: spacing[6], alignItems: 'center', paddingVertical: spacing[3], borderRadius: borderRadius.lg, backgroundColor: colors.primary },
+  sendText:   { ...textPresets.label, color: colors.white, fontWeight: '700' },
+});
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
@@ -593,10 +1041,23 @@ const styles = StyleSheet.create({
   replyRowClose: { color: colors.textMuted, fontSize: 16 },
 
   inputBar:      { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: spacing[3], paddingVertical: spacing[3], borderTopWidth: 1, borderTopColor: colors.border, gap: spacing[3], backgroundColor: colors.surface },
-  attachBtn:     { padding: spacing[2] },
-  attachIcon:    { fontSize: 22 },
+  attachBtn:     { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: colors.card },
+  attachIcon:    { fontSize: 22, color: colors.text, lineHeight: 24 },
   input:         { flex: 1, ...textPresets.body, color: colors.text, maxHeight: 120, backgroundColor: colors.card, borderRadius: borderRadius.xl, paddingHorizontal: spacing[4], paddingVertical: spacing[3], borderWidth: 1, borderColor: colors.border },
   sendBtn:       { width: 44, height: 44, backgroundColor: colors.primary, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   sendBtnDisabled:{ opacity: 0.4 },
   sendIcon:      { color: colors.white, fontSize: 20, fontWeight: '700' },
+
+  // Plus popover (location / contact / file)
+  plusMenu:      { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: spacing[3], paddingHorizontal: spacing[5], borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
+  plusItem:      { alignItems: 'center', gap: spacing[1] },
+  plusIcon:      { fontSize: 26 },
+  plusLabel:     { ...textPresets.caption, color: colors.textSecondary, fontWeight: '600' },
+
+  // Location / Contact message bubble cards
+  metaCard:      { flexDirection: 'row', alignItems: 'flex-start', gap: spacing[3], paddingVertical: spacing[2], paddingHorizontal: spacing[2], minWidth: 200 },
+  metaCardIcon:  { fontSize: 22 },
+  metaCardTitle: { ...textPresets.label, color: colors.text, fontWeight: '700' },
+  metaCardSub:   { ...textPresets.caption, color: colors.textSecondary, marginTop: 2 },
+  metaCardCoord: { ...textPresets.caption, color: colors.textMuted, marginTop: 2, fontFamily: 'Courier' },
 });

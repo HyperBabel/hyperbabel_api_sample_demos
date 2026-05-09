@@ -1,0 +1,7 @@
+# Copy this file to local.properties (which is git-ignored) and edit.
+sdk.dir=/Users/<you>/Library/Android/sdk
+
+# Optional: pre-fill the API key so you do not have to type it on the login
+# screen every fresh install. The login screen still lets you override it.
+HB_API_KEY=your_api_key_here
+HB_API_URL=https://api.hyperbabel.com/api/v1

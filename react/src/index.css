@@ -970,27 +970,6 @@ select.input-field {
   margin-top: 4px;
 }
 
-/* ── Webhook Table ───────────────────────────────────────────────────── */
-.webhook-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.webhook-table th,
-.webhook-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid var(--hb-border-light);
-  font-size: 0.85rem;
-}
-
-.webhook-table th {
-  color: var(--hb-text-muted);
-  font-weight: 600;
-  font-size: 0.75rem;
-  text-transform: uppercase;
-}
-
 /* ── Empty State ─────────────────────────────────────────────────────── */
 .empty-state {
   display: flex;

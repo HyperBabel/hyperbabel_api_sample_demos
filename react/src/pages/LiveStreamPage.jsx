@@ -45,6 +45,9 @@ export default function LiveStreamPage() {
   const [isLive, setIsLive] = useState(false);
   const [streamTitle, setStreamTitle] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
+  // The badge under the title displays this; presence subscription wiring
+  // would update it, but is left as an extension exercise.
+  // eslint-disable-next-line no-unused-vars
   const [viewerCount, setViewerCount] = useState(0);
   const [chatChannelId, setChatChannelId] = useState(null);
   const [statusText, setStatusText] = useState('');

@@ -10,7 +10,7 @@
  * Event flow:
  *  1. HyperBabel backend publishes CALL_INVITE to hb:{orgId}:private:{userId}
  *  2. This component receives the event and calls receiveCallInvite()
- *  3. If the user is busy → calls busyRejectVideoCall() silently
+ *  3. If the user is busy → drop silently (server-side busy gate already filtered)
  *  4. If available → sets incomingCall → IncomingCallOverlay renders
  */
 
@@ -18,7 +18,6 @@ import { useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useCall, type IncomingCallData } from '@/context/CallContext';
 import { useRealtime } from '@/context/RealtimeContext';
-import * as unitedChat from '@/services/unitedChatService';
 
 export function IncomingCallListener() {
   const { user }                = useAuth();
@@ -64,8 +63,10 @@ export function IncomingCallListener() {
       };
 
       receiveCallInvite(callInfo, () => {
-        // User is busy — send automatic busy response
-        unitedChat.busyRejectVideoCall(callInfo.roomId, user.userId).catch(() => {});
+        // User is busy — drop the invite. The server-side busy gate
+        // (POST /unitedchat/rooms/:roomId/video-call) prevents the inviter
+        // from reaching us in the first place; this branch only catches
+        // race conditions where two calls land in the same instant.
       });
     });
 

@@ -109,7 +109,7 @@ export default function IncomingCallOverlay() {
   };
 
   // ── Reject ────────────────────────────────────────────────────────────────
-  const handleReject = async (isMissed = false) => {
+  const handleReject = async (_isMissed = false) => {
     if (accepting) return; // Don't reject right after accepting
     setRejecting(true);
 

@@ -9,7 +9,7 @@ export type { Room, RoomType, RoomMember, Message, MessageType, MemberRole, Acti
 export type { StreamSession } from '@/services/streamService';
 export type { PresenceEntry, PresenceStatus } from '@/services/presenceService';
 export type { PushPlatform } from '@/services/pushService';
-export type { UsageStats, WebhookConfig } from '@/services/authService';
+export type { UsageStats } from '@/services/authService';
 export type { RealtimeChannelService } from '@/services/realtimeService';
 
 /** Navigation param list for typed routing */

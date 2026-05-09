@@ -31,18 +31,40 @@ export interface PresignParams {
   folder?:    string;
 }
 
+/**
+ * Server response for `POST /storage/presign` is wrapped as
+ * `{ message, data: { upload_url, key, … } }`. We unwrap before returning,
+ * so callers only see the inner shape declared here.
+ */
 export interface PresignResult {
-  presigned_url: string;
+  upload_url:    string;
   key:           string;
+  expires_in?:   number;
+  message_type?: string;
+  category?:     string;
 }
 
+export interface PresignEnvelope {
+  message?: string;
+  data?:    PresignResult;
+}
+
+/**
+ * Server response for `POST /storage/confirm` is wrapped as
+ * `{ message, data: { key, url, original_name, … } }`. Same unwrap.
+ */
 export interface ConfirmResult {
-  key:           string;
-  cdn_url:       string;
-  original_name: string;
-  mime_type:     string;
-  file_size:     number;
-  created_at:    string;
+  key:            string;
+  url:            string;
+  original_name?: string;
+  mime_type?:     string;
+  size_bytes?:    number;
+  message_type?:  string;
+}
+
+export interface ConfirmEnvelope {
+  message?: string;
+  data?:    ConfirmResult;
 }
 
 export interface UploadFileOption {
@@ -61,9 +83,13 @@ export interface UploadFileOption {
 
 /**
  * Step 1 — Pre-validate the file and receive a presigned upload URL.
+ *
+ * Unwraps the cf_workers_api envelope so callers see a flat PresignResult.
  */
-export const presign = (data: PresignParams) =>
-  api.post<PresignResult>(`${BASE}/presign`, data);
+export const presign = async (data: PresignParams): Promise<PresignResult> => {
+  const resp = await api.post<PresignEnvelope | PresignResult>(`${BASE}/presign`, data);
+  return ((resp as PresignEnvelope)?.data ?? (resp as PresignResult));
+};
 
 // ── Step 2 ────────────────────────────────────────────────────────────────
 
@@ -107,8 +133,10 @@ export const uploadToPresignedUrl = async (
  * Step 3 — Confirm the upload completed.
  * HyperBabel verifies the file exists in storage and records metadata + usage.
  */
-export const confirmUpload = (data: { key: string; originalName: string }) =>
-  api.post<ConfirmResult>(`${BASE}/confirm`, data);
+export const confirmUpload = async (data: { key: string; originalName: string }): Promise<ConfirmResult> => {
+  const resp = await api.post<ConfirmEnvelope | ConfirmResult>(`${BASE}/confirm`, data);
+  return ((resp as ConfirmEnvelope)?.data ?? (resp as ConfirmResult));
+};
 
 // ── Convenience wrapper ───────────────────────────────────────────────────
 
@@ -123,7 +151,7 @@ export const confirmUpload = (data: { key: string; originalName: string }) =>
  *     fileSize: pickerResult.assets[0].fileSize ?? 0,
  *     onProgress: (pct) => setProgress(pct),
  *   });
- *   console.log(result.cdn_url); // CDN URL ready to use in a message
+ *   console.log(result.url); // Signed CDN GET URL ready to use in a message
  */
 export const uploadFile = async (opts: UploadFileOption): Promise<ConfirmResult> => {
   // Step 1
@@ -137,7 +165,7 @@ export const uploadFile = async (opts: UploadFileOption): Promise<ConfirmResult>
 
   // Step 2
   await uploadToPresignedUrl(
-    presignData.presigned_url,
+    presignData.upload_url,
     opts.uri,
     opts.mimeType,
     opts.onProgress,

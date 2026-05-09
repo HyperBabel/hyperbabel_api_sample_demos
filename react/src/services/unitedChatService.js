@@ -79,16 +79,6 @@ export const updateRoomDescription = (roomId, userId, description) =>
 export const joinByCode = (inviteCode, userId, displayName) =>
   api.post(`${BASE}/rooms/join-by-code`, { invite_code: inviteCode, user_id: userId, display_name: displayName });
 
-/**
- * Get the org's open room file transfer policy.
- * Returns platform defaults if no custom policy has been saved yet:
- *   files_enabled: true, max_file_size_mb: 10, allowed_types: ['image/*']
- *
- * @returns {Promise<{ files_enabled: boolean, max_file_size_mb: number, allowed_types: string[] } | null>}
- */
-export const getOpenRoomPolicy = () =>
-  api.get(`${BASE}/policy`);
-
 
 /**
  * Join an open (public) room.
@@ -204,15 +194,6 @@ export const acceptVideoCall = (roomId, userId) =>
  */
 export const rejectVideoCall = (roomId, userId) =>
   api.post(`${BASE}/rooms/${roomId}/video-call/reject`, { user_id: userId });
-
-/**
- * Send an automatic busy rejection when the user is already in another call.
- * Called silently by IncomingCallListener — no user interaction required.
- * @param {string} roomId
- * @param {string} userId
- */
-export const busyRejectVideoCall = (roomId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/busy`, { user_id: userId });
 
 /**
  * End the video call for ALL participants.
@@ -342,7 +323,7 @@ export const updateTypingPrefs = (roomId, userId, sendEnabled, recvEnabled) =>
 
 /**
  * Broadcast a typing event for a United Chat room.
- * Backend checks send/recv prefs and only publishes to Ably when appropriate.
+ * Backend checks send/recv prefs and only publishes via HyperBabel Real-Time when appropriate.
  * @param {string} roomId
  * @param {string} userId
  * @param {string} [displayName]
