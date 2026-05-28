@@ -1,35 +1,55 @@
 /*
- * Login screen — captures the user's identity for this demo session.
+ * Login screen — Customer Auth pattern B1 (Firebase Direct Exchange).
  *
- * The HyperBabel Console is the source of truth for production accounts;
- * this screen is a simulator that simply seeds in-memory Session state so
- * the rest of the demo has someone to talk to.
+ *   1. The user signs in with Firebase Auth (Email/Password by default;
+ *      a one-tap "Anonymous" button is exposed for kiosk-style use).
+ *   2. We exchange the resulting Firebase ID token for a HyperBabel
+ *      customer JWT via POST /customer/auth/firebase-exchange.
+ *   3. Session.persist(...) writes the JWT pair to
+ *      EncryptedSharedPreferences via SecureStore. ApiClient attaches
+ *      it to every subsequent request.
+ *
+ * If Firebase isn't initialised (no google-services.json) the screen
+ * renders a setup-help banner instead of the form.
  */
 package com.hyperbabel.demo.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.text.KeyboardOptions
 import com.hyperbabel.demo.api.ApiClient
+import com.hyperbabel.demo.api.FirebaseAuthService
+import com.hyperbabel.demo.api.FirebaseExchangeResult
 import com.hyperbabel.demo.data.Session
 import kotlinx.coroutines.launch
 
@@ -45,42 +65,80 @@ private val LANGS = listOf(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LoginScreen(onSignedIn: () -> Unit) {
-    var userId       by remember { mutableStateOf("") }
+fun LoginScreen(
+    onSignedIn: () -> Unit,
+    onOpenSignUp: () -> Unit,
+) {
+    var email        by remember { mutableStateOf("") }
+    var password     by remember { mutableStateOf("") }
     var displayName  by remember { mutableStateOf("") }
-    var apiKey       by remember { mutableStateOf(ApiClient.defaultApiKey) }
-    var apiUrl       by remember { mutableStateOf(ApiClient.defaultApiUrl) }
     var langCd       by remember { mutableStateOf("en") }
     var langExpanded by remember { mutableStateOf(false) }
+    var loading      by remember { mutableStateOf(false) }
     var error        by remember { mutableStateOf("") }
+
+    val firebaseReady = remember { FirebaseAuthService.isFirebaseReady }
+    val scope = rememberCoroutineScope()
+
+    fun finishSignIn(result: FirebaseExchangeResult) {
+        Session.persist(result, fallbackDisplayName = displayName, langCode = langCd)
+        // Best-effort push token registration. Failures don't block sign-in.
+        scope.launch {
+            runCatching {
+                ApiClient.push.registerToken(mapOf(
+                    "user_id"  to result.external_user_id,
+                    "token"    to "demo-android-${System.currentTimeMillis()}",
+                    "platform" to "android",
+                ))
+            }
+        }
+        onSignedIn()
+    }
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("Sign in to the demo", style = MaterialTheme.typography.headlineSmall)
+
+        if (!firebaseReady) {
+            FirebaseMissingBanner()
+            return@Column
+        }
+
         Text(
-            "Enter a user identity for this demo session. In production these fields come from your own auth flow.",
+            "Sign in with Firebase. We exchange the ID token for a short-lived " +
+                "HyperBabel customer JWT — your org API key never ships in this app.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
         OutlinedTextField(
-            value = userId, onValueChange = { userId = it },
-            label = { Text("User ID") },
-            placeholder = { Text("e.g. developer-001") },
-            modifier = Modifier.fillMaxSize(),
+            value = email, onValueChange = { email = it; error = "" },
+            label = { Text("Email") },
+            placeholder = { Text("you@example.com") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = password, onValueChange = { password = it; error = "" },
+            label = { Text("Password") },
+            placeholder = { Text("••••••••") },
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
             value = displayName, onValueChange = { displayName = it },
-            label = { Text("Display Name") },
+            label = { Text("Display Name (optional)") },
             placeholder = { Text("Alice") },
-            modifier = Modifier.fillMaxSize(),
             singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
         )
 
         ExposedDropdownMenuBox(expanded = langExpanded, onExpandedChange = { langExpanded = it }) {
@@ -90,7 +148,7 @@ fun LoginScreen(onSignedIn: () -> Unit) {
                 readOnly = true,
                 label = { Text("Preferred Language") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = langExpanded) },
-                modifier = Modifier.menuAnchor().fillMaxSize(),
+                modifier = Modifier.menuAnchor().fillMaxWidth(),
             )
             ExposedDropdownMenu(
                 expanded = langExpanded,
@@ -105,57 +163,78 @@ fun LoginScreen(onSignedIn: () -> Unit) {
             }
         }
 
-        OutlinedTextField(
-            value = apiKey, onValueChange = { apiKey = it },
-            label = { Text("API Key") },
-            placeholder = { Text("hb_live_…") },
-            modifier = Modifier.fillMaxSize(),
-            singleLine = true,
-        )
-        OutlinedTextField(
-            value = apiUrl, onValueChange = { apiUrl = it },
-            label = { Text("API Base URL") },
-            placeholder = { Text("https://api.hyperbabel.com/api/v1") },
-            modifier = Modifier.fillMaxSize(),
-            singleLine = true,
-        )
-
-        Text(
-            "Use http://10.0.2.2:8787/api/v1 to talk to a local HyperBabel API server " +
-                "(wrangler dev) from the Android emulator.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-
         if (error.isNotBlank()) {
             Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
 
-        val scope = rememberCoroutineScope()
         Button(
             onClick = {
-                if (userId.isBlank()) { error = "User ID is required."; return@Button }
-                if (apiKey.isBlank()) { error = "API Key is required."; return@Button }
-                Session.userId          = userId.trim()
-                Session.displayName     = displayName.trim().ifBlank { userId.trim() }
-                Session.preferredLangCd = langCd
-                Session.apiKey          = apiKey.trim()
-                Session.apiUrl          = apiUrl.trim().ifBlank { ApiClient.defaultApiUrl }
-                // Auto-register a synthetic Android push token. Production
-                // apps swap the synthetic token for the real FCM token from
-                // FirebaseMessaging.getToken().
+                if (email.isBlank() || password.isBlank()) {
+                    error = "Please enter your email and password."
+                    return@Button
+                }
+                loading = true
+                error = ""
                 scope.launch {
                     runCatching {
-                        ApiClient.push.registerToken(mapOf(
-                            "user_id"  to Session.userId,
-                            "token"    to "demo-android-${System.currentTimeMillis()}",
-                            "platform" to "android",
-                        ))
-                    }
+                        FirebaseAuthService.signInWithEmail(
+                            email = email.trim(),
+                            password = password,
+                            preferredLangCd = langCd,
+                        )
+                    }.onSuccess { finishSignIn(it) }
+                     .onFailure { error = it.message ?: "Sign-in failed." }
+                    loading = false
                 }
-                onSignedIn()
             },
-            modifier = Modifier.fillMaxSize(),
-        ) { Text("Sign in →") }
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text(if (loading) "Signing in…" else "Sign in →") }
+
+        OutlinedButton(
+            onClick = {
+                loading = true
+                error = ""
+                scope.launch {
+                    runCatching {
+                        FirebaseAuthService.signInAnonymously(preferredLangCd = langCd)
+                    }.onSuccess { finishSignIn(it) }
+                     .onFailure { error = it.message ?: "Anonymous sign-in failed." }
+                    loading = false
+                }
+            },
+            enabled = !loading,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("Continue anonymously (kiosk mode)") }
+
+        Spacer(Modifier.height(8.dp))
+        TextButton(
+            onClick = onOpenSignUp,
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("New here? Create an account") }
+    }
+}
+
+@Composable
+private fun FirebaseMissingBanner() {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0x1AF59E0B)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "Firebase config missing",
+                style = MaterialTheme.typography.titleSmall,
+                color = Color(0xFFFCD34D),
+            )
+            Text(
+                "Drop google-services.json into the firebase/ folder and rebuild. " +
+                    "See firebase/README.md and README → Quickstart for the full setup path, " +
+                    "including how to allow-list your Firebase project in HyperBabel Console " +
+                    "→ Customer Auth.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFFDE68A),
+            )
+        }
     }
 }

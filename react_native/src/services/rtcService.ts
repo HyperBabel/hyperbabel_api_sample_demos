@@ -8,9 +8,9 @@
  *  - Provide control helpers: mute, camera toggle, flip, switch role
  *
  * The vendor SDK is imported by package name; specific symbols are renamed
- * via `import as` so the body of this file talks about HyperBabel concepts
- * only. Any existing identifiers re-exported below keep their public name
- * because callers already depend on them.
+ * via `import as` so the body of this file and every downstream consumer
+ * only talks about HyperBabel concepts. Screens MUST import all video-RTC
+ * symbols from this module rather than the vendor package directly.
  */
 
 import {
@@ -24,7 +24,14 @@ import {
   IRtcEngineEventHandler,
 } from 'react-native-agora';
 
-export { RtcSurfaceView, VideoSourceType, ClientRoleType, ChannelProfileType };
+export {
+  createVideoEngine,
+  RtcSurfaceView,
+  VideoSourceType,
+  ClientRoleType,
+  ChannelProfileType,
+};
+export type { IRtcEngine, RtcConnection, IRtcEngineEventHandler };
 
 export type RtcRole = 'publisher' | 'subscriber';
 

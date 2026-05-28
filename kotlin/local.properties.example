@@ -1,7 +1,20 @@
-# Copy this file to local.properties (which is git-ignored) and edit.
+# Copy this file to local.properties (git-ignored) and edit.
 sdk.dir=/Users/<you>/Library/Android/sdk
 
-# Optional: pre-fill the API key so you do not have to type it on the login
-# screen every fresh install. The login screen still lets you override it.
-HB_API_KEY=your_api_key_here
+# Optional: override the HyperBabel API base URL. Defaults to production
+# (https://api.hyperbabel.com/api/v1). Use a private deployment URL only
+# if you operate one. Android emulator hits the host's localhost as
+# 10.0.2.2, so wrangler dev on the host is reached as:
+#   HB_API_URL=http://10.0.2.2:8787/api/v1
 HB_API_URL=https://api.hyperbabel.com/api/v1
+
+# Note on Firebase: there are no FIREBASE_* keys in local.properties.
+# The native Firebase SDK reads everything from
+# `firebase/google-services.json` (auto-copied to `app/` by the
+# `copyFirebaseConfig` Gradle task on every build). See
+# firebase/README.md for the setup path.
+
+# Note on HyperBabel API key: there is no HB_API_KEY. The demo uses
+# Customer Auth pattern B1 (Firebase Direct Exchange). The HyperBabel
+# org API key MUST NOT ship in the app binary — api/ApiClient.kt
+# throws on any request that would carry one.

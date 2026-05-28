@@ -42,7 +42,7 @@ final class HyperBabelRealtime {
             )
         )
         guard let payload = initial.tokenRequest else {
-            throw realtimeError("Server did not return ably_token_request")
+            throw realtimeError("Server did not return a real-time token request payload")
         }
         let oid = initial.orgId ?? ""
         orgId = oid

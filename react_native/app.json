@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
+    "newArchEnabled": false,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -22,7 +22,13 @@
         "NSCameraUsageDescription": "HyperBabel Demo uses the camera for video calls and live streaming.",
         "NSMicrophoneUsageDescription": "HyperBabel Demo uses the microphone for voice and video communication.",
         "NSPhotoLibraryUsageDescription": "HyperBabel Demo accesses your photo library for sending image messages.",
-        "UIBackgroundModes": ["audio", "remote-notification", "fetch"]
+        "UIBackgroundModes": [
+          "audio",
+          "remote-notification",
+          "fetch"
+        ],
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "HyperBabel Demo can attach your current location to a chat message when you tap \"Use my location\". Coordinates are sent only when you confirm."
       }
     },
     "android": {
@@ -42,15 +48,31 @@
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
         "android.permission.VIBRATE",
-        "android.permission.RECEIVE_BOOT_COMPLETED"
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_CAMERA",
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE"
       ],
-      "edgeToEdgeEnabled": true,
-      "googleServicesFile": "./google-services.json"
+      "edgeToEdgeEnabled": true
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "backgroundColor": "#0a0a0f",
+          "resizeMode": "contain"
+        }
+      ],
       [
         "expo-camera",
         {
@@ -58,20 +80,30 @@
         }
       ],
       [
-        "expo-av",
+        "expo-audio",
         {
           "microphonePermission": "HyperBabel Demo uses the microphone for voice and video calls."
         }
       ],
       "expo-secure-store",
-      "@react-native-firebase/app",
-      "@react-native-firebase/messaging",
       [
         "expo-build-properties",
         {
           "ios": {
-            "useFrameworks": "static"
+            "useFrameworks": "static",
+            "deploymentTarget": "16.4",
+            "buildReactNativeFromSource": true,
+            "newArchEnabled": false
+          },
+          "android": {
+            "newArchEnabled": false
           }
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "HyperBabel Demo can attach your current location to a chat message when you tap \"Use my location\"."
         }
       ]
     ],

@@ -1,9 +1,15 @@
 /*
- * Login screen — captures the user's identity for this demo session.
+ * Login screen — Customer Auth pattern B1 (Firebase Direct Exchange).
  *
- * The HyperBabel Console is the source of truth for production accounts;
- * this screen is a simulator that simply seeds Session state so the rest
- * of the demo has someone to talk to.
+ *   1. The user signs in with Firebase Auth (Email/Password by default;
+ *      a one-tap "Anonymous" button is exposed for kiosk-style use).
+ *   2. We exchange the resulting Firebase ID token for a HyperBabel
+ *      customer JWT via POST /customer/auth/firebase-exchange.
+ *   3. Session.persist(...) writes the JWT pair to Keychain via
+ *      SecureStore; ApiClient attaches it to every subsequent request.
+ *
+ * If Firebase isn't initialised (no GoogleService-Info.plist in the
+ * bundle) the screen renders a setup-help banner instead of the form.
  */
 import SwiftUI
 
@@ -20,81 +26,169 @@ private let LANGS: [(String, String)] = [
 struct LoginScreen: View {
     @EnvironmentObject var session: Session
 
-    @State private var userId: String = ""
+    @State private var email: String = ""
+    @State private var password: String = ""
     @State private var displayName: String = ""
-    @State private var apiKey: String = ApiClient.defaultApiKey
-    @State private var apiUrl: String = ApiClient.defaultApiUrl
     @State private var langCd: String = "en"
-    @State private var error: String = ""
+    @State private var loading: Bool = false
+    @State private var errorMessage: String = ""
+    @State private var showSignUp: Bool = false
+
+    private var firebaseReady: Bool { FirebaseAuthService.isFirebaseReady }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Sign in to the demo").font(.title2).bold()
-                Text("Enter a user identity for this demo session. In production these fields come from your own auth flow.")
-                    .font(.callout).foregroundStyle(.secondary)
 
-                field(label: "User ID", text: $userId, placeholder: "e.g. developer-001")
-                field(label: "Display Name", text: $displayName, placeholder: "Alice")
+                if !firebaseReady {
+                    firebaseMissingBanner
+                } else {
+                    Text("Sign in with Firebase. We exchange the ID token for a short-lived HyperBabel customer JWT — your org API key never ships in this app.")
+                        .font(.callout).foregroundStyle(.secondary)
 
-                Text("Preferred Language").font(.caption).foregroundStyle(.secondary)
-                Picker("Preferred Language", selection: $langCd) {
-                    ForEach(LANGS, id: \.0) { code, label in Text(label).tag(code) }
-                }.pickerStyle(.menu)
-
-                field(label: "API Key", text: $apiKey, placeholder: "hb_live_…")
-                field(label: "API Base URL", text: $apiUrl, placeholder: "https://api.hyperbabel.com/api/v1")
-
-                Text("Use http://localhost:8787/api/v1 to talk to a local HyperBabel API server (wrangler dev) on the iOS Simulator.")
-                    .font(.caption2).foregroundStyle(.secondary)
-
-                if !error.isEmpty {
-                    Text(error).foregroundStyle(.red).font(.caption)
-                }
-
-                Button {
-                    let trimmedId = userId.trimmingCharacters(in: .whitespaces)
-                    if trimmedId.isEmpty { error = "User ID is required."; return }
-                    if apiKey.trimmingCharacters(in: .whitespaces).isEmpty { error = "API Key is required."; return }
-                    session.signIn(
-                        userId: trimmedId,
-                        displayName: displayName.trimmingCharacters(in: .whitespaces),
-                        langCd: langCd,
-                        apiKey: apiKey.trimmingCharacters(in: .whitespaces),
-                        apiUrl: apiUrl.trimmingCharacters(in: .whitespaces)
-                    )
-                    // Auto-register a synthetic iOS push token so the
-                    // platform notification surface lights up end-to-end.
-                    // Production apps swap this for the real APNs token.
-                    Task {
-                        let token = "demo-ios-\(Int(Date().timeIntervalSince1970))"
-                        _ = try? await PushService.register(
-                            userId: trimmedId,
-                            token: token,
-                            platform: "ios"
-                        )
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Email").font(.caption).foregroundStyle(.secondary)
+                        TextField("you@example.com", text: $email)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled(true)
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.emailAddress)
+                            .textContentType(.emailAddress)
+                            #endif
                     }
-                } label: {
-                    Text("Sign in →").frame(maxWidth: .infinity)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Password").font(.caption).foregroundStyle(.secondary)
+                        SecureField("••••••••", text: $password)
+                            .textFieldStyle(.roundedBorder)
+                            #if os(iOS)
+                            .textContentType(.password)
+                            #endif
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Display Name (optional)").font(.caption).foregroundStyle(.secondary)
+                        TextField("Alice", text: $displayName)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    Text("Preferred Language").font(.caption).foregroundStyle(.secondary)
+                    Picker("Preferred Language", selection: $langCd) {
+                        ForEach(LANGS, id: \.0) { code, label in Text(label).tag(code) }
+                    }.pickerStyle(.menu)
+
+                    if !errorMessage.isEmpty {
+                        Text(errorMessage).foregroundStyle(.red).font(.caption)
+                    }
+
+                    Button {
+                        Task { await handleEmailSignIn() }
+                    } label: {
+                        if loading {
+                            ProgressView().frame(maxWidth: .infinity)
+                        } else {
+                            Text("Sign in →").frame(maxWidth: .infinity)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(loading)
+                    .padding(.top, 8)
+
+                    HStack {
+                        VStack { Divider() }
+                        Text("or").font(.caption2).foregroundStyle(.secondary)
+                        VStack { Divider() }
+                    }
+                    .padding(.vertical, 4)
+
+                    Button {
+                        Task { await handleAnonymousSignIn() }
+                    } label: {
+                        Text("Continue anonymously (kiosk mode)")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(loading)
+
+                    Button("New here? Create an account") {
+                        showSignUp = true
+                    }
+                    .font(.callout)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 12)
                 }
-                .buttonStyle(.borderedProminent)
-                .padding(.top, 8)
             }
             .padding(20)
         }
         .navigationTitle("HyperBabel Demo")
+        .sheet(isPresented: $showSignUp) {
+            NavigationStack {
+                SignUpScreen().environmentObject(session)
+            }
+        }
     }
 
-    @ViewBuilder
-    private func field(label: String, text: Binding<String>, placeholder: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            TextField(placeholder, text: text)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled(true)
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
+    // ── Handlers ────────────────────────────────────────────────────────
+
+    private func handleEmailSignIn() async {
+        errorMessage = ""
+        let em = email.trimmingCharacters(in: .whitespaces)
+        if em.isEmpty || password.isEmpty {
+            errorMessage = "Please enter your email and password."
+            return
         }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await FirebaseAuthService.signInWithEmail(
+                em, password: password, preferredLangCd: langCd,
+            )
+            await finishSignIn(result)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func handleAnonymousSignIn() async {
+        errorMessage = ""
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await FirebaseAuthService.signInAnonymously(
+                preferredLangCd: langCd,
+            )
+            await finishSignIn(result)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func finishSignIn(_ result: FirebaseExchangeResult) async {
+        session.persist(result, fallbackDisplayName: displayName, langCode: langCd)
+        // Best-effort push token registration. Failures don't block sign-in
+        // and don't surface to the user — production apps swap the synthetic
+        // token below for the real APNs token.
+        Task {
+            let token = "demo-ios-\(Int(Date().timeIntervalSince1970))"
+            _ = try? await PushService.register(
+                userId: result.external_user_id,
+                token: token,
+                platform: "ios",
+            )
+        }
+    }
+
+    private var firebaseMissingBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Firebase config missing").font(.headline).foregroundStyle(.orange)
+            Text("Add `GoogleService-Info.plist` to the app bundle (drag from `firebase/` into Xcode). See README → Quickstart and `firebase/README.md` for the full setup path, including how to allow-list your Firebase project in HyperBabel Console → Customer Auth.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.10))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.orange))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

@@ -7,15 +7,40 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Conditionally apply the google-services plugin only when the source
+// Firebase config exists. This lets the demo build and run on a fresh
+// clone without Firebase setup — the sign-in screen renders a "Firebase
+// config missing" hint instead. Drop the file into firebase/ and
+// re-sync to enable Firebase auth.
+val firebaseSourceConfig = rootProject.file("firebase/google-services.json")
+if (firebaseSourceConfig.exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // Read optional defaults from local.properties so we never bake credentials
-// into the repo. Both keys are optional — the Login screen lets the user
-// supply them at runtime.
+// into the repo. Only HB_API_URL is read here — the demo no longer accepts
+// an org API key (it uses Customer Auth pattern B1 via Firebase Direct
+// Exchange instead — see api/FirebaseAuthService.kt).
 val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
 val defaultApiUrl: String = localProps.getProperty("HB_API_URL", "https://api.hyperbabel.com/api/v1")
-val defaultApiKey: String = localProps.getProperty("HB_API_KEY", "")
+
+// ── Copy Firebase config from firebase/ to app/ at build time ──────────
+//
+// `firebase/google-services.json` is the source of truth. The
+// google-services plugin processes `app/google-services.json`, so we
+// copy on every build. Both paths are gitignored. If the file is absent
+// the copy is a no-op and FirebaseApp.initializeApp() returns null at
+// runtime — the sign-in screen renders a "Firebase config missing" hint
+// instead of crashing.
+tasks.register<Copy>("copyFirebaseConfig") {
+    from(rootProject.file("firebase/google-services.json"))
+    into(projectDir)
+    onlyIf { rootProject.file("firebase/google-services.json").exists() }
+}
+tasks.named("preBuild").configure { dependsOn("copyFirebaseConfig") }
 
 android {
     namespace = "com.hyperbabel.demo"
@@ -26,10 +51,9 @@ android {
         minSdk = 24
         targetSdk = 34
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "1.0.0"
 
         buildConfigField("String", "HB_API_URL", "\"$defaultApiUrl\"")
-        buildConfigField("String", "HB_API_KEY", "\"$defaultApiKey\"")
     }
 
     buildTypes {
@@ -73,12 +97,23 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
 
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
     implementation("com.squareup.retrofit2:retrofit:2.11.0")
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
+
+    // Customer Auth pattern B1 — Firebase Direct Exchange.
+    // See api/FirebaseAuthService.kt and https://hyperbabel.com/docs#customer-auth.
+    implementation(platform("com.google.firebase:firebase-bom:33.6.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-messaging-ktx")
+
+    // EncryptedSharedPreferences — Android Keystore-backed secure storage
+    // for the customer JWT pair. iOS Keychain equivalent.
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Real-Time + Video underlying SDKs. Aliased on import in our wrappers.
     implementation("io.ably:ably-android:1.2.45")

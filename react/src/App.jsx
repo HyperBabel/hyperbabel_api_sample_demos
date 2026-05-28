@@ -52,6 +52,7 @@
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider } from './context/AuthContext';
 import { CallProvider } from './context/CallContext';
 import IncomingCallListener from './components/IncomingCallListener';
 import IncomingCallOverlay from './components/IncomingCallOverlay';
@@ -65,8 +66,9 @@ import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
   return (
-    <CallProvider>
-      <BrowserRouter>
+    <AuthProvider>
+      <CallProvider>
+        <BrowserRouter>
         {/* ── Global incoming call listener — no UI, pure side-effect ── */}
         <IncomingCallListener />
 
@@ -98,7 +100,8 @@ export default function App() {
           {/* ── Default redirect ── */}
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
-      </BrowserRouter>
-    </CallProvider>
+        </BrowserRouter>
+      </CallProvider>
+    </AuthProvider>
   );
 }

@@ -2,7 +2,8 @@
  * App entry point and Compose nav graph.
  *
  * Routes:
- *   login           — sign in
+ *   login           — sign in (Firebase Email/Password + Anonymous)
+ *   signup          — sign up (Firebase createUserWithEmailAndPassword)
  *   home            — room list
  *   chat/{roomId}   — chat in a room (text + real-time push)
  *   video/{roomId}  — 1:1 video call
@@ -10,8 +11,9 @@
  *   settings        — usage / push tokens / language detect / logout
  *   blocks          — global block list
  *
- * The IncomingCallOverlay wraps every routed screen so a CALL_INVITE event
- * can paint an Accept / Reject prompt on top of whatever the user is doing.
+ * The IncomingCallOverlay wraps every routed screen so a CALL_INVITE
+ * event can paint an Accept / Reject prompt on top of whatever the
+ * user is doing.
  */
 package com.hyperbabel.demo
 
@@ -28,6 +30,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.hyperbabel.demo.data.SecureStore
 import com.hyperbabel.demo.data.Session
 import com.hyperbabel.demo.ui.components.IncomingCallOverlay
 import com.hyperbabel.demo.ui.screens.BlocksScreen
@@ -35,6 +38,7 @@ import com.hyperbabel.demo.ui.screens.ChatScreen
 import com.hyperbabel.demo.ui.screens.HomeScreen
 import com.hyperbabel.demo.ui.screens.LoginScreen
 import com.hyperbabel.demo.ui.screens.SettingsScreen
+import com.hyperbabel.demo.ui.screens.SignUpScreen
 import com.hyperbabel.demo.ui.screens.StreamScreen
 import com.hyperbabel.demo.ui.screens.VideoCallScreen
 import com.hyperbabel.demo.ui.theme.HyperBabelTheme
@@ -42,6 +46,12 @@ import com.hyperbabel.demo.ui.theme.HyperBabelTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Initialise both stores before any composable / ApiClient call
+        // touches them. SecureStore lazily builds the Android Keystore
+        // master key; Session lazily opens the plain identity prefs file.
+        SecureStore.init(applicationContext)
+        Session.init(applicationContext)
+
         setContent {
             HyperBabelTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -60,14 +70,26 @@ private fun AppNavigation() {
     Box(modifier = Modifier.fillMaxSize()) {
         NavHost(navController = nav, startDestination = start) {
             composable("login") {
-                LoginScreen(onSignedIn = { nav.navigate("home") { popUpTo("login") { inclusive = true } } })
+                LoginScreen(
+                    onSignedIn = { nav.navigate("home") { popUpTo("login") { inclusive = true } } },
+                    onOpenSignUp = { nav.navigate("signup") },
+                )
+            }
+            composable("signup") {
+                SignUpScreen(
+                    onSignedIn = {
+                        nav.navigate("home") {
+                            popUpTo("login") { inclusive = true }
+                        }
+                    },
+                    onBack = { nav.popBackStack() },
+                )
             }
             composable("home") {
                 HomeScreen(
                     onOpenRoom = { roomId -> nav.navigate("chat/$roomId") },
                     onLogout = {
-                        Session.userId = ""
-                        Session.displayName = ""
+                        Session.signOut()
                         nav.navigate("login") { popUpTo("home") { inclusive = true } }
                     },
                     onOpenStreams  = { nav.navigate("stream") },
@@ -100,8 +122,7 @@ private fun AppNavigation() {
                     onBack = { nav.popBackStack() },
                     onOpenBlocks = { nav.navigate("blocks") },
                     onLogout = {
-                        Session.userId = ""
-                        Session.displayName = ""
+                        Session.signOut()
                         nav.navigate("login") { popUpTo("home") { inclusive = true } }
                     },
                 )
@@ -111,8 +132,8 @@ private fun AppNavigation() {
             }
         }
 
-        // Global incoming-call overlay sits above the NavHost so it wins the
-        // hit test no matter which screen is foregrounded.
+        // Global incoming-call overlay sits above the NavHost so it wins
+        // the hit test no matter which screen is foregrounded.
         IncomingCallOverlay(
             onAccept = { roomId -> if (roomId.isNotEmpty()) nav.navigate("video/$roomId") },
             onReject = { /* fire-and-forget — see IncomingCallOverlay docs */ },

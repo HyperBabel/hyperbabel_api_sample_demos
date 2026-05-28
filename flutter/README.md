@@ -1,6 +1,20 @@
 # HyperBabel Flutter Demo Sample
 
-A comprehensive cross-platform Flutter application that showcases all features of the **HyperBabel API Platform**. Use this project as a reference implementation for integrating HyperBabel real-time communication, video, and AI translation features into your iOS and Android applications.
+A cross-platform Flutter demo that showcases the HyperBabel API Platform
+on iOS and Android. Use it as a reference for integrating HyperBabel
+real-time chat, video, and AI translation into your own Flutter apps.
+
+Authentication uses **Customer Auth pattern B1 — Firebase Direct
+Exchange**. The app signs in with Firebase on device, exchanges the
+resulting ID token at HyperBabel for a short-lived customer JWT, and
+uses that JWT for every subsequent API call. **The integrator's
+organization API key (`hb_live_…` / `hb_test_…`) never ships in this
+binary.** `api_client.dart` throws at startup if it ever sees one.
+
+For the full architecture, see the
+[Customer Auth section on the docs site](https://hyperbabel.com/docs#customer-auth).
+The per-org Firebase project allow-list is configured in the
+[HyperBabel Console](https://console.hyperbabel.com) under **Customer Auth**.
 
 ## Features
 
@@ -14,88 +28,207 @@ A comprehensive cross-platform Flutter application that showcases all features o
 | **Auto-Translation** | Translation — Text, Batch, Detect, Languages |
 | **Real-time Engine** | HyperBabel Real-Time — Signaling and live presence |
 
-## Prerequisites
+## Stack
 
-- **Flutter SDK** >= 3.3.0
-- **HyperBabel API Key** — Get one from the [HyperBabel Console](https://console.hyperbabel.com)
-- **iOS Simulator / Android Emulator** — For local testing.
+- **Flutter** 3.27+ / Dart 3.5+
+- `firebase_core` / `firebase_auth` / `firebase_messaging` — sign-in &
+  push
+- `flutter_secure_storage` — JWT pair lives in iOS Keychain / Android
+  KeyStore
+- `flutter_dotenv` — `.env` runtime config
+- `dio` — HTTP client with customer JWT + proactive refresh
+- `flutter_riverpod` — state management
+- `go_router` — declarative routing with auth-aware redirects
+- HyperBabel Real-Time client + HyperBabel Video / Live Stream engine
+  — bundled SDKs are imported by package name and aliased to
+  HyperBabel-named symbols in `lib/core/realtime/` and
+  `lib/core/video/`. See those files for the alias pattern.
 
-## Quick Start
+---
 
-```bash
-# 1. Navigate to the flutter demo directory
-cd sample_demos/flutter
+## Quickstart — from zero to running app
 
-# 2. Fetch the Flutter dependencies
-flutter pub get
+1. **Sign up at the HyperBabel Console** —
+   <https://console.hyperbabel.com>. Once your organization exists,
+   open **Customer Auth → Add Firebase project**.
 
-# 3. Start the application
-# (Ensure your Emulator/Simulator is running, or a physical device is connected)
-flutter run
-```
+2. **Allow-list your Firebase project**. In the console wizard:
+   - Paste your Firebase project ID (e.g. `your-app-prod`).
+   - Paste a Firebase ID token to prove ownership.
+   - Click *Verify and add*. This step tells HyperBabel "trust ID
+     tokens from this Firebase project."
 
-When the app launches, enter your **API Key** directly in the setup screen to connect to the HyperBabel backend.
+3. **Enable sign-in methods in Firebase Console**:
+   - Authentication → Sign-in method → enable **Email/Password** (and
+     **Anonymous** if you want the kiosk-mode button on the login
+     screen).
 
-> The setup screen accepts a Live API key (`hb_live_…`). API keys for this demo should be treated as sandbox-only — do not embed a production key in a binary you ship.
+4. **Register your Flutter apps in Firebase**:
+   - Android — application ID must match
+     `android/app/build.gradle`'s `applicationId`.
+   - iOS — bundle ID must match the value in `ios/Runner.xcodeproj`.
 
-### Allowed Origins
+5. **Download the Firebase config files** from Firebase Console →
+   Project Settings:
+   - Android — `google-services.json`
+   - iOS — `GoogleService-Info.plist`
 
-Starting in Production, HyperBabel APIs enforce **Strict Origin Validation (Zero Trust)** for API Keys. Mobile builds typically do not send a browser-style `Origin` header, so they are accepted by default. If you have configured **Allowed Origins** for your API Key in the HyperBabel Console, make sure the list either includes your test environment or remains empty (which permits any origin).
+6. **Drop both files into [`firebase/`](./firebase/)**. See
+   [`firebase/README.md`](./firebase/README.md) for the build-step copy
+   scripts that move them into `android/app/` and `ios/Runner/` on
+   every build.
+
+7. **Install and run**:
+   ```bash
+   cd sample_demos/flutter
+   flutter pub get
+   flutter run               # or: flutter run -d ios / -d android
+   ```
+
+   No `.env` is needed for the default setup — the demo targets the
+   public HyperBabel production API. `.env` is only required if you
+   run against a private HyperBabel deployment (`HB_API_URL=…`) — see
+   [.env.example](./.env.example) for the override surface.
+
+That's the whole setup. Sign in (or sign up), and the demo exchanges
+the Firebase ID token for a customer JWT, stores the pair in secure
+storage, and routes you into the main app.
+
+### What if I skip step 6?
+
+The app still builds and runs — `Firebase.initializeApp()` in
+`main.dart` is wrapped in `try/catch`, and the sign-in screen renders
+a "Firebase config missing" hint instead of the form. Useful for
+browsing the source first.
+
+### Token storage
+
+The customer JWT pair lives in `flutter_secure_storage` (iOS Keychain
+/ Android KeyStore — encrypted at rest). Identity preferences
+(`user_id`, `display_name`, `lang`) live in `shared_preferences`.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `HB_API_URL` | no | API base URL. Defaults to `https://api.hyperbabel.com/api/v1`. |
+
+Flutter mobile apps don't read Firebase Web SDK config from env vars
+— the native SDK reads everything from `google-services.json` /
+`GoogleService-Info.plist` directly. There are no `FIREBASE_*` env
+vars in this template.
+
+There is also no API-key env var — the demo only accepts customer
+JWTs minted via Firebase Direct Exchange. Setting `HB_API_KEY` to an
+`hb_live_…` / `hb_test_…` value in `.env` makes `api_client.dart`
+throw at startup.
+
+If you create a `.env`, you also need to add `- .env` under
+`flutter.assets:` in `pubspec.yaml` so `flutter_dotenv` can find it
+at runtime. **Never commit `.env`** — `.gitignore` blocks it and lets
+only `.env.example` through.
+
+---
 
 ## Architecture & Project Structure
-
-This project follows a clean architecture pattern utilizing `Riverpod` for state management, `GoRouter` for deep-linking and navigation, and a bespoke "Glassmorphism" UI rendering engine.
 
 ```
 flutter/
 ├── lib/
 │   ├── core/
-│   │   ├── network/                # HTTP API integration logic (Dio)
-│   │   │   ├── api_client.dart     # Base injection layer and interceptors
-│   │   │   └── united_chat_repository.dart 
-│   │   ├── realtime/               # HyperBabel Real-Time signaling wrapper
-│   │   ├── video/                  # HyperBabel Video signaling wrapper
-│   │   └── theme/                  # Global color mappings (Deep Dark & Accents)
+│   │   ├── auth/
+│   │   │   ├── firebase_auth_service.dart   # Firebase → /customer/auth/firebase-exchange
+│   │   │   └── auth_controller.dart         # Riverpod, secure storage
+│   │   │
+│   │   ├── network/
+│   │   │   ├── api_client.dart              # Customer JWT HTTP client (B1, dio)
+│   │   │   ├── auth_repository.dart
+│   │   │   ├── chat_repository.dart
+│   │   │   ├── united_chat_repository.dart
+│   │   │   ├── translate_repository.dart
+│   │   │   ├── storage_repository.dart
+│   │   │   ├── push_repository.dart
+│   │   │   ├── stream_repository.dart
+│   │   │   ├── presence_repository.dart
+│   │   │   ├── users_repository.dart
+│   │   │   └── rtm_repository.dart
+│   │   │
+│   │   ├── realtime/                         # HyperBabel Real-Time client
+│   │   ├── video/                            # HyperBabel Video client
+│   │   ├── utils/
+│   │   └── theme/                            # AppTheme — Deep Dark + Accents
 │   │
-│   ├── features/                   # Domain-driven feature sets
-│   │   ├── auth/                   # API Key login injection
-│   │   ├── chat/                   # Threaded messaging & translation views
-│   │   ├── video_call/             # Interactive video components
-│   │   ├── live_stream/            # Broadcaster interface
-│   │   └── home/                   # Central Hub & Dashboard
+│   ├── features/                             # Domain-driven feature sets
+│   │   ├── auth/                             # Firebase sign-in + sign-up
+│   │   ├── chat/                             # Threaded messaging & translation
+│   │   ├── video_call/                       # Interactive video components
+│   │   ├── live_stream/                      # Broadcaster + viewer
+│   │   ├── call/                             # Incoming call overlay
+│   │   ├── blocks/                           # Block management
+│   │   ├── settings/                         # Usage / push / language
+│   │   └── home/                             # Central hub
 │   │
-│   ├── shared/
-│   │   └── widgets/                # Reusable glassmorphism elements
-│   │
-│   └── main.dart                   # Entry point and routing configuration
+│   ├── shared/widgets/                       # Glassmorphism reusable widgets
+│   └── main.dart                             # dotenv + Firebase init + GoRouter
 │
-├── assets/
-│   └── images/                     # App icons (hyperbabel.png)
+├── assets/images/                            # App icons
 │
-├── pubspec.yaml                    # Dart package dependencies
-└── README.md                       # This file
+├── firebase/                                 # Drop Firebase native config here
+│   └── README.md
+│
+├── .env.example                              # Environment variables template
+├── pubspec.yaml                              # Dart package dependencies
+└── README.md                                 # This file
 ```
 
 ## Integrating into your own app
 
-### 1. HTTP Communication Layer (`api_client.dart`)
-We use `dio` to inject the HyperBabel `Authorization` bearer token across all HTTP requests. See `lib/core/network/api_client.dart` for the setup.
+### 1. HTTP layer (`api_client.dart`)
 
-### 2. State Management & Real-time Integration
-The app relies heavily on WebSockets for Presence and Typing indicators. Look specifically at `hyperbabel_realtime_client.dart` for the implementation pattern of subscribing to dedicated Room Channels upon navigating to `ChatScreen`.
+`dio` interceptors attach the customer JWT to every request and refresh
+transparently on 401:
 
-### 3. Avoiding Layout Overflows
-Unlike React Native, Flutter implements strict bounding boxes for Text elements. To avoid **Pixel Overflow Errors** when fetching translated text that may be unexpectedly long, developers should follow the pattern in `chat_screen.dart`:
-- Utilize `BoxConstraints(maxWidth: ... )` for bubble width limits.
-- Set `softWrap: true`.
+```dart
+final dio = ApiClient().client;
+final res = await dio.get('/unitedchat/rooms');
+```
+
+### 2. State management & real-time
+
+WebSocket subscriptions for presence and typing live in
+`hyperbabel_realtime_client.dart`. Subscribe to dedicated room channels
+when navigating to `ChatScreen`.
+
+### 3. Avoiding layout overflows
+
+Flutter enforces strict bounding boxes. Translated text can be
+unexpectedly long, so for chat bubbles use:
+
+- `BoxConstraints(maxWidth: ...)` for bubble width.
+- `softWrap: true` on `Text` widgets.
+
+See `chat_screen.dart` for the pattern.
+
+---
 
 ## Customization
 
-- **Styling**: `lib/core/theme/app_theme.dart` governs the core color profiles. The app is set to an immersive Dark Mode layout.
-- **Glass Effects**: `lib/shared/widgets/glass_container.dart` can be customized dynamically by modifying the `blurStrength` property. 
+- **Styling**: `lib/core/theme/app_theme.dart` governs the color
+  profile. The app ships in an immersive Dark Mode layout.
+- **Glass effects**: `lib/shared/widgets/glass_container.dart` —
+  tweak `blurStrength`.
+- **API URL**: change `HB_API_URL` in `.env` to point at a private
+  HyperBabel deployment.
+
+---
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE)
+file for details.
 
-> **Disclaimer**: This code is provided for demonstration purposes only. Thoroughly sanitize user states and handle connection exceptions before pushing to production environments.
+> **Disclaimer.** This code is provided for demonstration purposes only.
+> Thoroughly sanitize user state and handle connection exceptions before
+> shipping to production.

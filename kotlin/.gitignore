@@ -5,3 +5,26 @@ local.properties
 *.iml
 captures
 .cxx
+
+# Firebase native config — developer-supplied secret, never commit.
+# The single source-of-truth lives in firebase/, and the build copies
+# it into app/ on every build (see app/build.gradle.kts copyFirebaseConfig).
+firebase/google-services.json
+app/google-services.json
+# Defensive — also covers an iOS scaffold if you ever add one.
+firebase/GoogleService-Info.plist
+GoogleService-Info.plist
+
+# Defensive — secrets that might end up under here from scaffolding.
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+*.keystore
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*secret*
+*credential*

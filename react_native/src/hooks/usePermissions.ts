@@ -4,6 +4,9 @@
  * Requests and checks Camera + Microphone permissions before
  * starting any video call or live stream.
  *
+ * Mic permission flows through expo-audio's AudioModule instead of expo-av —
+ * expo-av is deprecated in Expo SDK 54+.
+ *
  * Returns:
  *  - granted: whether both permissions are approved
  *  - request: trigger permission prompt (async)
@@ -12,8 +15,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Camera } from 'expo-camera';
-import { Audio } from 'expo-av';
-import { Alert, Linking, Platform } from 'react-native';
+import { AudioModule } from 'expo-audio';
+import { Alert, Linking } from 'react-native';
 
 export interface PermissionsState {
   cameraGranted: boolean;
@@ -32,7 +35,7 @@ export function usePermissions(): PermissionsState {
     (async () => {
       const [cam, mic] = await Promise.all([
         Camera.getCameraPermissionsAsync(),
-        Audio.getPermissionsAsync(),
+        AudioModule.getRecordingPermissionsAsync(),
       ]);
       setCameraGranted(cam.granted);
       setMicGranted(mic.granted);
@@ -43,7 +46,7 @@ export function usePermissions(): PermissionsState {
   const request = useCallback(async (): Promise<boolean> => {
     const [cam, mic] = await Promise.all([
       Camera.requestCameraPermissionsAsync(),
-      Audio.requestPermissionsAsync(),
+      AudioModule.requestRecordingPermissionsAsync(),
     ]);
 
     const camOk = cam.granted;

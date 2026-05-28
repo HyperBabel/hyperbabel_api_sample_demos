@@ -1,135 +1,182 @@
 # HyperBabel Demo Applications
 
-Welcome to the HyperBabel Demo Applications! This repository contains fully functional, production-ready sample applications built on top of the **HyperBabel API Platform**. The codebase is designed to serve as a comprehensive reference for integrating HyperBabel's real-time capabilities into your own products.
+Production-ready sample applications for the **HyperBabel API Platform**, in
+six flavours so you can copy-paste from whichever stack you already use.
 
-There are currently six reference implementations provided:
+| Directory                                | Stack                                                      |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| [`react/`](./react/)                 | React 19 + Vite + JavaScript + Firebase Web SDK                 |
+| [`react_native/`](./react_native/)   | Expo SDK 56 + React Native 0.85 + TypeScript + `@react-native-firebase` v24 |
+| [`flutter/`](./flutter/)             | Flutter 3 + Riverpod + GoRouter + `firebase_auth`               |
+| [`javascript/`](./javascript/)       | Vanilla JavaScript + Vite + Firebase Web SDK                    |
+| [`kotlin/`](./kotlin/)               | Android + Jetpack Compose + Retrofit + Firebase BOM             |
+| [`swift/`](./swift/)                 | iOS + SwiftUI + URLSession + Firebase iOS SDK                   |
 
-1. **[React (Web)](./react/README.md)** — Vite + React 19 single-page app
-2. **[React Native (iOS / Android)](./react_native/README.md)** — Expo SDK 55, file-based routing, native development build
-3. **[Flutter (iOS / Android)](./flutter/README.md)** — Flutter 3.3+, Riverpod, GoRouter
-4. **[JavaScript (Vanilla Web)](./javascript/README.md)** — Framework-free vanilla JS + Vite
-5. **[Swift (iOS)](./swift/README.md)** — SwiftUI, Swift Package Manager, iOS 16+
-6. **[Kotlin (Android)](./kotlin/README.md)** — Jetpack Compose, Retrofit, Android SDK 34+
+Every demo targets the same HyperBabel API endpoints. The HTTP path,
+auth header, request body, and response shape are identical across the
+six — pick the demo whose UI layer matches your project.
 
-Every demo speaks the same HTTP endpoints, request bodies, response envelopes, and real-time event shapes, so the implementation closest to your target runtime is the one to start from.
+### Authentication model — Customer Auth (Firebase Direct Exchange)
+
+All six demos use **Customer Auth pattern B1 — Firebase Direct Exchange**.
+The end user signs in with Firebase on device (or in the browser); the
+demo posts the resulting Firebase ID token to HyperBabel's
+`POST /api/v1/customer/auth/firebase-exchange` endpoint, which returns a
+short-lived **customer JWT** (1 h access, 30 d refresh) scoped to that
+end user. Every subsequent API call attaches that JWT as
+`Authorization: Bearer <customer_jwt>`.
+
+**Your organization API key (`hb_live_…` / `hb_test_…`) never ships in
+the binary or browser bundle.** Each demo's HTTP client refuses to start
+if it ever sees one. See the [Customer Auth docs](https://hyperbabel.com/docs#customer-auth)
+for the full architecture and threat model; the per-org Firebase
+project allow-list is configured in the [HyperBabel Console](https://console.hyperbabel.com)
+under **Customer Auth**.
 
 ---
 
 ## Supported Features
 
-* **Real-time Chat (1:1, Group, Open)** — Room creation, joining, leaving, and live message broadcasting via the United Chat API.
-* **Auto-Translation** — Cross-lingual messaging where each participant reads in their primary language.
-* **Rich Messaging** — Full-text search, read receipts, typing indicators, pinned messages, reactions, and threaded replies.
-* **1:1 and Group Video Calls** — Robust signaling for starting, accepting, rejecting, and ending calls. Includes incoming-call overlays, busy guards, rejoin banners, and 30-second auto-reject.
-* **Live Streaming** — Broadcaster + Viewer roles via HyperBabel Video, with a live chat overlay.
-* **File Upload** — Three-step pipeline (`presign` → signed `PUT` → `confirm`) backed by HyperBabel Storage.
-* **Presence** — Online / Offline / Away with periodic heartbeat pings.
-* **Push Notifications** — FCM / APNs token registration through HyperBabel Push.
-* **Moderation** — Sub-admin promotion, ban / unban, freeze / unfreeze, mute / unmute.
-* **Block List** — Per-user block / unblock + listing.
-* **API Usage Monitoring** — `GET /auth/usage` for live consumption metrics.
+The demos cover the full HyperBabel API surface a sandbox key can reach:
+
+- **Real-time chat** — 1:1, group, and open rooms via the United Chat API,
+  with live message / typing / read-receipt push over a single channel.
+- **Auto-translation** — incoming messages are translated to the viewer's
+  preferred language using the AI Translation API.
+- **Rich messaging** — reply quotes, edit / delete, emoji reactions,
+  message search, freeze toggle, per-room mute, ban / sub-admin / promote
+  moderation.
+- **Image & file uploads** — 3-step presigned-URL flow against the
+  Storage API.
+- **1:1 + group video calls** — start, accept, reject, end, leave; an
+  in-app overlay rings on inbound CALL_INVITE events.
+- **Live streaming** — host publishes their camera / mic, viewers join
+  as audience-only with a separate viewer token.
+- **Presence + push** — heartbeat to mark "online", FCM token
+  registration so background pushes light up the right device.
+- **Settings** — usage stats, language detection playground, blocked-user
+  list, push-token inspector.
+
+Webhook CRUD, billing, and other tenant-admin endpoints are intentionally
+**not** exposed by the demos — those live in the HyperBabel Console
+because they require a logged-in session JWT.
 
 ---
 
 ## How to Test the Demos
 
-You can clone this repository and run any of the demos using your own HyperBabel Workspace API Keys.
+You can clone this directory and run any of the six instantly. There is
+no API key to copy into env files — every demo signs in through your
+Firebase project and exchanges the ID token for a short-lived customer
+JWT at runtime.
 
-### Step 1: Obtain your API Key
+### Step 1 — Set up your Firebase project
 
-1. Navigate to the **HyperBabel Console Dashboard** at [console.hyperbabel.com](https://console.hyperbabel.com).
-2. Sign in or register for a Workspace.
-3. Generate a new API Key in **Developer Settings** — you will receive an `hb_live_…` token.
+1. Create a Firebase project at <https://console.firebase.google.com>
+   (free tier is enough).
+2. **Authentication → Sign-in method** → enable **Email/Password**
+   (and **Anonymous** if you want the kiosk-mode button on the login
+   screen).
+3. For **web** demos (`react`, `javascript`): copy the **Web SDK config**
+   from Project Settings → Your apps → Web. You need `apiKey`,
+   `authDomain`, `projectId`, `storageBucket`, `messagingSenderId`,
+   `appId`.
+4. For **mobile** demos (`react_native`, `flutter`, `kotlin`, `swift`):
+   download the native config files (`google-services.json` for
+   Android, `GoogleService-Info.plist` for iOS) from Project Settings
+   → Your apps.
 
-### Step 2: Pick a demo and configure it
+### Step 2 — Allow-list your Firebase project in HyperBabel
 
-Web demos (React, JavaScript) read the API key from a `.env` file. Native-mobile demos (React Native, Flutter, Swift, Kotlin) accept the key on a launch screen — no `.env` editing required for them.
+1. Open the HyperBabel Console at <https://console.hyperbabel.com>.
+2. Sign in or register an organization.
+3. Go to **Customer Auth → Add Firebase project**.
+4. Paste your Firebase project ID (e.g. `your-app-prod`) and a Firebase
+   ID token to prove ownership (the wizard shows two ways to generate
+   one).
+5. Click *Verify and add*. This single step tells HyperBabel "trust ID
+   tokens from this Firebase project."
 
-#### React (Web)
+This is the only step that touches the Console — there is no API key to
+generate, copy, or rotate.
 
-```bash
-cd react
-cp .env.example .env
-# edit .env: VITE_HB_API_KEY=hb_live_...
-npm install
-npm run dev
-# open http://localhost:5173
-```
+### Step 3 — Configure the demo
 
-#### JavaScript (Vanilla Web)
+Each demo reads its Firebase config through the native mechanism for
+its platform:
 
-```bash
-cd javascript
-cp .env.example .env
-# edit .env: VITE_HB_API_KEY=hb_live_...
-npm install
-npm run dev
-# open http://localhost:5175
-```
+| Demo           | Where Firebase config goes                                                                |
+| -------------- | ----------------------------------------------------------------------------------------- |
+| `react`        | `.env.local` ← `cp .env.example .env.local`, then fill the `VITE_FIREBASE_*` block        |
+| `javascript`   | `.env.local` ← `cp .env.example .env.local`, then fill the `VITE_FIREBASE_*` block        |
+| `react_native` | Drop `google-services.json` + `GoogleService-Info.plist` into `react_native/firebase/`    |
+| `flutter`      | Drop `google-services.json` + `GoogleService-Info.plist` into `flutter/firebase/`         |
+| `kotlin`       | Drop `google-services.json` into `kotlin/firebase/` — Gradle copies it to `app/` on build |
+| `swift`        | Drop `GoogleService-Info.plist` into `swift/firebase/`, then drag it into Xcode           |
 
-#### React Native (iOS / Android)
+Each demo's `firebase/README.md` documents the platform-specific
+integration steps.
 
-> Because native SDKs are used (camera, audio, vibration, push), Expo Go is **not** supported. You must compile a development build directly onto a connected device or simulator.
+By default each demo targets `https://api.hyperbabel.com/api/v1`. To
+override (e.g. for a private HyperBabel deployment), set the matching
+env var in the same config file — `VITE_HB_API_URL` (web),
+`EXPO_PUBLIC_HB_API_URL` (RN), `HB_API_URL` (Flutter / Kotlin
+`local.properties`) — or override at runtime in code (Swift). Each
+language README has the exact key name.
 
-```bash
-cd react_native
-cp .env.example .env
-# edit .env: EXPO_PUBLIC_HB_API_KEY=hb_live_...
-npm install
-npx expo run:android   # Android device / emulator
-npx expo run:ios       # iOS simulator / device (macOS only)
-```
-
-#### Flutter (iOS / Android)
-
-```bash
-cd flutter
-flutter pub get
-flutter run
-# paste your hb_live_... API key on the launch screen
-```
-
-#### Swift (iOS)
-
-```bash
-cd swift
-open Package.swift
-```
-
-In Xcode, create a new iOS App project, drag the `HyperBabelDemo/` folder into it, add the SDK package dependencies, and build to your simulator or device. The full step-by-step is in [`swift/README.md`](./swift/README.md). Paste your `hb_live_…` API key on the launch screen.
-
-#### Kotlin (Android)
+### Step 4 — Run
 
 ```bash
-cd kotlin
-cp local.properties.example local.properties
-# edit local.properties: sdk.dir, optionally HB_API_KEY / HB_API_URL
-./gradlew :app:installDebug
-# or open the project in Android Studio and press Run
+# react           (web)
+cd react && npm install && npm run dev
+
+# javascript      (web)
+cd javascript && npm install && npm run dev
+
+# react_native    (Android / iOS) — see react_native/README.md for EAS build alternative
+cd react_native && npm install && npx expo run:ios   # or run:android
+
+# flutter         (Android / iOS)
+cd flutter && flutter pub get && flutter run
+
+# kotlin          (Android)
+cd kotlin && cp local.properties.example local.properties && ./gradlew :app:installDebug
+
+# swift           (iOS) — see swift/README.md for the Xcode App project setup
+cd swift && open Package.swift
 ```
 
-Paste your `hb_live_…` API key on the launch screen, or pre-fill it via `HB_API_KEY` in `local.properties`.
+You can mix and match: open the `react` demo in your browser signed in
+as one user, run `react_native` on your phone signed in as another, and
+watch real-time chat / video call / live stream sync side-by-side.
 
-### Step 3: Origin / CORS Security (Web only)
+### Note on origins
 
-HyperBabel enforces a Zero Trust security model. For web demos (React, JavaScript), requests are blocked with a `403 Forbidden` unless the origin is allow-listed.
-
-* Open your API Key in the **Console Dashboard** and add the local development URL to **Allowed Origins**:
-  * React → `http://localhost:5173`
-  * JavaScript → `http://localhost:5175`
-* Native demos (React Native, Flutter, Swift, Kotlin) do not send a browser-style `Origin` header and are accepted by default.
-
-### Step 4: Try it across platforms
-
-Once at least one demo is running, sign in with a different user ID on a second stack — for example `TestWeb` on the React demo and `TestPhone` on the Flutter demo — and place them side-by-side. You will see real-time multilingual chat, threaded reactions, video call signaling, live broadcasts, and in-call chat synchronizing across runtimes in real time.
+HyperBabel APIs enforce **Strict Origin Validation** for organization
+API keys, but that validation does **not** apply to customer JWTs minted
+via Firebase Direct Exchange (the bearer is the per-end-user JWT, not
+your org key). Web demos therefore run from any authorized Firebase
+domain — `localhost` is allow-listed by Firebase by default, so no
+Console-side origin configuration is required for the demos to work.
 
 ---
 
 ## Architecture & Code Quality
 
-All six demos have been audited and hardened to handle edge cases common in real-time engineering:
+All six demos have been audited end-to-end against the HyperBabel API
+endpoint manifest. Every API call is verified to:
 
-* **Event Guarding** — Real-time listeners strictly validate payloads, so heartbeat / typing traffic cannot leak into the message timeline as blank bubbles.
-* **System Messages** — Backend-generated system alerts are intercepted at the rendering layer and shown centrally rather than as empty user bubbles.
-* **Resource Cleanup** — Lists use bounded fallback rendering, and screens automatically tear down real-time connections, ringtones, vibration loops, and timers on unmount.
-* **Identical Wire Shapes** — Endpoints, request bodies, response envelopes, and error codes are 1:1 across every demo, so swapping the client stack never requires backend changes.
+- attach the short-lived customer JWT as `Authorization: Bearer <customer_jwt>`,
+- refuse to start if an `hb_live_…` / `hb_test_…` organization key is
+  ever wired into the HTTP client (defensive guard at module init),
+- proactively refresh the access token before expiry and recover from
+  401 by calling `POST /customer/refresh`,
+- target an existing endpoint with the right HTTP verb and body shape,
+- decode the wire response (including `{ message, data: {…} }` envelopes
+  that the Storage API returns),
+- correctly disambiguate the wrapped `{ type: 'message' | 'typing' | … }`
+  envelope that real-time broadcasts ride on top of.
+
+`ChatScreen` UX (typing indicator, reactions, reply quote, edit / delete,
+image / file picker, freeze, mute, members modal, locale-aware time) is
+implemented to parity across all six demos.

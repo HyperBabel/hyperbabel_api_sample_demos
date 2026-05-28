@@ -103,7 +103,7 @@ final class HyperBabelVideo: NSObject {
     }
 }
 
-// SwiftUI bridge — AgoraRtcVideoCanvas needs a real UIView, so we wrap one.
+// SwiftUI bridge — VideoCanvas needs a real UIView, so we wrap one.
 import SwiftUI
 
 struct VideoCanvasView: UIViewRepresentable {

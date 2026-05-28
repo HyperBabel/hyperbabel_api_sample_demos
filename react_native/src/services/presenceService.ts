@@ -35,9 +35,7 @@ export const setStatus = (userId: string, status: PresenceStatus) =>
 /**
  * Get presence status for up to 100 users at once.
  *
- * Wire shape per cf_workers_api/src/routes/presence.ts: `GET /presence`
- * with comma-separated `user_ids` query param. (No `/presence/bulk`
- * endpoint exists — that was a hb_api-era convention.)
+ * Wire shape: `GET /presence?user_ids=<comma-separated>` (no `/presence/bulk`).
  */
 export const getPresence = (userIds: string[]) =>
   api.get<{ presence: PresenceEntry[]; offline_threshold_seconds?: number }>(

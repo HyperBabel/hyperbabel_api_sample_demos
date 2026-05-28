@@ -14,6 +14,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import * as presenceService from '../services/presenceService';
+import { useAuth } from '../context/AuthContext';
 
 // Status metadata: label, dot CSS class, emoji
 const STATUS_OPTIONS = [
@@ -28,9 +29,12 @@ const STORAGE_KEY = 'hb_presence_status';
 export default function Header() {
   const navigate  = useNavigate();
   const location  = useLocation();
+  const { user: authUser, logout: authLogout } = useAuth();
 
-  // Read the current user from localStorage (set during login)
-  const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
+  // Identity comes from AuthContext (single source of truth). Fall back to
+  // the legacy localStorage shape only if AuthContext hasn't hydrated yet —
+  // never the other way round.
+  const user = authUser ?? JSON.parse(localStorage.getItem('hb_user') || '{}');
 
   // ── Presence status state ────────────────────────────────────────────────
   const [status, setStatus]           = useState(
@@ -52,9 +56,13 @@ export default function Header() {
   }, []);
 
   // ── Log out ──────────────────────────────────────────────────────────────
-  const handleLogout = () => {
-    localStorage.removeItem('hb_user');
+  // Delegates to AuthContext so the customer JWT pair, identity,
+  // and Firebase session are all cleared atomically. The presence
+  // status is a UX preference (not a secret) but we wipe it too so
+  // the dot resets to "online" on the next sign-in.
+  const handleLogout = async () => {
     localStorage.removeItem(STORAGE_KEY);
+    await authLogout();
     navigate('/login');
   };
 

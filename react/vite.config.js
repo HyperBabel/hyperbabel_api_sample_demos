@@ -23,11 +23,10 @@ export default defineConfig({
         // Collects all third-party licenses from bundled npm packages and
         // writes them to dist/THIRD_PARTY_LICENSES.txt at build time.
         //
-        // This satisfies the attribution requirements of:
-        //   MIT      — agora-rtc-sdk-ng, react, react-dom, dayjs, ...
-        //   Apache-2 — ably, firebase, ...
-        //
-        // Enterprise customers may request this file for legal compliance.
+        // This satisfies the attribution requirements of the OSS packages
+        // bundled by the demo (MIT, Apache-2, and similar permissive
+        // licenses). Enterprise customers may request this file for legal
+        // compliance.
         license({
           thirdParty: {
             output: {

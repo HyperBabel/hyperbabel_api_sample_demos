@@ -1,6 +1,20 @@
 # HyperBabel React Demo Sample
 
-A comprehensive React demo application that showcases all features of the **HyperBabel API Platform**. Use this project as a reference implementation for integrating HyperBabel APIs into your own React applications.
+A production-grade React web demo that showcases the HyperBabel API
+Platform. Use it as a reference implementation for integrating HyperBabel
+into your own React applications.
+
+Authentication uses **Customer Auth pattern B1 — Firebase Direct
+Exchange**. The browser signs in with Firebase, exchanges the resulting
+ID token for a short-lived HyperBabel customer JWT, and uses that JWT for
+every subsequent API call. **The integrator's organization API key
+(`hb_live_…` / `hb_test_…`) never ships in the browser bundle.** The HTTP
+client throws at startup if it ever sees one.
+
+For the full architecture, see the
+[Customer Auth section on the docs site](https://hyperbabel.com/docs#customer-auth).
+The per-org Firebase project allow-list is configured in the
+[HyperBabel Console](https://console.hyperbabel.com) under **Customer Auth**.
 
 ## Features
 
@@ -34,100 +48,147 @@ A comprehensive React demo application that showcases all features of the **Hype
 > demo — they require a console-session JWT (not an API key) and are
 > managed in the [HyperBabel Console](https://console.hyperbabel.com).
 
-## Prerequisites
+---
 
-- **Node.js** v18+ (v20 recommended)
-- **HyperBabel API Key** — Get one from the [HyperBabel Console](https://console.hyperbabel.com)
+## Quickstart — from zero to running app
 
-## Quick Start
+1. **Sign up at the HyperBabel Console** —
+   <https://console.hyperbabel.com>. Once your organization exists,
+   open **Customer Auth → Add Firebase project**.
 
-```bash
-# 1. Navigate to the demo project
-cd sample_demos/react
+2. **Allow-list your Firebase project**. In the console wizard:
+   - Paste your Firebase project ID (e.g. `your-app-prod`).
+   - Paste a Firebase ID token to prove ownership (the wizard shows two
+     ways to generate one).
+   - Click *Verify and add*. This step tells HyperBabel "trust ID tokens
+     from this Firebase project."
 
-# 2. Install dependencies
-npm install
+3. **Enable sign-in methods in Firebase Console**:
+   - Authentication → Sign-in method → enable **Email/Password** (and
+     **Anonymous** if you want the kiosk-mode button on the login screen).
+   - Authentication → Settings → Authorized domains → ensure your dev
+     origin (`localhost` is allow-listed by default) and any prod hostname
+     are present. Without this, Firebase rejects sign-in with `auth/unauthorized-domain`.
 
-# 3. Set up environment variables
-cp .env.example .env
-# Edit .env with your API key and API base URL
+4. **Copy your Firebase Web SDK config** from Firebase Console → Project
+   Settings → Your apps → Web → "Config" snippet. You need
+   `apiKey`, `authDomain`, `projectId`, `storageBucket`,
+   `messagingSenderId`, `appId`.
 
-# 4. Start the development server
-npm run dev
-```
+5. **Install, configure, and run**:
+   ```bash
+   cd sample_demos/react
+   cp .env.example .env.local
+   #  → paste your Firebase Web SDK values into the VITE_FIREBASE_* slots
+   npm install
+   npm run dev
+   ```
+   Open <http://localhost:5173> in your browser. The login screen renders
+   a sign-in form when Firebase is configured, or a "Firebase config
+   missing" hint otherwise.
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+That's the whole setup. Sign in (or create an account), and the demo
+will exchange the Firebase ID token for a customer JWT, store the pair in
+`localStorage`, and route you into the main app.
 
-## Environment Configuration
+### Browser storage trade-off
 
-| Variable | Description | Default |
+The customer JWT lives in `localStorage`, which is XSS-readable. This is
+the inherent cost of any client-direct B1 flow. The risk is bounded —
+customer JWTs are short-lived (1 h access, 30 d refresh) and scoped to
+a single end-user; they cannot create new users or touch billing. For
+higher assurance, host an httpOnly-cookie backend that brokers the
+exchange (pattern B2 in the [Customer Auth docs](https://hyperbabel.com/docs#customer-auth)).
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
 |---|---|---|
-| `VITE_HB_API_URL` | HyperBabel API base URL | `https://api.hyperbabel.com/api/v1` |
-| `VITE_HB_API_KEY` | Your API Key from the Console dashboard | — |
+| `VITE_HB_API_URL` | no | API base URL. Defaults to `https://api.hyperbabel.com/api/v1`. |
+| `VITE_FIREBASE_API_KEY` | yes | Firebase Web SDK — apiKey |
+| `VITE_FIREBASE_AUTH_DOMAIN` | yes | Firebase Web SDK — authDomain |
+| `VITE_FIREBASE_PROJECT_ID` | yes | Firebase Web SDK — projectId |
+| `VITE_FIREBASE_STORAGE_BUCKET` | yes | Firebase Web SDK — storageBucket |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | yes | Firebase Web SDK — messagingSenderId |
+| `VITE_FIREBASE_APP_ID` | yes | Firebase Web SDK — appId |
+| `VITE_FIREBASE_VAPID_KEY` | no | Generate in Firebase Console → Cloud Messaging → Web Push Certificates. Required only for browser push. |
 
-If you are running a local HyperBabel API server (e.g. via `wrangler dev` from the platform source), point the demo at it:
-```
-VITE_HB_API_URL=http://localhost:8787/api/v1
-```
+There is no API-key env var — the demo only accepts customer JWTs minted
+via Firebase Direct Exchange. Setting `VITE_HB_API_KEY` to an `hb_live_…`
+/ `hb_test_…` value makes the HTTP client throw at startup.
 
-### 🔒 CORS & Allowed Origins Security
+All variables must be prefixed with `VITE_` to be inlined into the Vite
+bundle.
 
-Starting in Production, HyperBabel APIs enforce **Strict Origin Validation (Zero Trust)** for API Keys.
+### 🔒 CORS & Allowed Origins
 
-- **Vite Default Port:** This React demo runs on `http://localhost:5173` by default.
-- If you have configured **Allowed Origins** for your API Key via the HyperBabel Console (Dashboard), the API will strictly block any request that does not originate from the exact specified domains.
-- **Local Testing:** To run this demo locally using a secured API Key, you **MUST** explicitly add your local development domain (e.g., `http://localhost:5173`) to the Allowed Origins list in your Console Dashboard. Otherwise, you will encounter a `403 Forbidden` error.
+HyperBabel APIs enforce **Strict Origin Validation** for org API keys.
+That validation does NOT apply to customer JWTs from Firebase Direct
+Exchange (the bearer is the per-end-user JWT, not your org key), so this
+demo works from any authorized Firebase domain without extra console
+configuration.
+
+---
 
 ## Project Structure
 
 ```
 react/
 ├── src/
-│   ├── services/                # API service modules
-│   │   ├── api.js               # Base HTTP client (fetch wrapper)
-│   │   ├── authService.js       # Auth — Usage & Webhooks
-│   │   ├── unitedChatService.js # United Chat — Rooms, Messages, Video Call, Ban, Mute, Freeze
-│   │   ├── chatService.js       # Chat — Low-level channels, messages, reactions, threads
-│   │   ├── videoService.js      # Video — Standalone session management
-│   │   ├── streamService.js     # Stream — Live broadcast sessions
-│   │   ├── translateService.js  # Translation — Text, Batch, Detect, Languages
-│   │   ├── storageService.js    # Storage — 3-step presigned-URL upload
-│   │   ├── presenceService.js   # Presence — Heartbeat, Status, Bulk query
-│   │   └── pushService.js       # Push — FCM/APNs token management
+│   ├── services/                   # API service modules
+│   │   ├── api.js                  # Customer JWT HTTP client (B1)
+│   │   ├── firebaseAuthService.js  # Firebase → /customer/auth/firebase-exchange
+│   │   ├── firebaseService.js      # FCM web push registration (optional)
+│   │   ├── authService.js          # Auth — Usage & Webhooks
+│   │   ├── unitedChatService.js    # United Chat — Rooms, Messages, Video Call, Ban, Mute, Freeze
+│   │   ├── chatService.js          # Chat — Low-level channels, messages, reactions, threads
+│   │   ├── videoService.js         # Video — Standalone session management
+│   │   ├── streamService.js        # Stream — Live broadcast sessions
+│   │   ├── translateService.js     # Translation — Text, Batch, Detect, Languages
+│   │   ├── storageService.js       # Storage — 3-step presigned-URL upload
+│   │   ├── realtimeService.js      # Real-Time channel subscriptions
+│   │   ├── rtcService.js           # Video / Live Stream engine wrapper
+│   │   ├── presenceService.js      # Presence — Heartbeat, Status, Bulk query
+│   │   └── pushService.js          # Push — FCM token management
 │   │
-│   ├── components/              # Reusable UI components
-│   │   ├── Header.jsx           # Navigation header with presence status toggle
-│   │   ├── ChatMessageList.jsx  # Scrollable message list with translations
-│   │   ├── IncomingCallOverlay.jsx # Incoming call popup (glassmorphism UI)
-│   │   └── ChatInput.jsx        # Message input with file attach & typing
+│   ├── components/                 # Reusable UI components
+│   │   ├── Header.jsx              # Navigation header with presence toggle
+│   │   ├── ChatMessageList.jsx     # Scrollable message list with translations
+│   │   ├── IncomingCallOverlay.jsx # Incoming call popup
+│   │   └── ChatInput.jsx           # Message input with file attach & typing
 │   │
 │   ├── context/
-│   │   └── CallContext.jsx      # Global video call state (isInCall, incomingCall)
+│   │   ├── AuthContext.jsx         # Customer JWT lifecycle (sign-in, refresh, logout)
+│   │   └── CallContext.jsx         # Global video call state
 │   │
-│   ├── pages/                   # Page-level components
-│   │   ├── LoginPage.jsx        # User login
-│   │   ├── SignUpPage.jsx       # User registration
-│   │   ├── DashboardPage.jsx    # Sandbox Hub — entry point to all features
-│   │   ├── ChatHubPage.jsx      # Unified Chat Hub (room list + chat room)
-│   │   ├── VideoCallPage.jsx    # Video call with in-call chat
-│   │   ├── LiveStreamPage.jsx   # Live stream (host/viewer) with chat
-│   │   └── SettingsPage.jsx     # Usage, Webhooks, Push, Language Detection
+│   ├── pages/                      # Page-level components
+│   │   ├── LoginPage.jsx           # Firebase Email/Password sign-in + Anonymous
+│   │   ├── SignUpPage.jsx          # Firebase createUser → exchange
+│   │   ├── DashboardPage.jsx       # Sandbox Hub
+│   │   ├── ChatHubPage.jsx         # Unified Chat Hub
+│   │   ├── VideoCallPage.jsx       # Video call with in-call chat
+│   │   ├── LiveStreamPage.jsx      # Live stream (host/viewer) with chat
+│   │   └── SettingsPage.jsx        # Usage, Webhooks, Push, Language Detection
 │   │
 │   ├── utils/
-│   │   └── ringtone.js          # Incoming call ringtone via Web Audio API
+│   │   └── ringtone.js             # Incoming call ringtone via Web Audio API
 │   │
-│   ├── App.jsx                  # React Router configuration
-│   ├── main.jsx                 # Application entry point
-│   └── index.css                # Global CSS design system (dark theme)
+│   ├── App.jsx                     # React Router + Auth/Call providers
+│   ├── main.jsx                    # Application entry point
+│   └── index.css                   # Global CSS design system (dark theme)
 │
 ├── docs/
-│   └── video_call_flow.png      # Incoming call flow sequence diagram
+│   └── video_call_flow.png         # Incoming call flow sequence diagram
 │
-├── .env.example                 # Environment variables template
-├── index.html                   # HTML entry point
-├── package.json                 # Dependencies
-└── README.md                    # This file
+├── .env.example                    # Environment variables template
+├── index.html                      # HTML entry point
+├── package.json                    # Dependencies (React 19, Vite 5.4)
+└── README.md                       # This file
 ```
+
+---
 
 ## Incoming Video Call Flow
 
@@ -144,10 +205,11 @@ path when the callee is already in another call.
 | **Timeout (30s)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` | Auto-dismiss |
 | **Busy (in another call)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` (with reason) | Silent rejection, no popup |
 
-> The incoming call event arrives via the HyperBabel Real-Time private channel
-> (`hb:{orgId}:private:{userId}`) subscribed by `IncomingCallListener.jsx`.
-> The global `isInCall` flag (managed by `CallContext.jsx`) determines whether
-> the popup is shown or a silent busy-rejection is sent instead.
+> The incoming call event arrives via the HyperBabel Real-Time private
+> channel (`hb:{orgId}:private:{userId}`) subscribed by
+> `IncomingCallListener.jsx`. The global `isInCall` flag (`CallContext.jsx`)
+> determines whether the popup is shown or a silent busy-rejection is
+> sent instead.
 
 ---
 
@@ -155,15 +217,16 @@ path when the callee is already in another call.
 
 ### 1. Base API Client
 
-All API calls go through `src/services/api.js`, which injects the API key:
+All API calls go through `src/services/api.js`, which attaches the
+customer JWT and refreshes it transparently on 401:
 
 ```javascript
 import api from './services/api';
 
-// GET request with query parameters
+// GET with query parameters
 const rooms = await api.get('/unitedchat/rooms', { user_id: 'user-001' });
 
-// POST request with JSON body
+// POST with JSON body
 const room = await api.post('/unitedchat/rooms', {
   room_type: 'group',
   creator_id: 'user-001',
@@ -202,60 +265,42 @@ const open = await unitedChat.createRoom({
 
 ### 3. Auto-Translation
 
-Messages are auto-translated using the batch-translate endpoint:
-
 ```javascript
-// Load messages
 const { messages } = await unitedChat.getMessages(roomId, { limit: 50 });
 
-// Batch-translate messages from other users
 const otherMsgIds = messages
-  .filter(m => m.sender_id !== myUserId)
-  .map(m => m.id);
+  .filter((m) => m.sender_id !== myUserId)
+  .map((m) => m.id);
 
 const translated = await unitedChat.batchTranslateMessages(
-  roomId, otherMsgIds, 'ko' // Translate to Korean
+  roomId, otherMsgIds, 'ko', // → Korean
 );
 ```
 
 ### 4. Video Call from Chat Room
 
 ```javascript
-// Start a video call in the room
 const result = await unitedChat.startVideoCall(roomId, myUserId);
-// → Broadcasts 'video_call.started' to all room members
-
-// Callee accepts
 await unitedChat.acceptVideoCall(roomId, calleeUserId);
-
-// Individual leave (group call)
 await unitedChat.leaveVideoCall(roomId, myUserId);
-
-// End call for all
 await unitedChat.endVideoCall(roomId, myUserId);
 ```
 
-### 5. File Upload (3-Step Presign Flow)
+### 5. File Upload (3-step presign)
 
 ```javascript
 import * as storage from './services/storageService';
 
-// Convenience method that handles all 3 steps
+// Convenience helper that runs all three steps
 const metadata = await storage.uploadFile(fileObject, channelId);
 
-// Or manually:
-// Step 1: Get presigned URL — server wraps the payload in `{ message, data }`,
-// the helper unwraps for you so the destructured fields are flat.
+// Manual:
 const { upload_url, key } = await storage.presign({
   filename: 'photo.jpg',
   mimeType: 'image/jpeg',
   fileSize: 1024000,
 });
-
-// Step 2: Upload directly to storage
 await storage.uploadToPresignedUrl(upload_url, file, 'image/jpeg');
-
-// Step 3: Confirm — also unwrapped; `url` is a 1-hour signed CDN GET.
 const { url } = await storage.confirmUpload({ key, originalName: 'photo.jpg' });
 ```
 
@@ -264,24 +309,32 @@ const { url } = await storage.confirmUpload({ key, originalName: 'photo.jpg' });
 ```javascript
 import * as presence from './services/presenceService';
 
-// Send heartbeat every 30 seconds to stay online
-setInterval(() => {
-  presence.heartbeat(myUserId, 'web');
-}, 30000);
-
-// Check who's online
+setInterval(() => presence.heartbeat(myUserId, 'web'), 30000);
 const { presence: statuses } = await presence.getPresence(['alice', 'bob']);
 ```
 
+---
+
 ## Customization
 
-- **Styling**: Edit `src/index.css` to match your brand. All colors, radii, and shadows are defined as CSS custom properties.
-- **API URL**: Change `VITE_HB_API_URL` in `.env` to point to your environment.
-- **Languages**: Add more languages to the dropdowns in `LoginPage.jsx` and `DashboardPage.jsx`.
-- **Real-time**: New messages, typing indicators, edits, deletes, and call invitations all arrive via the HyperBabel Real-Time channel subscription wired up in `services/realtimeService.js` and `components/IncomingCallListener.jsx` — no polling.
+- **Styling**: edit `src/index.css` — all colors, radii, and shadows are
+  CSS custom properties.
+- **API URL**: change `VITE_HB_API_URL` in `.env.local` to point at a
+  private HyperBabel deployment.
+- **Languages**: extend the `<select>` options in `LoginPage.jsx` /
+  `SignUpPage.jsx`.
+- **Real-time**: new messages, typing indicators, edits, deletes, and
+  call invitations all arrive via the HyperBabel Real-Time channel
+  subscription wired up in `services/realtimeService.js` and
+  `components/IncomingCallListener.jsx` — no polling.
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE)
+file for details.
 
-> **Disclaimer**: This code is provided for demonstration purposes only. It is not intended for production environments without proper security and performance reviews.
+> **Disclaimer.** This code is provided for demonstration purposes only.
+> It is not intended for production environments without proper security
+> and performance reviews.

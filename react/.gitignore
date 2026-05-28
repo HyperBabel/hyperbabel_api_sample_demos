@@ -23,7 +23,21 @@ dist-ssr
 *.sln
 *.sw?
 
+# local env files — keep filled-in values out of git.
+# Commit `.env.example` (template); your own values go in `.env.local`.
 .env
 .env.production
 .env.development
 .env.local
+.env.*.local
+# Override parent sample_demos/.gitignore which excludes all .env.* — the
+# template file MUST stay trackable so members can copy it.
+!.env.example
+
+# Defensive — secrets that should never be committed even if you scaffold
+# a mobile flavour of this demo or wire signing certs into CI.
+google-services.json
+GoogleService-Info.plist
+*.p8
+*.p12
+*.mobileprovision

@@ -1,51 +1,65 @@
 /**
  * HyperBabel React Demo — Sign Up Page
  *
- * Registration page for the demo application. Collects user identity
- * information needed to interact with HyperBabel APIs.
- *
- * In production, developers would register through the HyperBabel Console
- * at console.hyperbabel.com. This page simulates that flow.
+ * Creates a brand-new Firebase user with email + password, then exchanges
+ * the resulting ID token for a HyperBabel customer JWT (pattern B1). The
+ * matching `com_users` row is created server-side during the exchange —
+ * no extra "create user" call is needed.
  */
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import {
+  isFirebaseConfigured,
+  signUpWithEmailAndExchange,
+} from '../services/firebaseAuthService';
+
+const isValidEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 
 export default function SignUpPage() {
   const navigate = useNavigate();
-  const [formData, setFormData] = useState({
-    user_id: '',
-    display_name: '',
-    email: '',
-    preferred_lang_cd: 'en',
-  });
+  const { login } = useAuth();
+  const firebaseReady = useMemo(() => isFirebaseConfigured(), []);
+
+  const [email,    setEmail]    = useState('');
+  const [password, setPassword] = useState('');
+  const [userName, setUserName] = useState('');
+  const [langCode, setLangCode] = useState('en');
+  const [loading,  setLoading]  = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  /**
-   * Handle registration — save user data and navigate to dashboard.
-   */
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    const userId = formData.user_id.trim();
-    if (!userId || !formData.email.trim()) return;
-
-    // Validate USER ID format
-    const userIdRegex = /^[a-zA-Z0-9_-]+$/;
-    if (!userIdRegex.test(userId)) {
-      setErrorMsg('USER ID can only contain letters, numbers, hyphens (-), and underscores (_).');
+    setErrorMsg('');
+    const em = email.trim();
+    if (!em || !isValidEmail(em)) {
+      setErrorMsg('Please enter a valid email address.');
       return;
     }
-    setErrorMsg('');
+    if (password.length < 6) {
+      setErrorMsg('Password must be at least 6 characters (Firebase minimum).');
+      return;
+    }
 
-    // Persist user identity for the demo session
-    localStorage.setItem('hb_user', JSON.stringify({
-      user_id: userId,
-      display_name: formData.display_name.trim() || userId,
-      preferred_lang_cd: formData.preferred_lang_cd,
-      email: formData.email.trim(),
-    }));
-
-    navigate('/dashboard');
+    setLoading(true);
+    try {
+      const result = await signUpWithEmailAndExchange(em, password, langCode);
+      const resolvedName = userName.trim() || result.external_user_id.slice(0, 8);
+      await login({
+        userId:       result.external_user_id,
+        userName:     resolvedName,
+        langCode:     result.preferred_lang_cd || langCode,
+        accessToken:  result.access_token,
+        refreshToken: result.refresh_token,
+        expiresAt:    result.expires_at,
+      });
+      navigate('/dashboard');
+    } catch (err) {
+      setErrorMsg(err?.message || 'Sign-up failed.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -57,91 +71,116 @@ export default function SignUpPage() {
             ⚡
           </div>
         </div>
-        <h1 className="auth-title">Create Account</h1>
+        <h1 className="auth-title">Create your account</h1>
         <p className="auth-subtitle">
-          Start building with HyperBabel API Platform
+          We use Firebase Auth in the browser, then exchange the ID token for
+          a short-lived HyperBabel customer JWT. No HyperBabel API key is
+          stored in this app.
         </p>
 
-        {/* ── Registration Form ── */}
-        <form onSubmit={handleSubmit}>
-          {errorMsg && (
-            <div style={{ color: '#ef4444', fontSize: '0.85rem', marginBottom: '16px', fontWeight: 500, backgroundColor: 'rgba(239,68,68,0.1)', padding: '8px 12px', borderRadius: '6px' }}>
-              ⚠️ {errorMsg}
+        {!firebaseReady ? (
+          <div style={{
+            background: 'rgba(245,158,11,0.10)',
+            border:     '1px solid #f59e0b',
+            borderRadius: '12px',
+            padding:    '16px',
+            marginTop:  '16px',
+            fontSize:   '0.9rem',
+            lineHeight: 1.5,
+          }}>
+            <strong style={{ color: '#fcd34d', display: 'block', marginBottom: 6 }}>
+              Firebase config missing
+            </strong>
+            <div style={{ color: '#fde68a' }}>
+              Populate <code>VITE_FIREBASE_*</code> in your <code>.env.local</code>
+              and allow-list your Firebase project in HyperBabel Console →
+              Customer Auth. See the README for the full Quickstart.
             </div>
-          )}
-
-          <div className="input-group">
-            <label className="input-label">
-              User ID 
-              <span style={{fontSize: '0.8em', color: 'var(--hb-text-muted)', fontWeight: 'normal', marginLeft: '6px'}}>
-                (Letters, numbers, -, _ only)
-              </span>
-            </label>
-            <input
-              type="text"
-              className="input-field"
-              placeholder="e.g., developer-001"
-              value={formData.user_id}
-              onChange={(e) => {
-                setFormData({ ...formData, user_id: e.target.value });
-                setErrorMsg('');
-              }}
-              required
-              autoFocus
-            />
           </div>
+        ) : (
+          <form onSubmit={handleSubmit}>
+            {errorMsg && (
+              <div style={{
+                color: '#fca5a5',
+                fontSize: '0.85rem',
+                marginBottom: '16px',
+                fontWeight: 500,
+                background: 'rgba(239,68,68,0.10)',
+                border: '1px solid #dc2626',
+                padding: '8px 12px',
+                borderRadius: '6px',
+              }}>
+                {errorMsg}
+              </div>
+            )}
 
-          <div className="input-group">
-            <label className="input-label">Display Name</label>
-            <input
-              type="text"
-              className="input-field"
-              placeholder="Your display name"
-              value={formData.display_name}
-              onChange={(e) => setFormData({ ...formData, display_name: e.target.value })}
-            />
-          </div>
+            <div className="input-group">
+              <label className="input-label">Email</label>
+              <input
+                type="email"
+                className="input-field"
+                placeholder="you@example.com"
+                autoComplete="email"
+                value={email}
+                onChange={(e) => { setEmail(e.target.value); setErrorMsg(''); }}
+                required
+                autoFocus
+              />
+            </div>
 
-          <div className="input-group">
-            <label className="input-label">Email</label>
-            <input
-              type="email"
-              className="input-field"
-              placeholder="developer@example.com"
-              value={formData.email}
-              onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-              required
-            />
-          </div>
+            <div className="input-group">
+              <label className="input-label">Password</label>
+              <input
+                type="password"
+                className="input-field"
+                placeholder="At least 6 characters"
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setErrorMsg(''); }}
+                required
+              />
+            </div>
 
-          <div className="input-group">
-            <label className="input-label">Preferred Language</label>
-            <select
-              className="input-field"
-              value={formData.preferred_lang_cd}
-              onChange={(e) => setFormData({ ...formData, preferred_lang_cd: e.target.value })}
+            <div className="input-group">
+              <label className="input-label">Display Name</label>
+              <input
+                type="text"
+                className="input-field"
+                placeholder="Alice (optional)"
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+              />
+            </div>
+
+            <div className="input-group">
+              <label className="input-label">Preferred Language</label>
+              <select
+                className="input-field"
+                value={langCode}
+                onChange={(e) => setLangCode(e.target.value)}
+              >
+                <option value="en">English</option>
+                <option value="ko">한국어 (Korean)</option>
+                <option value="ja">日本語 (Japanese)</option>
+                <option value="zh">中文 (Chinese)</option>
+                <option value="es">Español (Spanish)</option>
+                <option value="fr">Français (French)</option>
+                <option value="de">Deutsch (German)</option>
+                <option value="pt">Português (Portuguese)</option>
+              </select>
+            </div>
+
+            <button
+              type="submit"
+              className="btn btn-primary btn-lg"
+              style={{ width: '100%', marginTop: '8px' }}
+              disabled={loading}
             >
-              <option value="en">English</option>
-              <option value="ko">한국어 (Korean)</option>
-              <option value="ja">日本語 (Japanese)</option>
-              <option value="zh">中文 (Chinese)</option>
-              <option value="es">Español (Spanish)</option>
-              <option value="fr">Français (French)</option>
-              <option value="de">Deutsch (German)</option>
-              <option value="pt">Português (Portuguese)</option>
-              <option value="ar">العربية (Arabic)</option>
-              <option value="hi">हिन्दी (Hindi)</option>
-              <option value="vi">Tiếng Việt (Vietnamese)</option>
-              <option value="th">ไทย (Thai)</option>
-            </select>
-          </div>
+              {loading ? 'Creating account…' : 'Create account'}
+            </button>
+          </form>
+        )}
 
-          <button type="submit" className="btn btn-primary btn-lg" style={{ width: '100%', marginTop: '8px' }}>
-            Create Account →
-          </button>
-        </form>
-
-        {/* ── Login Link ── */}
         <p style={{ textAlign: 'center', marginTop: '24px', fontSize: '0.85rem', color: 'var(--hb-text-muted)' }}>
           Already have an account?{' '}
           <Link to="/login" style={{ fontWeight: 600 }}>Sign in</Link>

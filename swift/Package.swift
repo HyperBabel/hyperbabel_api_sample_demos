@@ -27,6 +27,13 @@ let package = Package(
 
         // Video RTC SDK. Imported by Video/HyperBabelVideo.swift.
         .package(url: "https://github.com/AgoraIO/AgoraRtcEngine_iOS.git", from: "4.4.0"),
+
+        // Firebase iOS SDK. Customer Auth pattern B1 (Firebase Direct
+        // Exchange) — see API/FirebaseAuthService.swift and
+        // https://hyperbabel.com/docs#customer-auth. The demo uses FirebaseAuth on device,
+        // exchanges the ID token at HyperBabel for a short-lived customer
+        // JWT, and uses that JWT for every subsequent API call.
+        .package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "11.4.0"),
     ],
     targets: [
         .target(
@@ -34,6 +41,8 @@ let package = Package(
             dependencies: [
                 .product(name: "Ably", package: "ably-cocoa"),
                 .product(name: "RtcBasic", package: "AgoraRtcEngine_iOS"),
+                .product(name: "FirebaseAuth", package: "firebase-ios-sdk"),
+                .product(name: "FirebaseMessaging", package: "firebase-ios-sdk"),
             ],
             path: "HyperBabelDemo"
         ),

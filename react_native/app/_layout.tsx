@@ -31,7 +31,7 @@ export default function RootLayout() {
         <RealtimeProvider>
           <CallProvider>
             <ToastProvider>
-              <StatusBar style="light" backgroundColor={colors.background} translucent />
+              <StatusBar style="light" />
               {/* Always-active real-time listeners */}
               <IncomingCallListener />
               {/* Global overlays */}

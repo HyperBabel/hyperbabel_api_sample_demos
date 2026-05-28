@@ -60,7 +60,7 @@ object HyperBabelRealtime {
                     )
                 )
                 val payload = initial.tokenRequest
-                    ?: throw IllegalStateException("Server did not return ably_token_request")
+                    ?: throw IllegalStateException("Server did not return a real-time token request payload")
                 val oid = initial.orgId.orEmpty()
                 orgId = oid
 
@@ -74,8 +74,9 @@ object HyperBabelRealtime {
                             payload.toSdkTokenRequest()
                         } else {
                             // Token expired — fetch a fresh signed token request.
-                            // The Ably SDK invokes this on a non-suspending worker
-                            // thread, so blocking here is the canonical pattern.
+                            // The real-time SDK invokes this on a non-suspending
+                            // worker thread, so blocking here is the canonical
+                            // pattern.
                             runBlocking {
                                 val refreshed = ApiClient.rtm.realtimeToken(
                                     RealtimeTokenRequest(

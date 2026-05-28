@@ -24,9 +24,19 @@ import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   TouchableWithoutFeedback, StyleSheet, SafeAreaView,
   KeyboardAvoidingView, Platform, ActivityIndicator, Alert,
-  Modal, ScrollView,
+  Modal, ScrollView, Linking,
 } from 'react-native';
-import * as ImagePicker from 'expo-image-picker';
+import * as ImagePicker    from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import * as Location       from 'expo-location';
+import {
+  AudioModule,
+  useAudioPlayer,
+  useAudioRecorder,
+  RecordingPresets,
+  type AudioRecorder,
+} from 'expo-audio';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { router, useLocalSearchParams } from 'expo-router';
 import dayjs from 'dayjs';
 
@@ -44,6 +54,63 @@ import * as unitedChat   from '@/services/unitedChatService';
 import * as chatService  from '@/services/chatService';
 import { uploadFile }    from '@/services/storageService';
 import type { Message, Room, RoomMember } from '@/services/unitedChatService';
+
+// ── Media bubbles ───────────────────────────────────────────────────────────
+
+/**
+ * Inline video player. expo-video's `useVideoPlayer` keeps a single native
+ * player per component instance; nativeControls handle play/pause UX so we
+ * don''' + "'" + '''t reinvent transport.
+ */
+function VideoBubble({ url }: { url: string }) {
+  const player = useVideoPlayer(url ? { uri: url } : null, (p: any) => {
+    p.muted = true;
+    p.loop  = false;
+  });
+  return (
+    <View style={styles.videoBubble}>
+      <VideoView
+        player={player}
+        style={styles.videoView}
+        contentFit="cover"
+        nativeControls
+      />
+    </View>
+  );
+}
+
+/**
+ * Inline audio player. expo-audio''' + "'" + '''s `useAudioPlayer` exposes `.playing` as
+ * a reactive property — touching it inside render subscribes the component
+ * to playback state changes.
+ */
+function AudioBubble({ url, filename }: { url: string; filename?: string }) {
+  const player = useAudioPlayer(url ? { uri: url } : null);
+  const toggle = () => {
+    if (player.playing) {
+      player.pause();
+    } else {
+      // Always seek to 0 in case playback already ended.
+      try { player.seekTo(0); } catch { /* no-op */ }
+      player.play();
+    }
+  };
+  return (
+    <View style={styles.audioBubble}>
+      <TouchableOpacity onPress={toggle} style={styles.audioPlayBtn}>
+        <Text style={styles.audioPlayIcon}>{player.playing ? '⏸' : '▶'}</Text>
+      </TouchableOpacity>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.audioFilename} numberOfLines={1}>
+          {filename ?? 'Voice message'}
+        </Text>
+        <Text style={styles.audioStatus}>
+          {player.playing ? 'Playing…' : 'Tap to play'}
+        </Text>
+      </View>
+    </View>
+  );
+}
 
 // ── Message bubble ──────────────────────────────────────────────────────────
 
@@ -84,9 +151,30 @@ function MessageBubble({ msg, isSelf, translated, onDelete, onReply, onOpenThrea
           {isDeleted ? (
             <Text style={styles.deletedText}>This message was deleted.</Text>
           ) : msg.message_type === 'image' ? (
-            <Text style={styles.fileMsg}>🖼 Image</Text>
+            <Text style={styles.fileMsg}>
+              🖼 {(msg.metadata as any)?.filename ?? 'Image'}
+            </Text>
+          ) : msg.message_type === 'video' ? (
+            <VideoBubble url={(msg.metadata as any)?.url ?? ''} />
+          ) : msg.message_type === 'audio' ? (
+            <AudioBubble
+              url={(msg.metadata as any)?.url ?? ''}
+              filename={(msg.metadata as any)?.filename}
+            />
           ) : msg.message_type === 'file' ? (
-            <Text style={styles.fileMsg}>📎 File</Text>
+            <View style={styles.fileCard}>
+              <Text style={styles.fileCardIcon}>📎</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fileCardName} numberOfLines={2}>
+                  {(msg.metadata as any)?.filename ?? 'File'}
+                </Text>
+                {!!(msg.metadata as any)?.size_bytes && (
+                  <Text style={styles.fileCardMeta}>
+                    {Math.max(1, Math.round((msg.metadata as any).size_bytes / 1024))} KB
+                  </Text>
+                )}
+              </View>
+            </View>
           ) : msg.message_type === 'location' ? (
             <View style={styles.metaCard}>
               <Text style={styles.metaCardIcon}>📍</Text>
@@ -215,6 +303,16 @@ export default function ChatRoomScreen() {
   const [contactForm,     setContactForm]    = useState({ name: '', phone: '', email: '' });
   const [sendingMeta,     setSendingMeta]    = useState(false);
 
+  // Audio recording (expo-audio). The hook returns a stable recorder instance
+  // for the lifetime of the screen; we drive a manual interval to refresh the
+  // visible duration while recording.
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [showAudioModal,  setShowAudioModal]  = useState(false);
+  const [audioPhase,      setAudioPhase]      = useState<'idle' | 'recording' | 'recorded'>('idle');
+  const [audioDurationMs, setAudioDurationMs] = useState(0);
+  const audioStartedAtRef = useRef<number | null>(null);
+  const audioTimerRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const flatRef        = useRef<FlatList>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastTypingAt   = useRef(0);
@@ -312,6 +410,15 @@ export default function ChatRoomScreen() {
 
     return () => { unsubRoom(); if (typingTimerRef.current) clearTimeout(typingTimerRef.current); };
   }, [channelService, roomId, user]);
+
+  // Audio recorder timer cleanup on screen unmount — guards against the
+  // unlikely case the screen is torn down mid-recording (e.g. logout).
+  useEffect(() => () => {
+    if (audioTimerRef.current) {
+      clearInterval(audioTimerRef.current);
+      audioTimerRef.current = null;
+    }
+  }, []);
 
   // ── Pagination ────────────────────────────────────────────────────────────
 
@@ -463,6 +570,23 @@ export default function ChatRoomScreen() {
   };
 
   const handleAttach = async () => {
+    // Proactively ask for photo-library access so the user sees a rationale
+    // before the OS prompt — mirrors the usePermissions pattern used for
+    // camera/mic. On Android 13+ this maps to READ_MEDIA_IMAGES; on older
+    // builds it falls back to READ_EXTERNAL_STORAGE.
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        'Permission Required',
+        'Photo library access is needed to attach images. Please enable it in your device Settings.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality:    0.8,
@@ -490,6 +614,201 @@ export default function ChatRoomScreen() {
       Alert.alert('Upload Failed', err.message ?? 'Could not upload file.');
     } finally {
       setUploading(false);
+    }
+  };
+
+  // ── Video / File / Audio attachments ──────────────────────────────────────
+
+  const handleAttachVideo = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        'Permission Required',
+        'Photo library access is needed to attach videos. Please enable it in your device Settings.',
+        [
+          { text: 'Cancel',        style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      quality:    0.8,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    if (!user || !roomId) return;
+
+    setUploading(true);
+    try {
+      const filename = asset.fileName ?? `video_${Date.now()}.mp4`;
+      const mimeType = asset.mimeType ?? 'video/mp4';
+      const fileSize = asset.fileSize ?? 0;
+      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize });
+      await unitedChat.sendMessage(roomId, {
+        sender_id:    user.userId,
+        content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
+        message_type: 'video',
+        metadata:     { url: confirmed.url, filename, size_bytes: fileSize },
+      });
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err.message ?? 'Could not upload video.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleAttachFile = async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: '*/*',
+      copyToCacheDirectory: true,
+      multiple: false,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    if (!user || !roomId) return;
+
+    setUploading(true);
+    try {
+      const filename = asset.name;
+      const mimeType = asset.mimeType ?? 'application/octet-stream';
+      const fileSize = asset.size ?? 0;
+      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize });
+      await unitedChat.sendMessage(roomId, {
+        sender_id:    user.userId,
+        content:      filename,
+        message_type: 'file',
+        metadata:     {
+          url:        confirmed.url,
+          filename,
+          size_bytes: fileSize,
+          mime_type:  mimeType,
+        },
+      });
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err.message ?? 'Could not upload file.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const startAudioRecording = async () => {
+    const perm = await AudioModule.requestRecordingPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        'Permission Required',
+        'Microphone access is needed to record voice messages. Please enable it in your device Settings.',
+        [
+          { text: 'Cancel',        style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+    try {
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      audioStartedAtRef.current = Date.now();
+      setAudioDurationMs(0);
+      setAudioPhase('recording');
+      audioTimerRef.current = setInterval(() => {
+        const startedAt = audioStartedAtRef.current ?? Date.now();
+        setAudioDurationMs(Date.now() - startedAt);
+      }, 250);
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Failed to start recording.');
+    }
+  };
+
+  const stopAudioRecording = async () => {
+    if (audioTimerRef.current) {
+      clearInterval(audioTimerRef.current);
+      audioTimerRef.current = null;
+    }
+    try {
+      await audioRecorder.stop();
+      setAudioPhase('recorded');
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Failed to stop recording.');
+      setAudioPhase('idle');
+    }
+  };
+
+  const discardAudio = () => {
+    if (audioTimerRef.current) {
+      clearInterval(audioTimerRef.current);
+      audioTimerRef.current = null;
+    }
+    setAudioPhase('idle');
+    setAudioDurationMs(0);
+    audioStartedAtRef.current = null;
+  };
+
+  // Unified modal-close handler. Cleanly stops an in-flight recording so the
+  // recorder + interval don''' + "'" + '''t leak when the user dismisses by swipe / tap-X /
+  // back button.
+  const closeAudioModal = async () => {
+    if (audioPhase === 'recording') {
+      if (audioTimerRef.current) {
+        clearInterval(audioTimerRef.current);
+        audioTimerRef.current = null;
+      }
+      try { await audioRecorder.stop(); } catch { /* no-op */ }
+    }
+    discardAudio();
+    setShowAudioModal(false);
+  };
+
+  const sendAudio = async () => {
+    if (!user || !roomId) return;
+    const uri = audioRecorder.uri;
+    if (!uri) { Alert.alert('Error', 'No audio recorded.'); return; }
+    setUploading(true);
+    try {
+      const filename = `voice_${Date.now()}.m4a`;
+      const confirmed = await uploadFile({ uri, filename, mimeType: 'audio/m4a', fileSize: 0 });
+      await unitedChat.sendMessage(roomId, {
+        sender_id:    user.userId,
+        content:      filename,
+        message_type: 'audio',
+        metadata: {
+          url:         confirmed.url,
+          filename,
+          duration_ms: audioDurationMs,
+        },
+      });
+      setShowAudioModal(false);
+      discardAudio();
+    } catch (err: any) {
+      Alert.alert('Upload Failed', err.message ?? 'Could not upload audio.');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleUseMyLocation = async () => {
+    const perm = await Location.requestForegroundPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert(
+        'Permission Required',
+        'Location access is needed to attach your current location. Please enable it in your device Settings.',
+        [
+          { text: 'Cancel',        style: 'cancel' },
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+        ],
+      );
+      return;
+    }
+    try {
+      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      setLocationForm((prev) => ({
+        ...prev,
+        latitude:  loc.coords.latitude.toFixed(6),
+        longitude: loc.coords.longitude.toFixed(6),
+      }));
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Could not fetch location.');
     }
   };
 
@@ -663,6 +982,34 @@ export default function ChatRoomScreen() {
           <View style={styles.plusMenu}>
             <TouchableOpacity
               style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); handleAttach(); }}
+            >
+              <Text style={styles.plusIcon}>🖼</Text>
+              <Text style={styles.plusLabel}>Image</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); handleAttachVideo(); }}
+            >
+              <Text style={styles.plusIcon}>🎥</Text>
+              <Text style={styles.plusLabel}>Video</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); handleAttachFile(); }}
+            >
+              <Text style={styles.plusIcon}>📎</Text>
+              <Text style={styles.plusLabel}>File</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
+              onPress={() => { setShowPlusMenu(false); setShowAudioModal(true); }}
+            >
+              <Text style={styles.plusIcon}>🎙</Text>
+              <Text style={styles.plusLabel}>Audio</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.plusItem}
               onPress={() => { setShowPlusMenu(false); setShowLocationModal(true); }}
             >
               <Text style={styles.plusIcon}>📍</Text>
@@ -674,13 +1021,6 @@ export default function ChatRoomScreen() {
             >
               <Text style={styles.plusIcon}>👤</Text>
               <Text style={styles.plusLabel}>Contact</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.plusItem}
-              onPress={() => { setShowPlusMenu(false); handleAttach(); }}
-            >
-              <Text style={styles.plusIcon}>📎</Text>
-              <Text style={styles.plusLabel}>File</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -860,6 +1200,12 @@ export default function ChatRoomScreen() {
               value={locationForm.address}
               onChangeText={(t) => setLocationForm((p) => ({ ...p, address: t }))}
             />
+            <TouchableOpacity
+              style={metaModalStyles.gpsBtn}
+              onPress={handleUseMyLocation}
+            >
+              <Text style={metaModalStyles.gpsBtnText}>📡 Use my location</Text>
+            </TouchableOpacity>
             <View style={{ flexDirection: 'row', gap: spacing[3] }}>
               <View style={{ flex: 1 }}>
                 <Text style={metaModalStyles.fieldLabel}>Latitude</Text>
@@ -947,6 +1293,72 @@ export default function ChatRoomScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      {/* Voice-message recording modal (expo-audio) */}
+      <Modal
+        visible={showAudioModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeAudioModal}
+      >
+        <SafeAreaView style={metaModalStyles.modal}>
+          <View style={metaModalStyles.header}>
+            <Text style={metaModalStyles.title}>🎙 Voice Message</Text>
+            <TouchableOpacity onPress={closeAudioModal}>
+              <Text style={metaModalStyles.close}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={audioModalStyles.body}>
+            <Text style={audioModalStyles.duration}>
+              {Math.floor(audioDurationMs / 1000)
+                .toString()
+                .padStart(2, '0')}:
+              {Math.floor((audioDurationMs % 1000) / 10)
+                .toString()
+                .padStart(2, '0')}
+            </Text>
+            <Text style={audioModalStyles.hint}>
+              {audioPhase === 'idle'      && 'Tap the microphone to start recording.'}
+              {audioPhase === 'recording' && 'Recording… tap stop when done.'}
+              {audioPhase === 'recorded'  && 'Recording captured — send or discard.'}
+            </Text>
+
+            {audioPhase === 'idle' && (
+              <TouchableOpacity style={audioModalStyles.recordBtn} onPress={startAudioRecording}>
+                <Text style={audioModalStyles.recordIcon}>🎙</Text>
+              </TouchableOpacity>
+            )}
+            {audioPhase === 'recording' && (
+              <TouchableOpacity
+                style={[audioModalStyles.recordBtn, audioModalStyles.recordBtnActive]}
+                onPress={stopAudioRecording}
+              >
+                <Text style={audioModalStyles.recordIcon}>⏹</Text>
+              </TouchableOpacity>
+            )}
+            {audioPhase === 'recorded' && (
+              <View style={audioModalStyles.actions}>
+                <TouchableOpacity
+                  style={audioModalStyles.discardBtn}
+                  onPress={discardAudio}
+                  disabled={uploading}
+                >
+                  <Text style={audioModalStyles.discardText}>Discard</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[audioModalStyles.sendBtn, uploading && { opacity: 0.5 }]}
+                  onPress={sendAudio}
+                  disabled={uploading}
+                >
+                  <Text style={audioModalStyles.sendBtnText}>
+                    {uploading ? 'Sending…' : 'Send'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -986,6 +1398,26 @@ const metaModalStyles = StyleSheet.create({
   input:      { ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[3] },
   sendBtn:    { marginTop: spacing[6], alignItems: 'center', paddingVertical: spacing[3], borderRadius: borderRadius.lg, backgroundColor: colors.primary },
   sendText:   { ...textPresets.label, color: colors.white, fontWeight: '700' },
+
+  // GPS autofill button inside the Send Location modal
+  gpsBtn:     { marginTop: spacing[3], alignItems: 'center', paddingVertical: spacing[2], borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.primary, backgroundColor: 'rgba(59, 130, 246, 0.08)' },
+  gpsBtnText: { ...textPresets.label, color: colors.primary, fontWeight: '600' },
+});
+
+// ── Audio recording modal styles ──────────────────────────────────────────────
+
+const audioModalStyles = StyleSheet.create({
+  body:           { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing[6] },
+  duration:       { ...textPresets.h2, color: colors.text, fontVariant: ['tabular-nums'], marginBottom: spacing[3] },
+  hint:           { ...textPresets.label, color: colors.textSecondary, marginBottom: spacing[8], textAlign: 'center' },
+  recordBtn:      { width: 96, height: 96, borderRadius: 48, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primary },
+  recordBtnActive:{ backgroundColor: '#dc2626' },
+  recordIcon:     { fontSize: 40, color: colors.white },
+  actions:        { flexDirection: 'row', gap: spacing[4], marginTop: spacing[6] },
+  discardBtn:     { paddingVertical: spacing[3], paddingHorizontal: spacing[6], borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border },
+  discardText:    { ...textPresets.label, color: colors.textSecondary, fontWeight: '600' },
+  sendBtn:        { paddingVertical: spacing[3], paddingHorizontal: spacing[6], borderRadius: borderRadius.lg, backgroundColor: colors.primary },
+  sendBtnText:    { ...textPresets.label, color: colors.white, fontWeight: '700' },
 });
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -1048,9 +1480,9 @@ const styles = StyleSheet.create({
   sendBtnDisabled:{ opacity: 0.4 },
   sendIcon:      { color: colors.white, fontSize: 20, fontWeight: '700' },
 
-  // Plus popover (location / contact / file)
-  plusMenu:      { flexDirection: 'row', justifyContent: 'space-around', paddingVertical: spacing[3], paddingHorizontal: spacing[5], borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
-  plusItem:      { alignItems: 'center', gap: spacing[1] },
+  // Plus popover (image / video / file / audio / location / contact)
+  plusMenu:      { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', rowGap: spacing[3], paddingVertical: spacing[3], paddingHorizontal: spacing[3], borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.surface },
+  plusItem:      { alignItems: 'center', gap: spacing[1], minWidth: 64, paddingVertical: spacing[1] },
   plusIcon:      { fontSize: 26 },
   plusLabel:     { ...textPresets.caption, color: colors.textSecondary, fontWeight: '600' },
 
@@ -1060,4 +1492,21 @@ const styles = StyleSheet.create({
   metaCardTitle: { ...textPresets.label, color: colors.text, fontWeight: '700' },
   metaCardSub:   { ...textPresets.caption, color: colors.textSecondary, marginTop: 2 },
   metaCardCoord: { ...textPresets.caption, color: colors.textMuted, marginTop: 2, fontFamily: 'Courier' },
+
+  // File message card
+  fileCard:      { flexDirection: 'row', alignItems: 'center', gap: spacing[3], paddingVertical: spacing[2], paddingHorizontal: spacing[2], minWidth: 200 },
+  fileCardIcon:  { fontSize: 22 },
+  fileCardName:  { ...textPresets.label, color: colors.text, fontWeight: '600' },
+  fileCardMeta:  { ...textPresets.caption, color: colors.textMuted, marginTop: 2 },
+
+  // Video message bubble (inline VideoView)
+  videoBubble:   { width: 220, borderRadius: borderRadius.lg, overflow: 'hidden', backgroundColor: '#000' },
+  videoView:     { width: 220, height: 140 },
+
+  // Audio message bubble (play button + filename)
+  audioBubble:   { flexDirection: 'row', alignItems: 'center', gap: spacing[3], paddingVertical: spacing[2], paddingHorizontal: spacing[1], minWidth: 220 },
+  audioPlayBtn:  { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.primary },
+  audioPlayIcon: { fontSize: 18, color: colors.white, fontWeight: '700' },
+  audioFilename: { ...textPresets.label, color: colors.text, fontWeight: '600' },
+  audioStatus:   { ...textPresets.caption, color: colors.textMuted, marginTop: 2 },
 });

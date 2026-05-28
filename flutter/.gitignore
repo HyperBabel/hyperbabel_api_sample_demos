@@ -59,3 +59,19 @@ android/key.properties
 *.pem
 *.keystore
 *.jks
+# Override broader .env.* exclusion — the template MUST stay trackable so
+# members can copy it to .env.
+!.env.example
+
+# Firebase native config — developer-supplied secrets, never commit.
+# The build-step copies into android/app/ and ios/Runner/ are also
+# gitignored implicitly via /build/, /android/build/, /ios/Pods/ etc.
+firebase/google-services.json
+firebase/GoogleService-Info.plist
+android/app/google-services.json
+ios/Runner/GoogleService-Info.plist
+
+# Apple signing certs (defensive — applies if you add iOS distribution).
+*.p8
+*.p12
+*.mobileprovision

@@ -1,7 +1,7 @@
 /**
  * HyperBabel Demo — Video Call Screen
  *
- * Full video call lifecycle using react-native-agora (HyperBabel Video RTC):
+ * Full video call lifecycle using HyperBabel Video RTC:
  *  - usePermissions: request camera + mic before joining
  *  - Join active call session (accept flow or direct start)
  *  - Rejoin: detects existing active call and shows rejoin banner
@@ -24,13 +24,15 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import {
-  // The vendor SDK is imported by package name; specific symbols are renamed
-  // via `import as` so the screen body talks about HyperBabel concepts only.
-  createAgoraRtcEngine as createVideoEngine,
-  IRtcEngine, RtcConnection,
+  // All video-RTC symbols flow through rtcService so the screen body talks
+  // about HyperBabel concepts only — the vendor SDK is hidden one layer in.
+  createVideoEngine,
   RtcSurfaceView, VideoSourceType,
-  ClientRoleType, ChannelProfileType, IRtcEngineEventHandler,
-} from 'react-native-agora';
+  ClientRoleType, ChannelProfileType,
+} from '@/services/rtcService';
+import type {
+  IRtcEngine, RtcConnection, IRtcEngineEventHandler,
+} from '@/services/rtcService';
 
 import { useAuth }                from '@/context/AuthContext';
 import { useCall }                from '@/context/CallContext';

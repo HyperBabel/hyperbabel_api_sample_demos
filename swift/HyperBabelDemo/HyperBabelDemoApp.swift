@@ -16,12 +16,23 @@
  * a shared NavStore that both the overlay and the stack observe.
  */
 import SwiftUI
+import FirebaseCore
 
 @main
 struct HyperBabelDemoApp: App {
     @StateObject private var session = Session.shared
     @StateObject private var callStore = IncomingCallStore.shared
     @StateObject private var nav = NavStore.shared
+
+    init() {
+        // Customer Auth pattern B1 — initialise Firebase from the bundled
+        // GoogleService-Info.plist. If the plist is missing the call no-ops
+        // gracefully (FirebaseApp.app() returns nil and the sign-in screen
+        // renders a setup banner instead of crashing).
+        if FirebaseApp.app() == nil, Bundle.main.path(forResource: "GoogleService-Info", ofType: "plist") != nil {
+            FirebaseApp.configure()
+        }
+    }
 
     var body: some Scene {
         WindowGroup {

@@ -8,4 +8,30 @@ DerivedData/
 ## SPM
 .build/
 .swiftpm/
-Package.resolved
+
+## Firebase native config — developer-supplied secret, never commit.
+## The plist is dragged into the Xcode target with "Copy items if needed"
+## UNCHECKED so the file lives only in firebase/ and stays gitignored.
+firebase/GoogleService-Info.plist
+## Defensive — also covers an Android scaffold if you ever add one.
+firebase/google-services.json
+google-services.json
+
+## Apple signing certs — critical for iOS distribution. Never commit.
+*.p8
+*.p12
+*.mobileprovision
+*.cer
+
+## Secrets — defensive (the demo never reads any of these, but parents
+## of this repo may scaffold env files that end up here).
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+*secret*
+*credential*
+*.pem
+*.keystore
+*.jks

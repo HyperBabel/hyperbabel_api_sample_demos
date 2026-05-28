@@ -6,6 +6,7 @@
 import * as auth from '../api/auth.js';
 import * as push from '../api/push.js';
 import * as translate from '../api/translate.js';
+import { logoutAndClear } from '../api/firebaseAuth.js';
 
 export async function renderSettings(navigate) {
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
@@ -57,9 +58,8 @@ export async function renderSettings(navigate) {
 
   document.getElementById('back').onclick = () => navigate('#/home');
   document.getElementById('open-blocks').onclick = () => navigate('#/blocks');
-  document.getElementById('logout').onclick = () => {
-    localStorage.removeItem('hb_user');
-    localStorage.removeItem('hb_api_key');
+  document.getElementById('logout').onclick = async () => {
+    await logoutAndClear();
     navigate('#/login');
   };
 

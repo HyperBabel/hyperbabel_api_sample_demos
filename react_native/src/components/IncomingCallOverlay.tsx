@@ -2,7 +2,7 @@
  * HyperBabel Demo — Incoming Call Overlay
  *
  * Full-screen modal overlay shown when a call invite arrives.
- * Plays the ringtone (expo-av + device vibration) and displays
+ * Plays the ringtone (expo-audio + device vibration) and displays
  * caller info and Accept / Decline buttons.
  *
  * Architecture:
@@ -77,9 +77,9 @@ export function IncomingCallOverlay() {
   };
 
   return (
-    <View style={[StyleSheet.absoluteFillObject, styles.overlay]}>
+    <View style={[StyleSheet.absoluteFill, styles.overlay]}>
       {/* Glassmorphism blur background */}
-      <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFillObject} />
+      <BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
 
       <View style={styles.card}>
         {/* Caller avatar */}

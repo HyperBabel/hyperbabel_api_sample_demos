@@ -2,7 +2,8 @@
  * HyperBabel JavaScript Demo — app shell + hash router.
  *
  * Routes:
- *   #/login                    — sign in
+ *   #/login                    — sign in (Firebase Email/Password + Anonymous)
+ *   #/signup                   — sign up (Firebase createUserWithEmailAndPassword)
  *   #/home                     — room list
  *   #/chat/:roomId             — chat in a room (text + real-time push)
  *   #/video/:roomId            — 1:1 video call
@@ -17,6 +18,7 @@
  */
 
 import { renderLogin       } from './pages/login.js';
+import { renderSignup      } from './pages/signup.js';
 import { renderHome        } from './pages/home.js';
 import { renderChat        } from './pages/chat.js';
 import { renderVideoCall   } from './pages/videoCall.js';
@@ -53,6 +55,7 @@ function handleRoute() {
   if (user.user_id) ensureIncomingCallListener(navigate);
 
   if (hash.startsWith('#/login'))                    return renderLogin(navigate);
+  if (hash.startsWith('#/signup'))                   return renderSignup(navigate);
   if (hash.startsWith('#/home'))                     return renderHome(navigate);
   if (hash.startsWith('#/chat/'))                    return renderChat(decodeURIComponent(hash.slice('#/chat/'.length)), navigate);
   if (hash.startsWith('#/video/'))                   return renderVideoCall(decodeURIComponent(hash.slice('#/video/'.length)), navigate);
