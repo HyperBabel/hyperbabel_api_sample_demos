@@ -28,6 +28,7 @@ export async function renderStreamHost(navigate) {
 
   let session = null;
   let localTracks = null;
+  let heartbeatId = null;
 
   try {
     session = await stream.createSession({
@@ -44,6 +45,13 @@ export async function renderStreamHost(navigate) {
     localTracks = await videoEngine.publishLocalTracks();
     localTracks.video.play('local-tile');
     await stream.startSession(session.session_id, user.user_id).catch(() => {});
+
+    // Heartbeat — POST every 30s while live so the server can detect a
+    // tab crash within minutes and bill only the actual stream time.
+    const beat = () => stream.heartbeat(session.session_id).catch(() => {});
+    beat();
+    heartbeatId = setInterval(beat, 30000);
+
     document.getElementById('status').textContent = '🔴 You are live.';
   } catch (err) {
     document.getElementById('status').textContent = `Failed to go live: ${err.message}`;
@@ -52,6 +60,7 @@ export async function renderStreamHost(navigate) {
   document.getElementById('end').onclick = endAndGoBack;
 
   async function endAndGoBack() {
+    if (heartbeatId) { clearInterval(heartbeatId); heartbeatId = null; }
     try { await videoEngine.leaveCall(localTracks); } catch {}
     try {
       if (session?.session_id) await stream.endSession(session.session_id, user.user_id);
@@ -60,6 +69,7 @@ export async function renderStreamHost(navigate) {
   }
 
   window.addEventListener('hashchange', () => {
+    if (heartbeatId) { clearInterval(heartbeatId); heartbeatId = null; }
     videoEngine.leaveCall(localTracks).catch(() => {});
   }, { once: true });
 }

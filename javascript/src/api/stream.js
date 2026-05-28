@@ -22,6 +22,12 @@ export const createSession = ({ hostUserId, hostName, title }) =>
 export const startSession = (sessionId, hostUserId) =>
   api.post(`/stream/sessions/${sessionId}/start`, { user_id: hostUserId });
 
+// Heartbeat — POST every ~30s while broadcasting so the server can detect
+// a host crash within minutes (rather than 8h wall-clock) and bill only
+// the actual stream time.
+export const heartbeat = (sessionId) =>
+  api.post(`/stream/sessions/${sessionId}/heartbeat`);
+
 export const endSession = (sessionId, hostUserId) =>
   api.post(`/stream/sessions/${sessionId}/end`, { user_id: hostUserId });
 

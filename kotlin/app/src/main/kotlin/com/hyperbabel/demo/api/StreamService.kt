@@ -22,6 +22,15 @@ interface StreamService {
         @Body body: Map<String, String>,
     )
 
+    // Heartbeat — POST every ~30s while broadcasting so the server can
+    // detect a host crash within minutes (rather than the 8h wall-clock
+    // fallback) and bill only actual stream time.
+    @POST("api/v1/stream/sessions/{sessionId}/heartbeat")
+    suspend fun heartbeat(
+        @Path("sessionId") sessionId: String,
+        @Body body: Map<String, String> = emptyMap(),
+    )
+
     @POST("api/v1/stream/sessions/{sessionId}/end")
     suspend fun endSession(
         @Path("sessionId") sessionId: String,

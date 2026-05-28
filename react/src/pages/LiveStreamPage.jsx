@@ -60,6 +60,7 @@ export default function LiveStreamPage() {
   const hostSessionRef = useRef(null);  // RTC host session
   const viewerSessionRef = useRef(null); // RTC viewer session
   const chatPollRef = useRef(null);
+  const heartbeatRef = useRef(null);
 
   useEffect(() => {
     if (!user.user_id) { navigate('/login'); return; }
@@ -73,10 +74,23 @@ export default function LiveStreamPage() {
 
     return () => {
       clearInterval(chatPollRef.current);
+      clearInterval(heartbeatRef.current);
       hostSessionRef.current?.leave().catch(() => {});
       viewerSessionRef.current?.leave().catch(() => {});
     };
   }, [sessionId]);
+
+  // Host heartbeat — POST every 30s while live so the server can detect a
+  // crash within minutes and bill only the actual stream time. Without this,
+  // a host that closes the tab without calling endSession leaves the session
+  // marked `live` and the wall-clock fallback bills up to 8h of phantom time.
+  useEffect(() => {
+    if (!isHost || !isLive || !session?.id) return;
+    const fire = () => streamService.heartbeat(session.id).catch(() => {});
+    fire();
+    heartbeatRef.current = setInterval(fire, 30000);
+    return () => clearInterval(heartbeatRef.current);
+  }, [isHost, isLive, session?.id]);
 
   /**
    * Check camera and microphone access for the host.

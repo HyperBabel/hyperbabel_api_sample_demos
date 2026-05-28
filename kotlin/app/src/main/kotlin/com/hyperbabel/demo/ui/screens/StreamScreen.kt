@@ -45,6 +45,7 @@ import com.hyperbabel.demo.api.ApiClient
 import com.hyperbabel.demo.data.Session
 import com.hyperbabel.demo.video.HyperBabelVideo
 import io.agora.rtc2.IRtcEngineEventHandler as VideoEventHandler
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -88,6 +89,20 @@ fun StreamScreen(onBack: () -> Unit) {
             // Engine is process-wide, so make sure we release on screen exit.
             runCatching { video.leaveCall() }
             runCatching { video.release() }
+        }
+    }
+
+    // Host heartbeat — fire every 30s while in HOSTING mode. The server
+    // uses this to detect a host crash within minutes and bill only actual
+    // stream time. LaunchedEffect cancels the loop automatically when the
+    // user leaves HOSTING mode (e.g. End Stream pressed or screen exits).
+    val hostingSessionId = if (mode == Mode.HOSTING) activeSessionId else null
+    LaunchedEffect(hostingSessionId) {
+        val sid = hostingSessionId ?: return@LaunchedEffect
+        runCatching { ApiClient.stream.heartbeat(sid) }
+        while (true) {
+            delay(30_000)
+            runCatching { ApiClient.stream.heartbeat(sid) }
         }
     }
 

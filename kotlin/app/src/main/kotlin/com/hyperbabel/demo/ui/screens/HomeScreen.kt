@@ -35,6 +35,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.hyperbabel.demo.api.ApiClient
 import com.hyperbabel.demo.data.CreateRoomRequest
 import com.hyperbabel.demo.data.PresenceHeartbeat
@@ -74,12 +77,22 @@ fun HomeScreen(
         }
     }
 
-    LaunchedEffect(Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
         loadRooms()
-        // Background presence heartbeat — fire-and-forget every 30s.
-        while (true) {
-            try { ApiClient.presence.heartbeat(PresenceHeartbeat(Session.userId)) } catch (_: Throwable) {}
-            delay(30_000)
+        // Presence heartbeat — fires every 30s while the activity is at
+        // least STARTED (= visible foreground). repeatOnLifecycle suspends
+        // the inner block whenever the lifecycle drops below STARTED
+        // (Activity onStop / app backgrounded) and resumes it on the next
+        // STARTED transition. Stops billable connection_mins from accruing
+        // while the user isn't actively using the app.
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                try {
+                    ApiClient.presence.heartbeat(PresenceHeartbeat(Session.userId))
+                } catch (_: Throwable) { /* fire-and-forget */ }
+                delay(30_000)
+            }
         }
     }
 

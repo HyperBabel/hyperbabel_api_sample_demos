@@ -88,6 +88,19 @@ export default function LiveStreamHostScreen() {
     setIsLive(true);
   };
 
+  // Heartbeat — POST every 30s while live so the server can detect a crash
+  // within minutes and bill only actual stream time. iOS/Android suspend
+  // JS timers when the app backgrounds, which naturally lets the server's
+  // 5-minute orphan sweep close abandoned sessions on its own.
+  useEffect(() => {
+    if (!isLive || !sessionId) return;
+    streamService.heartbeat(sessionId).catch(() => {});
+    const id = setInterval(() => {
+      streamService.heartbeat(sessionId).catch(() => {});
+    }, 30000);
+    return () => clearInterval(id);
+  }, [isLive, sessionId]);
+
   const handleEnd = async () => {
     if (sessionId) await streamService.endSession(sessionId).catch(() => {});
     rtcRef.current?.leave();

@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../core/network/presence_repository.dart';
 import '../../../core/network/united_chat_repository.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/glass_container.dart';
@@ -14,17 +16,63 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final UnitedChatRepository _repo = UnitedChatRepository();
+  final PresenceRepository _presence = PresenceRepository();
   String? _userId;
   List<Map<String, dynamic>> _rooms = [];
   bool _loading = true;
   String? _error;
 
+  // ── Presence heartbeat — lifecycle-aware ────────────────────────────────
+  // Timer runs every 30s while the app is in the foreground. Paused on
+  // AppLifecycleState.paused / inactive / hidden, resumed (with an immediate
+  // beat) on AppLifecycleState.resumed. Stops billable connection_mins from
+  // accruing while the user isn't actively using the app — matches the
+  // Kotlin + iOS + React Native demos' behavior.
+  static const Duration _heartbeatInterval = Duration(seconds: 30);
+  Timer? _heartbeatTimer;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _stopHeartbeat();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      _startHeartbeat();
+    } else {
+      // paused / inactive / hidden / detached — stop the loop.
+      _stopHeartbeat();
+    }
+  }
+
+  void _startHeartbeat() {
+    final uid = _userId;
+    if (uid == null) return;
+    _heartbeatTimer?.cancel();
+    // Immediate beat on resume so the user appears online without a 30s
+    // delay after returning to the app.
+    _presence.heartbeat(uid, 'mobile').catchError((_) {});
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) {
+      _presence.heartbeat(uid, 'mobile').catchError((_) {});
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
   }
 
   Future<void> _bootstrap() async {
@@ -35,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     _userId = userId;
+    _startHeartbeat();
     await _loadRooms();
   }
 

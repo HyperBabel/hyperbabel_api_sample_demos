@@ -26,6 +26,7 @@ struct StreamScreen: View {
     @State private var activeTitle: String = ""
     @State private var hostUid: UInt = 0
     @State private var status: String = ""
+    @State private var heartbeatTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -155,8 +156,24 @@ struct StreamScreen: View {
             )
             status = "Joined channel \(channelName) as host."
             mode = .hosting
+            startHeartbeat(sessionId: sid)
         } catch {
             self.error = (error as? ApiError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Fires a heartbeat every 30s while broadcasting so the server can
+    /// detect a host crash within minutes and bill only the actual stream
+    /// time. Cancelled in `leave()` or when the host explicitly ends.
+    private func startHeartbeat(sessionId: String) {
+        heartbeatTask?.cancel()
+        heartbeatTask = Task {
+            _ = try? await StreamService.heartbeat(sessionId: sessionId)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                if Task.isCancelled { break }
+                _ = try? await StreamService.heartbeat(sessionId: sessionId)
+            }
         }
     }
 
@@ -199,6 +216,8 @@ struct StreamScreen: View {
     }
 
     private func leave() async {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
         if mode == .hosting, let sid = activeSessionId {
             _ = try? await StreamService.end(sessionId: sid, hostUserId: session.userId)
         }

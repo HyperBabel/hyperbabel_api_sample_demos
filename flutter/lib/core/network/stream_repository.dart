@@ -55,6 +55,18 @@ class StreamRepository {
     }
   }
 
+  /// Heartbeat — call every ~30s while broadcasting. Lets the server
+  /// detect a host crash within minutes (instead of 8h wall-clock) and
+  /// bill only the actual stream time. Fire-and-forget — a single failed
+  /// beat shouldn't kill the broadcast.
+  Future<void> heartbeat(String sessionId) async {
+    try {
+      await _apiClient.client.post('/stream/sessions/$sessionId/heartbeat');
+    } on DioException catch (_) {
+      // Swallow — heartbeat failures are non-fatal.
+    }
+  }
+
   /// End the broadcast as the host.
   Future<void> endSession(String sessionId, String hostUserId) async {
     try {

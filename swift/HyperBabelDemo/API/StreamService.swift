@@ -151,6 +151,16 @@ enum StreamService {
         )
     }
 
+    /// Heartbeat — call every ~30s while broadcasting. The server uses
+    /// this to detect a host crash within minutes (instead of an 8h
+    /// wall-clock fallback) and bill only the actual stream time.
+    static func heartbeat(sessionId: String) async throws -> EmptyResponse {
+        try await ApiClient.shared.request(
+            "POST", "/stream/sessions/\(sessionId)/heartbeat",
+            body: [String: String]()
+        )
+    }
+
     static func end(sessionId: String, hostUserId: String) async throws -> EmptyResponse {
         try await ApiClient.shared.request(
             "POST", "/stream/sessions/\(sessionId)/end",

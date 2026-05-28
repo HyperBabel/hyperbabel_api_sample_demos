@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -37,6 +39,7 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
   int? _remoteUid;
   String? _activeSessionId;
   List<Map<String, dynamic>> _sessions = [];
+  Timer? _heartbeatTimer;
 
   @override
   void initState() {
@@ -46,8 +49,21 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
 
   @override
   void dispose() {
+    _heartbeatTimer?.cancel();
     _video.dispose();
     super.dispose();
+  }
+
+  /// Start the 30s heartbeat. Lets the server detect a host crash within
+  /// minutes and bill only actual stream time (vs the 8h wall-clock
+  /// fallback). The Dart timer suspends with the app, which is the
+  /// behavior we want — abandoned sessions will be reaped server-side.
+  void _startHeartbeat(String sessionId) {
+    _heartbeatTimer?.cancel();
+    _stream.heartbeat(sessionId);
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _stream.heartbeat(sessionId);
+    });
   }
 
   Future<void> _bootstrap() async {
@@ -101,6 +117,7 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
       );
       if (_activeSessionId != null) {
         await _stream.startSession(_activeSessionId!, _userId!);
+        _startHeartbeat(_activeSessionId!);
       }
       setState(() {
         _mode = _Mode.host;
@@ -158,6 +175,8 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
   }
 
   Future<void> _leave() async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     try {
       if (_mode == _Mode.host && _activeSessionId != null && _userId != null) {
         await _stream.endSession(_activeSessionId!, _userId!).catchError((_) {});

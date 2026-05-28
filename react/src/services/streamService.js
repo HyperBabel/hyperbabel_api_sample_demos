@@ -46,6 +46,15 @@ export const startSession = (sessionId) =>
   api.post(`${BASE}/sessions/${sessionId}/start`);
 
 /**
+ * Heartbeat — call every ~30s while broadcasting so the server can detect
+ * a host crash within minutes (rather than waiting 8h for the wall-clock
+ * fallback) and bill only the actual stream time.
+ * @param {string} sessionId
+ */
+export const heartbeat = (sessionId) =>
+  api.post(`${BASE}/sessions/${sessionId}/heartbeat`);
+
+/**
  * End the live stream. Calculates duration and records usage.
  * @param {string} sessionId
  */
