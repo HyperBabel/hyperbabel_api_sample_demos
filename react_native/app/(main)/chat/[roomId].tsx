@@ -600,7 +600,7 @@ export default function ChatRoomScreen() {
       const filename = asset.fileName ?? `photo_${Date.now()}.jpg`;
       const mimeType = asset.mimeType ?? 'image/jpeg';
       const fileSize = asset.fileSize ?? 0;
-      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize });
+      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize, channelId: roomId });
 
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
@@ -645,7 +645,7 @@ export default function ChatRoomScreen() {
       const filename = asset.fileName ?? `video_${Date.now()}.mp4`;
       const mimeType = asset.mimeType ?? 'video/mp4';
       const fileSize = asset.fileSize ?? 0;
-      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize });
+      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize, channelId: roomId });
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
         content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
@@ -674,7 +674,7 @@ export default function ChatRoomScreen() {
       const filename = asset.name;
       const mimeType = asset.mimeType ?? 'application/octet-stream';
       const fileSize = asset.size ?? 0;
-      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize });
+      const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize, channelId: roomId });
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
         content:      filename,
@@ -767,7 +767,7 @@ export default function ChatRoomScreen() {
     setUploading(true);
     try {
       const filename = `voice_${Date.now()}.m4a`;
-      const confirmed = await uploadFile({ uri, filename, mimeType: 'audio/m4a', fileSize: 0 });
+      const confirmed = await uploadFile({ uri, filename, mimeType: 'audio/m4a', fileSize: 0, channelId: roomId });
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
         content:      filename,

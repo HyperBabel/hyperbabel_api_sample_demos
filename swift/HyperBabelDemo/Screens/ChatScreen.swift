@@ -539,7 +539,8 @@ struct ChatScreen: View {
             }
             let mime = mimeType(for: url)
             let confirmed = try await StorageService.uploadFile(
-                fileURL: copy, filename: url.lastPathComponent, mimeType: mime
+                fileURL: copy, filename: url.lastPathComponent, mimeType: mime,
+                channelId: roomId
             )
             let cdn = confirmed.url ?? confirmed.cdnUrl ?? ""
             _ = try await UnitedChatService.sendMessage(

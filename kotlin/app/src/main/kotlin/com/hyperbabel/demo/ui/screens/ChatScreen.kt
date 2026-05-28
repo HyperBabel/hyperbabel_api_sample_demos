@@ -565,6 +565,7 @@ private suspend fun uploadAndSend(
             file = temp,
             filename = name,
             mimeType = mime,
+            channelId = roomId,
         )
         val url = confirmed["url"]?.jsonPrimitive?.content
             ?: confirmed["cdn_url"]?.jsonPrimitive?.content

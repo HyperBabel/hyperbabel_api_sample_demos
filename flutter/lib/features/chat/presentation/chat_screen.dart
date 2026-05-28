@@ -347,6 +347,7 @@ class _ChatScreenState extends State<ChatScreen> {
         file: file,
         filename: filename,
         mimeType: mime,
+        channelId: widget.roomId,
       );
       final url = (confirmed['url'] ?? confirmed['cdn_url'] ?? '') as String;
       final saved = await _repo.sendMessage(
@@ -457,6 +458,7 @@ class _ChatScreenState extends State<ChatScreen> {
         file: file,
         filename: filename,
         mimeType: mime,
+        channelId: widget.roomId,
       );
       final url = (confirmed['url'] ?? confirmed['cdn_url'] ?? '') as String;
       final saved = await _repo.sendMessage(

@@ -298,7 +298,7 @@ export async function renderChat(roomId, navigate) {
     if (!file) return;
     state.sending = true;
     try {
-      const confirmed = await uploadFile(file);
+      const confirmed = await uploadFile(file, { channelId: roomId });
       const url = confirmed.url || confirmed.cdn_url || '';
       await unitedChat.sendMessage(roomId, {
         sender_id: user.user_id,

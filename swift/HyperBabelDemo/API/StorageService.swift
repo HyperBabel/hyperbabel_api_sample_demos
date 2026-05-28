@@ -60,11 +60,13 @@ struct PresignRequest: Codable {
     let filename: String
     let mimeType: String
     let fileSize: Int
+    let channelId: String?
 
     enum CodingKeys: String, CodingKey {
         case filename
         case mimeType
         case fileSize
+        case channelId
     }
 }
 
@@ -75,15 +77,27 @@ struct ConfirmRequest: Codable {
 
 enum StorageService {
     /// Walk the 3-step presign flow and return the confirm response.
+    ///
+    /// `channelId` is optional but should be passed for chat-room uploads —
+    /// it routes the presigned object key into the chat-scoped R2 path
+    /// (`<org>/chat/<channelId>/...`), which lets the server populate
+    /// `com_uploaded_files.channel_id` and `com_usage_logs.metadata.channel_id`.
+    /// Omitting it falls back to the generic user-content path.
     static func uploadFile(
         fileURL: URL,
         filename: String,
-        mimeType: String
+        mimeType: String,
+        channelId: String? = nil
     ) async throws -> ConfirmedUpload {
         let data = try Data(contentsOf: fileURL)
         let envelope: PresignEnvelope = try await ApiClient.shared.request(
             "POST", "/storage/presign",
-            body: PresignRequest(filename: filename, mimeType: mimeType, fileSize: data.count)
+            body: PresignRequest(
+                filename: filename,
+                mimeType: mimeType,
+                fileSize: data.count,
+                channelId: channelId
+            )
         )
         let presign = envelope.data
 
