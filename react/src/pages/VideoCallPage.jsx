@@ -60,6 +60,7 @@ import ChatInput from '../components/ChatInput';
 import * as unitedChat from '../services/unitedChatService';
 import * as translateService from '../services/translateService';
 import rtcService from '../services/rtcService';
+import * as captionsService from '../services/captionsService';
 
 // Permission status enum
 const PERM = { CHECKING: 'checking', GRANTED: 'granted', DENIED: 'denied', UNAVAILABLE: 'unavailable' };
@@ -90,6 +91,22 @@ export default function VideoCallPage() {
   const [chatMessages, setChatMessages] = useState([]);
   const [connected,  setConnected]  = useState(false);
   const [statusText, setStatusText] = useState('Connecting...');
+
+  // ── Live captions (HyperBabel Speech Translation) state ─────────────────
+  // ccStatus: 'off' | 'connecting' | 'live'. The caption strip shows the
+  // speaker's own transcript (partial-updated) with its translation on the
+  // next line — see services/captionsService.js for the protocol.
+  const [ccStatus,  setCcStatus]  = useState('off');
+  const [ccLangs,   setCcLangs]   = useState([]);       // spoken-language picker list
+  const [ccTarget,  setCcTarget]  = useState('');       // translation target code
+  const [ccOrig,    setCcOrig]    = useState('');       // current original line
+  const [ccTr,      setCcTr]      = useState('');       // current translated line
+  const [ccError,   setCcError]   = useState('');       // last captions failure (visible banner)
+  const ccHandleRef = useRef(null);
+  // Monotonic start sequence: guards the async language-list fetch inside
+  // startCaptions against a toggle-off racing it (a stale continuation must
+  // not spawn a ghost stream after the user already turned captions off).
+  const ccSeqRef = useRef(0);
 
   const localVideoRef    = useRef(null);
   const remoteVideoRefs  = useRef({});
@@ -161,6 +178,11 @@ export default function VideoCallPage() {
 
     return () => {
       clearInterval(chatPollRef.current);
+      // Invalidate any in-flight startCaptions BEFORE stopping the handle —
+      // otherwise a pending language fetch would resolve after unmount and
+      // spawn an ownerless (still billed!) caption stream.
+      ccSeqRef.current += 1;
+      ccHandleRef.current?.stop();
       rtcSessionRef.current?.leave().catch(() => {});
     };
   }, [permStatus]);
@@ -354,6 +376,95 @@ export default function VideoCallPage() {
     return () => clearInterval(interval);
   }, [connected, roomType, roomId]);
 
+  // ── Live Captions (HyperBabel Speech Translation) ───────────────────────
+  //
+  // CC ON streams the local mic to the speech-translation relay and renders
+  // the live transcript + translation as a subtitle strip under the video
+  // grid. Speech translation attaches to THIS call's session — the relay
+  // verifies the caller is a participant — and is metered per minute of audio
+  // actually sent against the org's plan allowance, so keeping it behind this
+  // toggle is also the cost control. Guide: https://hyperbabel.com/docs#stt-api
+
+  const myLang = (user.preferred_lang_cd || 'en').toLowerCase();
+
+  const stopCaptions = () => {
+    ccSeqRef.current += 1; // invalidate any in-flight startCaptions
+    ccHandleRef.current?.stop();
+    ccHandleRef.current = null;
+    setCcStatus('off');
+    setCcOrig('');
+    setCcTr('');
+  };
+
+  const startCaptions = async (targetOverride) => {
+    const seq = ++ccSeqRef.current;
+    setCcStatus('connecting');
+    setCcError('');
+    try {
+      // Populate the target-language picker once (cached for the session).
+      let langs = ccLangs;
+      if (langs.length === 0) {
+        langs = await captionsService.getSpokenLanguages();
+        setCcLangs(langs);
+      }
+      if (seq !== ccSeqRef.current) return; // toggled off while fetching
+      const target =
+        targetOverride ||
+        ccTarget ||
+        (myLang.split('-')[0] === 'en' ? 'ko' : 'en'); // sensible demo default
+      if (!ccTarget) setCcTarget(target);
+
+      ccHandleRef.current = captionsService.startLiveCaptions({
+        lang: myLang,
+        translateTo: target,
+        // The relay accepts either the call session id or the room id of a
+        // room-scoped call — pass both; session_id wins when present.
+        sessionId: session?.id || session?.session_id,
+        roomId,
+        onCaption: (msg) => {
+          if (seq !== ccSeqRef.current) return; // stale session — ignore
+          // partial replaces the live line; final stays until the next
+          // utterance's partial arrives — classic subtitle behavior.
+          if (msg.kind === 'partial' || msg.kind === 'final') setCcOrig(msg.text || '');
+          else setCcTr(msg.text || '');
+        },
+        onStatus: (st) => {
+          if (seq !== ccSeqRef.current) return; // stale session — ignore
+          if (st === 'ready') setCcStatus('live');
+          if (st === 'closed') setCcStatus('off');
+        },
+        onError: (message) => {
+          if (seq !== ccSeqRef.current) return; // stale session — ignore
+          console.error('Live captions error:', message);
+          // Surface in a visible banner — statusText only renders pre-connect,
+          // so mid-call failures (e.g. limit_exceeded) would be invisible.
+          setCcError(message);
+        },
+      });
+    } catch (err) {
+      console.error('Failed to start live captions:', err);
+      if (seq === ccSeqRef.current) {
+        setCcStatus('off');
+        setCcError(err?.message || 'Failed to start live captions.');
+      }
+    }
+  };
+
+  const handleToggleCaptions = () => {
+    if (ccStatus === 'off') startCaptions();
+    else stopCaptions();
+  };
+
+  // Changing the target language mid-session restarts the stream — the
+  // translation pair is fixed per relay connection.
+  const handleCcTargetChange = (code) => {
+    setCcTarget(code);
+    if (ccStatus !== 'off') {
+      stopCaptions();
+      startCaptions(code);
+    }
+  };
+
   // ── Call Controls ───────────────────────────────────────────────────────
 
   const handleToggleMute = async () => {
@@ -368,6 +479,7 @@ export default function VideoCallPage() {
 
   const handleLeaveCall = async () => {
     sessionEndedRef.current = true; // prevent auto-exit from firing after manual leave
+    stopCaptions();
     await rtcSessionRef.current?.leave().catch(() => {});
     try { await unitedChat.leaveVideoCall(roomId, user.user_id); } catch { /* May be ended */ }
     navigate(`/chat/${roomId}`);
@@ -375,6 +487,7 @@ export default function VideoCallPage() {
 
   const handleEndCall = async () => {
     sessionEndedRef.current = true; // prevent auto-exit from firing after manual end
+    stopCaptions();
     await rtcSessionRef.current?.leave().catch(() => {});
     try { await unitedChat.endVideoCall(roomId, user.user_id); } catch { /* May be ended */ }
     navigate(`/chat/${roomId}`);
@@ -459,6 +572,46 @@ export default function VideoCallPage() {
           ))}
         </div>
 
+        {/* Captions failure banner — persists until the next CC start */}
+        {ccError && (
+          <div style={{
+            padding: '6px 16px',
+            background: 'rgba(180,40,40,0.9)',
+            color: '#fff',
+            fontSize: '0.8rem',
+            textAlign: 'center',
+          }}>
+            Live captions stopped: {ccError}
+          </div>
+        )}
+
+        {/* Live caption strip — original + translation, subtitle style */}
+        {ccStatus !== 'off' && (
+          <div style={{
+            padding: '10px 20px',
+            background: 'rgba(0,0,0,0.75)',
+            textAlign: 'center',
+            minHeight: '58px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            gap: '2px',
+          }}>
+            {ccStatus === 'connecting' && (
+              <span style={{ color: '#aaa', fontSize: '0.8rem' }}>Starting live captions…</span>
+            )}
+            {ccStatus === 'live' && !ccOrig && !ccTr && (
+              <span style={{ color: '#aaa', fontSize: '0.8rem' }}>Listening… start speaking.</span>
+            )}
+            {ccOrig && (
+              <span style={{ color: '#fff', fontSize: '1rem', lineHeight: 1.4 }}>{ccOrig}</span>
+            )}
+            {ccTr && (
+              <span style={{ color: '#fbbf24', fontSize: '0.9rem', lineHeight: 1.4 }}>{ccTr}</span>
+            )}
+          </div>
+        )}
+
         {/* Call Controls */}
         <div className="video-controls">
           <button
@@ -475,6 +628,18 @@ export default function VideoCallPage() {
             title={isVideoOff ? 'Turn on camera' : 'Turn off camera'}
           >
             {isVideoOff ? '📷' : '📹'}
+          </button>
+
+          {/* Live captions toggle (speech-to-text + live translation) */}
+          <button
+            className={`video-control-btn ${ccStatus !== 'off' ? 'active' : ''}`}
+            onClick={handleToggleCaptions}
+            title={ccStatus === 'off' ? 'Turn on live captions' : 'Turn off live captions'}
+            style={ccStatus === 'live'
+              ? { background: 'var(--hb-primary)', color: '#fff', fontWeight: 700 }
+              : { fontWeight: 700 }}
+          >
+            CC
           </button>
 
           {roomType === 'group' && (
@@ -507,7 +672,25 @@ export default function VideoCallPage() {
           fontSize: '0.8rem',
           color: 'var(--hb-text-muted)',
         }}>
-          <span>{roomType === '1to1' ? '1:1 Video Call' : 'Group Video Call'} — {roomName}</span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {roomType === '1to1' ? '1:1 Video Call' : 'Group Video Call'} — {roomName}
+            {ccStatus !== 'off' && ccLangs.length > 0 && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                🌐 Translate to
+                <select
+                  value={ccTarget}
+                  onChange={(e) => handleCcTargetChange(e.target.value)}
+                  style={{ fontSize: '0.75rem', padding: '2px 4px', borderRadius: '4px' }}
+                >
+                  {ccLangs.map((l) => (
+                    <option key={l.id} value={l.stt_lang_cd}>
+                      {l.language_name}{l.native_name ? ` — ${l.native_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </span>
           <span className={`badge ${connected ? 'badge-success' : 'badge-warning'}`}>
             {connected ? '● Connected' : `⏳ ${statusText}`}
           </span>

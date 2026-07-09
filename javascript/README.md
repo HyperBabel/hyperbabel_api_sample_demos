@@ -34,6 +34,7 @@ sibling `sample_demos/*` projects.
 | Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
 | Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
 | 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/leave` + HyperBabel Video |
+| In-call live captions | `wss /stt-relay` (Speech Translation — live STT + translation subtitles) |
 | Live stream (host)   | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
 | Live stream (viewer) | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
 | Push tokens          | `POST /push/register`, `GET /push/tokens`                  |

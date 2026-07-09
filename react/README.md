@@ -29,6 +29,7 @@ The per-org Firebase project allow-list is configured in the
 | **Live Stream (Viewer)** | Stream — Viewer Token |
 | **Auto-Translation** | Translation — Text, Batch, Detect, Languages |
 | **In-Call Chat** | United Chat — Messages with auto-translation |
+| **In-Call Live Captions** | Speech Translation — `wss /stt-relay` (live STT + translation subtitles), `GET /stt/languages` |
 | **Live Stream Chat** | Chat — Channels, Messages with auto-translation |
 | **File Upload** | Storage — Presign → Upload → Confirm (3-step) |
 | **Typing Indicators** | Chat — Typing endpoint |
