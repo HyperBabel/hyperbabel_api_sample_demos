@@ -52,6 +52,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.hyperbabel.demo.video.VideoQuality
 
 private enum class Mode { LIST, HOSTING, WATCHING }
 
@@ -306,14 +307,27 @@ private suspend fun goLive(
     onRemoteJoined: (Int) -> Unit,
 ) {
     try {
+        // Wire shape per the Live Stream API: flat
+        // { title, host_user_id, host_display_name?, quality? }. `title` and
+        // `host_user_id` are both required — a nested `hosts` array is rejected.
         val payload = kotlinx.serialization.json.buildJsonObject {
-            put("hosts", JsonArray(listOf(
-                kotlinx.serialization.json.buildJsonObject {
-                    put("user_id", kotlinx.serialization.json.JsonPrimitive(Session.userId))
-                    put("display_name", kotlinx.serialization.json.JsonPrimitive(Session.displayName))
-                }
-            )))
             put("title", kotlinx.serialization.json.JsonPrimitive("Live from ${Session.displayName}"))
+            put("host_user_id", kotlinx.serialization.json.JsonPrimitive(Session.userId))
+            put("host_display_name", kotlinx.serialization.json.JsonPrimitive(Session.displayName))
+            // Billing tier for this broadcast. Derived from the publishing
+            // preset in video/VideoQuality.kt so the declared tier always
+            // matches the pixels actually sent.
+            put("quality", kotlinx.serialization.json.JsonPrimitive(VideoQuality.declaredQuality()))
+            // Optional self-check. A viewer subscribes to the host stream only,
+            // so a broadcast's aggregate is this resolution itself — pass 1.
+            val res = VideoQuality.publishResolutionFor(1)
+            put(
+                "publish_resolution",
+                kotlinx.serialization.json.buildJsonObject {
+                    put("width", kotlinx.serialization.json.JsonPrimitive(res.width))
+                    put("height", kotlinx.serialization.json.JsonPrimitive(res.height))
+                },
+            )
         }
         val resp = ApiClient.stream.createSession(payload)
         val detail = resp["session"]?.jsonObject ?: resp

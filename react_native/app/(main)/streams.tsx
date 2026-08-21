@@ -22,6 +22,7 @@ import { useAuth } from '@/context/AuthContext';
 import { colors, spacing, textPresets, borderRadius, shadows } from '@/theme';
 import * as streamService from '@/services/streamService';
 import type { StreamSession } from '@/services/streamService';
+import { declaredQuality, publishResolutionFor } from '@/services/videoQuality';
 
 function StreamCard({ session, onPress }: { session: StreamSession; onPress: () => void }) {
   return (
@@ -74,6 +75,11 @@ export default function StreamsScreen() {
         host_user_id:   user.userId,
         title:          `${user.userName}'s Live Stream`,
         host_display_name: user.userName,
+        // Billing tier for this broadcast — see services/videoQuality.ts.
+        quality:        declaredQuality(),
+        // Optional self-check. A viewer subscribes to the host stream only, so
+        // a broadcast's aggregate is this resolution itself — pass 1.
+        publish_resolution: publishResolutionFor(1),
       });
       router.push({ pathname: '/live-stream/host', params: { sessionId: session.session_id } });
     } catch (err: any) {

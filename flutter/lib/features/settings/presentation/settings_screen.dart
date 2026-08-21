@@ -39,7 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   static const _languages = [
     ('en', 'English'),
-    ('ko', '한국어'),
+    ('ko', '한국어 (Korean)'),
     ('ja', '日本語'),
     ('zh', '中文'),
     ('fr', 'Français'),

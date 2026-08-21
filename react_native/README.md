@@ -346,3 +346,67 @@ file for details.
 > **Disclaimer.** This code is provided for demonstration purposes only.
 > It is not intended for production environments without proper security
 > and performance reviews.
+
+---
+
+## Video Resolution & Billing Tier
+
+Video and live streaming are metered by **resolution tier**, decided by the
+total resolution each participant *receives*. This demo keeps every call
+inside the HD budget (921,600 px per participant) and declares the matching
+tier on every session-creation call:
+
+- `src/services/videoQuality.ts` — the presets and the `quality` value are both defined here.
+- 1280 × 720 when a participant receives at most one remote stream
+  (live-stream host, 1:1 call); 640 × 480 from three participants up, so a
+  four-way call still totals 3 × 307,200 = 921,600 px.
+- `quality` is sent as `"hd"`. If you publish above these presets, change the
+  preset **and** the declared tier together in that one file — the declared
+  value is what your invoice is calculated from (Terms §5.1 / §5.2).
+- The roster is re-evaluated on every join **and** every leave, so a call
+  that drops from four participants to two moves back up to 1280 × 720 and a
+  participant who rejoins pulls everyone back down before publishing a frame.
+
+### Always send `publish_resolution`
+
+Every session-creation call in this demo sends `publish_resolution` alongside
+`quality`, and **your app should too**. The API accepts a request without it,
+but leaving it out is how the most common billing surprise happens.
+
+```
+POST /api/v1/video/sessions
+{
+  "call_type": "group",
+  "participants": [ ... ],
+  "quality": "hd",
+  "publish_resolution": { "width": 640, "height": 480 }
+}
+```
+
+- **What the value means.** The resolution this session will actually publish
+  **at this participant count** — not your camera's maximum, and not a
+  constant. Build it with `publishResolutionFor(participantCount)` in
+  `src/services/videoQuality.ts`, which derives it from the same presets the
+  encoder uses, so the number you send and the pixels you emit cannot drift
+  apart.
+- **What HyperBabel does with it.** It multiplies the value by the number of
+  streams one participant receives — participants − 1 for a call, 1 for a
+  broadcast, since a viewer subscribes to the host only — and compares the
+  total against `quality`. If the total lands in a higher tier, the creation
+  response carries a `quality_warning` string. The session is still created and
+  nothing is blocked.
+- **It never changes your bill.** Billing follows `quality`, always. This field
+  exists so you can catch a wrong `quality` before the invoice does.
+- **Why it matters.** The mistake it catches is not dishonesty, it is a unit
+  mismatch: 720p is genuinely HD in a 1:1 call and genuinely *above* HD in a
+  four-way one, because tiers are computed on the total each participant
+  receives. Declaring `"hd"` while publishing 720p to three other people is an
+  honest answer to the wrong question — and without this field nothing tells
+  you so.
+- **Read `quality_warning` and act on it.** Log it at minimum. If it appears,
+  either lower the publishing resolution or declare the tier it names. Do not
+  ignore it: your invoice is calculated from `quality`, and the difference is
+  recoverable under Terms §5.2.
+
+See the [root README](../README.md#video-resolution--billing-tier) for the
+full table and the reasoning.

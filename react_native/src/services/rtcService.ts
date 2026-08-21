@@ -24,6 +24,8 @@ import {
   IRtcEngineEventHandler,
 } from 'react-native-agora';
 
+import { encoderConfigForRemoteCount } from './videoQuality';
+
 export {
   createVideoEngine,
   RtcSurfaceView,
@@ -32,6 +34,8 @@ export {
   ChannelProfileType,
 };
 export type { IRtcEngine, RtcConnection, IRtcEngineEventHandler };
+
+export { declaredQuality } from './videoQuality';
 
 export type RtcRole = 'publisher' | 'subscriber';
 
@@ -58,9 +62,50 @@ export interface RtcEventHandlers {
 export class RtcClient {
   private engine: IRtcEngine | null = null;
 
+  /*
+   * Remote participants currently in the channel, by uid.
+   *
+   * HyperBabel meters video by the total resolution each participant
+   * RECEIVES, so the publishing resolution has to follow the call size —
+   * see services/videoQuality.ts for the budget and the presets. This matters
+   * more on mobile than on web: the SDK default (960x540) already exceeds the
+   * HD ceiling from three participants up.
+   *
+   * Membership is tracked from onUserJoined / onUserOffline rather than from
+   * who publishes video: a participant sitting in the call with the camera off
+   * can switch it on at any moment, and the frames around that moment must
+   * already be sized for them. Over-counting lowers the resolution (safe);
+   * under-counting is what pushes a call above the tier it declared.
+   */
+  private remoteUids = new Set<number>();
+
+  /**
+   * Apply the publishing preset for the current call size.
+   *
+   * Failures are surfaced, never swallowed: if the downshift does not land the
+   * call keeps publishing large, and every participant's received total moves
+   * into a higher (more expensive) tier than the one declared at session
+   * creation.
+   */
+  private applyEncoderForCurrentCall(): void {
+    const engine = this.engine;
+    if (!engine) return;
+    const cfg = encoderConfigForRemoteCount(this.remoteUids.size);
+    try {
+      engine.setVideoEncoderConfiguration(cfg);
+    } catch (err) {
+      console.warn(
+        `[rtc] could not apply ${cfg.dimensions.width}x${cfg.dimensions.height} for ` +
+          `${this.remoteUids.size} remote participant(s) — the call may exceed the declared tier`,
+        err,
+      );
+    }
+  }
+
   async join(options: RtcJoinOptions, handlers: RtcEventHandlers = {}): Promise<void> {
     const engine = createVideoEngine();
     this.engine  = engine;
+    this.remoteUids.clear();
 
     const profile =
       options.role === 'publisher'
@@ -71,12 +116,23 @@ export class RtcClient {
 
     const eventHandler: IRtcEngineEventHandler = {
       onJoinChannelSuccess: (_conn: RtcConnection) => handlers.onJoined?.(),
-      onUserJoined:  (_conn: RtcConnection, uid: number) => handlers.onUserJoined?.(uid),
-      onUserOffline: (_conn: RtcConnection, uid: number) => handlers.onUserLeft?.(uid),
+      onUserJoined: (_conn: RtcConnection, uid: number) => {
+        this.remoteUids.add(uid);
+        this.applyEncoderForCurrentCall();
+        handlers.onUserJoined?.(uid);
+      },
+      onUserOffline: (_conn: RtcConnection, uid: number) => {
+        this.remoteUids.delete(uid);
+        this.applyEncoderForCurrentCall();
+        handlers.onUserLeft?.(uid);
+      },
       onError:       (code: number) => handlers.onError?.(code),
     };
     engine.registerEventHandler(eventHandler);
     engine.enableVideo();
+    // Size the first published frame before joining — a late joiner walks into
+    // an already-populated channel and must not send one oversized frame.
+    this.applyEncoderForCurrentCall();
 
     if (options.role === 'subscriber') {
       engine.setClientRole(ClientRoleType.ClientRoleAudience);
@@ -109,10 +165,12 @@ export class RtcClient {
 
   async leave(): Promise<void> {
     await this.engine?.leaveChannel();
+    this.remoteUids.clear();
   }
 
   release(): void {
     this.engine?.release();
     this.engine = null;
+    this.remoteUids.clear();
   }
 }

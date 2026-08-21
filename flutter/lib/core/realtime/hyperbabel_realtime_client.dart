@@ -72,7 +72,7 @@ class HyperBabelRealtimeClient {
           displayName: displayName,
           langCd: langCd,
         );
-        final tokReq = refreshed['ably_token_request'] as Map<String, dynamic>?;
+        final tokReq = refreshed['realtime_token_request'] as Map<String, dynamic>?;
         if (tokReq == null) {
           throw Exception('Server did not return a token request.');
         }

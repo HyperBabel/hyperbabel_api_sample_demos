@@ -76,22 +76,34 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       _channelName = channelName;
 
       // Step 2 — exchange a publisher RTC token.
+      // Publisher tokens are session-scoped: the server checks that this user is
+      // a participant and signs the token with the session's channel + uid, so
+      // we join with what the response returns.
+      final sessionId = (session['id'] ?? session['session_id']) as String?;
+      if (sessionId == null) throw Exception('Session has no id.');
       final uid = (session['uid'] as int?) ?? DateTime.now().millisecondsSinceEpoch.remainder(1 << 30);
       final token = await _rtm.rtcToken(
         channelName: channelName,
         uid: uid,
         role: 'publisher',
+        sessionId: sessionId,
       );
       _localUid = (token['uid'] as int?) ?? uid;
+      _channelName = (token['channel_name'] as String?) ?? channelName;
 
       // Step 3 — initialise the engine and register lifecycle handlers
       // before joining so we never miss the first 'remote published' event.
       final engine = await _video.initialize(token['app_id'] as String);
       engine.registerEventHandler(VideoEngineEventHandler(
         onUserJoined: (conn, uid, _) {
+          // Keep the publishing resolution in step with the call size —
+          // HyperBabel meters by the total resolution each participant
+          // receives (core/video/video_quality.dart).
+          _video.trackRemoteJoined(uid);
           setState(() => _remoteUid = uid);
         },
         onUserOffline: (conn, uid, _) {
+          _video.trackRemoteLeft(uid);
           if (_remoteUid == uid) setState(() => _remoteUid = null);
         },
         onError: (err, msg) {

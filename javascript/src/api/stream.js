@@ -6,6 +6,7 @@
  */
 
 import { api } from './client.js';
+import { declaredQuality, publishResolutionFor } from '../video/videoQuality.js';
 
 export const listSessions = () => api.get('/stream/sessions');
 
@@ -17,6 +18,13 @@ export const createSession = ({ hostUserId, hostName, title }) =>
     title: title || `Live from ${hostName || hostUserId}`,
     host_user_id: hostUserId,
     ...(hostName ? { host_display_name: hostName } : {}),
+    // Billing tier for this broadcast. Derived from the publishing preset in
+    // video/videoQuality.js so the declared tier always matches the pixels
+    // actually sent — see that file before changing either one.
+    quality: declaredQuality(),
+    // Optional self-check. A viewer subscribes to the host stream only, so the
+    // aggregate for a broadcast is this resolution itself — pass 1.
+    publish_resolution: publishResolutionFor(1),
   });
 
 export const startSession = (sessionId, hostUserId) =>

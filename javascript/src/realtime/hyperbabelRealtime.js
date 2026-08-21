@@ -16,13 +16,21 @@ let _orgId  = null;
 async function authCallback(_tokenParams, callback) {
   try {
     const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
-    const tokenRequest = await requestRealtimeToken(
+    const res = await requestRealtimeToken(
       user.user_id,
       user.display_name,
       user.preferred_lang_cd,
     );
-    if (tokenRequest?.org_id) _orgId = tokenRequest.org_id;
-    callback(null, tokenRequest);
+    if (res?.org_id) _orgId = res.org_id;
+    /*
+     * Hand the SDK the signed token request ITSELF, not the envelope it
+     * arrived in. The endpoint answers
+     *   { realtime_token_request: {...}, user_id, org_id }
+     * and the SDK validates the signature over the inner object — passing the
+     * whole envelope fails auth. (Every other demo already unwraps it; this
+     * one did not.)
+     */
+    callback(null, res.realtime_token_request);
   } catch (err) {
     callback(err.message || 'token_request_failed', null);
   }

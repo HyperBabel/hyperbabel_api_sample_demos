@@ -52,7 +52,7 @@ export const requestToken = async (userId, userName, preferredLangCd) => {
   _orgId = data.org_id;
   // The HyperBabel token endpoint returns a signed token request object
   // that the real-time client uses to authenticate the connection.
-  return data.ably_token_request;
+  return data.realtime_token_request;
 };
 
 // ── Connection ────────────────────────────────────────────────────────────

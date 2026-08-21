@@ -32,7 +32,7 @@ export async function renderVideoCall(roomId, navigate) {
       <button id="cc-toggle" class="btn-secondary">CC — Live captions</button>
       <label class="muted" style="font-size:.8rem;">Translate to
         <select id="cc-target" style="margin-left:4px;">
-          <option value="en">English</option><option value="ko">한국어</option>
+          <option value="en">English</option><option value="ko">한국어 (Korean)</option>
           <option value="es">Español</option><option value="ja">日本語</option>
           <option value="zh">中文</option><option value="fr">Français</option>
           <option value="de">Deutsch</option><option value="hi">हिन्दी</option>
@@ -61,6 +61,10 @@ export async function renderVideoCall(roomId, navigate) {
       channelName: session.channel_name,
       uid: session.uid ?? Math.floor(Math.random() * 1_000_000),
       role: 'publisher',
+      // Publisher tokens are session-scoped: HyperBabel checks that this user is
+      // a participant and signs the token with the session's channel + uid.
+      sessionId: session.id,
+      externalUserId: user.user_id,
     });
 
     localTracks = await videoEngine.publishLocalTracks();

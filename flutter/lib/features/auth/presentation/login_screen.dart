@@ -43,7 +43,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   static const _languages = <(String, String)>[
     ('en', 'English'),
-    ('ko', '한국어'),
+    ('ko', '한국어 (Korean)'),
     ('ja', '日本語'),
     ('zh', '中文'),
     ('es', 'Español'),

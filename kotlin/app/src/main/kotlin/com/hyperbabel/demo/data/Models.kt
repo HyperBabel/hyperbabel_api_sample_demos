@@ -9,6 +9,7 @@ package com.hyperbabel.demo.data
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import com.hyperbabel.demo.video.VideoQuality
 
 @Serializable
 data class Room(
@@ -60,6 +61,21 @@ data class SendMessageRequest(
 data class StartVideoCallRequest(
     @SerialName("caller_id") val callerId: String,
     @SerialName("target_user_ids") val targetUserIds: List<String> = emptyList(),
+    /**
+     * Billing tier for this call: "hd" (default) | "fhd" | "2k" | "2k_plus".
+     * Declare the tier that matches what you actually publish — the default
+     * comes from [com.hyperbabel.demo.video.VideoQuality.declaredQuality].
+     */
+    @SerialName("quality") val quality: String = VideoQuality.declaredQuality(),
+    /**
+     * OPTIONAL self-check: what this client will actually publish at this call
+     * size. The server multiplies it by the streams each participant receives
+     * and returns `quality_warning` when the total exceeds [quality]. Never the
+     * billing basis — [quality] is.
+     */
+    @SerialName("publish_resolution")
+    val publishResolution: com.hyperbabel.demo.video.PublishResolution =
+        VideoQuality.publishResolutionFor(1 + targetUserIds.size.coerceAtLeast(1)),
 )
 
 @Serializable
@@ -83,7 +99,7 @@ data class RealtimeTokenRequest(
 
 @Serializable
 data class RealtimeTokenResponse(
-    @SerialName("ably_token_request") val tokenRequest: RealtimeTokenPayload? = null,
+    @SerialName("realtime_token_request") val tokenRequest: RealtimeTokenPayload? = null,
     @SerialName("org_id") val orgId: String? = null,
 )
 
@@ -99,11 +115,23 @@ data class RealtimeTokenPayload(
     @SerialName("capability") val capability: String? = null,
 )
 
+/**
+ * A `publisher` token REQUIRES [sessionId] — the id of a live session created
+ * with `POST /video/sessions` or `POST /unitedchat/rooms/:roomId/video-call`.
+ * HyperBabel verifies the caller is a participant and signs the token with the
+ * session's channel name and uid, so join with **the values in the response**.
+ * Live-stream hosts do not use this endpoint: `POST /stream/sessions` already
+ * returns a 24-hour host token.
+ */
 @Serializable
 data class RtcTokenRequest(
     @SerialName("channel_name") val channelName: String,
     val uid: Int,
     val role: String,
+    /** REQUIRED when [role] is "publisher". */
+    @SerialName("session_id") val sessionId: String? = null,
+    /** Which of your users this token is for (API-key callers). */
+    @SerialName("external_user_id") val externalUserId: String? = null,
 )
 
 @Serializable

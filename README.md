@@ -63,6 +63,155 @@ because they require a logged-in session JWT.
 
 ---
 
+## Video Resolution & Billing Tier
+
+HyperBabel meters video and live streaming by **resolution tier**, and the
+tier is decided by the total resolution each participant **receives** — not
+by what a single camera sends. In a group call every participant receives
+(N − 1) remote streams, so the tier climbs with the number of people even
+when each camera keeps the same resolution.
+
+The HD tier tops out at **921,600 pixels (1280 × 720)** per participant.
+Every demo ships a single `videoQuality` module that keeps publishing inside
+that budget and derives the tier it declares from the same numbers:
+
+| Remote participants | Published | Each participant receives | Tier |
+|---|---|---|---|
+| 0 (live-stream host) | 1280 × 720 | 921,600 | HD |
+| 1 (1:1 call) | 1280 × 720 | 921,600 | HD |
+| 2 (3-way call) | 640 × 480 | 2 × 307,200 = 614,400 | HD |
+| 3 (4-way call) | 640 × 480 | 3 × 307,200 = 921,600 | HD |
+
+A fifth publisher would push the sum to 1,228,800 and move the whole call
+into the next, more expensive tier — which is why group calls are capped at
+four participants.
+
+### Two sums get quoted for a group call — keep them straight
+
+| | Formula | 4-way call | Is the tier based on it? |
+|---|---|---|---|
+| What **one participant receives** | (N − 1) × preset | 3 × 307,200 = **921,600** | **Yes** |
+| What the **whole call publishes** | N × preset | 4 × 307,200 = 1,228,800 | No |
+
+The presets hold the *received* sum at or under the ceiling for every
+supported call size — the same rule the HyperBabel Console applies in its own
+video surfaces.
+
+If your own policy is the stricter *"nothing the call publishes may add up to
+more than HD"*, swap the ladder for this one. It is a one-constant change in
+each `videoQuality` module, and it costs 1:1 calls their 720p:
+
+| Publishers | Preset | Total published |
+|---|---|---|
+| 1 | 1280 × 720 | 921,600 |
+| 2 | 848 × 480 | 814,080 |
+| 3 | 640 × 480 | 921,600 |
+| 4 | 640 × 360 | 921,600 |
+
+### Leaving and rejoining
+
+The roster is re-evaluated on **every** join and **every** leave, in every
+demo. A four-way call that drops to two participants moves back up to
+1280 × 720, and a participant who rejoins pulls everyone back down to
+640 × 480 *before* their first frame is published. Nothing is pinned to the
+size the call started at, so a call cannot drift above the ceiling by people
+coming and going.
+
+Two details that make that hold:
+
+- Membership is counted from **channel presence**, not from who is currently
+  publishing video. A participant sitting in the call with the camera off can
+  switch it on at any moment.
+- The preset is applied **before** the local track is published, so a late
+  joiner never emits even one oversized frame.
+
+> **Setting this explicitly matters most on mobile.** The RTC SDK's own
+> default is 960 × 540, so a three-way call left at the default already
+> sends every participant 1,036,800 pixels — above the HD ceiling.
+
+### Declaring the tier
+
+Every session-creation call in these demos sends a `quality` field:
+
+```jsonc
+// POST /api/v1/unitedchat/rooms/:roomId/video-call
+// POST /api/v1/video/sessions
+// POST /api/v1/stream/sessions
+{ "quality": "hd" }   // "hd" (default) | "fhd" | "2k" | "2k_plus"
+```
+
+Media flows directly between your application and HyperBabel's
+infrastructure, so the platform cannot observe the resolution you actually
+transmit — **the declared value is what your invoice is calculated from.**
+Declaring it accurately is a contractual obligation (Terms of Service §5.1),
+and a declaration that understates measured usage is corrected afterwards
+with an adjustment charge (§5.2).
+
+### Always send `publish_resolution` with it
+
+Because the platform cannot observe your media, `quality` alone gives it no
+way to tell a wrong declaration from a right one — and the wrong ones are
+usually honest mistakes. Every demo therefore sends a second field on the same
+call, and **your app should too**:
+
+```jsonc
+{
+  "quality": "hd",
+  "publish_resolution": { "width": 640, "height": 480 }
+}
+```
+
+The API accepts a request without it. Leaving it out is how the most common
+billing surprise happens.
+
+| | |
+|---|---|
+| **What to send** | The resolution this session will actually publish **at this participant count** — not the camera maximum, not a constant. Every demo builds it from the same preset the encoder uses, so the declared number and the emitted pixels cannot drift apart. |
+| **What happens** | HyperBabel multiplies it by the streams one participant receives — (N − 1) for a call, 1 for a broadcast — and compares the total with `quality`. A higher tier puts a `quality_warning` string in the creation response. |
+| **What does not happen** | Your bill does not change. Billing follows `quality`, always. The session is created either way; nothing is blocked, and a malformed value is ignored rather than rejected. |
+
+**The mistake this catches is a unit mismatch, not dishonesty.** 720p is
+genuinely HD in a 1:1 call and genuinely *above* HD in a four-way one, because
+the tier is computed on the total each participant receives. Declaring `"hd"`
+while publishing 720p to three other people is an honest answer to the wrong
+question, and without this field nothing tells you so.
+
+**Read `quality_warning` and act on it.** Log it at minimum. When it appears,
+either lower the publishing resolution or declare the tier it names — your
+invoice is calculated from `quality`, and the difference is recoverable under
+§5.2.
+
+### If you raise the resolution
+
+Change the preset **and** the declared tier together, in the one file that
+owns both:
+
+| Demo | File |
+|---|---|
+| `javascript` | `src/video/videoQuality.js` |
+| `react` | `src/services/videoQuality.js` |
+| `react_native` | `src/services/videoQuality.ts` |
+| `flutter` | `lib/core/video/video_quality.dart` |
+| `kotlin` | `app/src/main/kotlin/com/hyperbabel/demo/video/VideoQuality.kt` |
+| `swift` | `HyperBabelDemo/Video/VideoQuality.swift` |
+
+Publishing 1080p in a four-way call is a perfectly reasonable product
+decision — just declare `"2k"` for it, and your bill will match what you
+used. The failure mode this module exists to prevent is the silent one:
+raising the resolution and leaving the declaration at its `"hd"` default.
+
+Two more rules the modules follow, worth keeping if you adapt them:
+
+- **Count everyone in the channel, not just who has a camera on.** A muted
+  camera can be switched back on at any moment. Over-counting lowers the
+  resolution, which is safe; under-counting is what pushes a call above the
+  tier it declared.
+- **Never swallow a failed resolution change.** If the downshift does not
+  land, the call keeps publishing large and the whole session silently
+  lands in a higher tier. Every demo logs a warning instead.
+
+---
+
 ## How to Test the Demos
 
 You can clone this directory and run any of the six instantly. There is

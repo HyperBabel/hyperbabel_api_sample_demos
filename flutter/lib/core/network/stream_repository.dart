@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import '../video/video_quality.dart';
 
 /// Repository for the HyperBabel Live Stream API. Hosts open a session,
 /// publish video / audio, and end it; viewers exchange a viewer token to
@@ -29,11 +30,20 @@ class StreamRepository {
     try {
       final response = await _apiClient.client.post(
         '/stream/sessions',
+        // Wire shape per cf_workers_api/src/routes/stream.ts createStreamSchema:
+        // flat { title, host_user_id, host_display_name?, quality? }.
+        // `title` and `host_user_id` are both required.
         data: {
-          'hosts': [
-            {'user_id': hostUserId, 'display_name': hostName},
-          ],
-          if (title != null) 'title': title,
+          'title': title ?? 'Live from $hostName',
+          'host_user_id': hostUserId,
+          'host_display_name': hostName,
+          // Billing tier for this broadcast. Derived from the publishing
+          // preset in core/video/video_quality.dart so the declared tier
+          // always matches the pixels actually sent.
+          'quality': VideoQuality.declaredQualityWire(),
+          // Optional self-check. A viewer subscribes to the host stream only,
+          // so a broadcast's aggregate is this resolution itself — pass 1.
+          'publish_resolution': VideoQuality.publishResolutionFor(1),
         },
       );
       return response.data as Map<String, dynamic>;

@@ -8,6 +8,7 @@
  */
 
 import api, { ApiError } from './api';
+import type { VideoQualityTier } from './videoQuality';
 
 const BASE = '/stream';
 
@@ -20,6 +21,19 @@ export interface CreateSessionParams {
   host_profile_image_url?:  string;
   host_preferred_lang_cd?:  string;
   settings?:                Record<string, unknown>;
+  /**
+   * Billing tier for the broadcast: 'hd' (default) | 'fhd' | '2k' | '2k_plus'.
+   * Declare the tier that matches what you actually publish — see
+   * services/videoQuality.ts.
+   */
+  quality?:                 VideoQualityTier;
+  /**
+   * OPTIONAL self-check: the resolution the host will actually publish. The
+   * server compares it with `quality` and returns `quality_warning` when the
+   * aggregate implies a higher tier. Never the billing basis — `quality` is.
+   * Build it with `publishResolutionFor()` in services/videoQuality.ts.
+   */
+  publish_resolution?:      { width: number; height: number };
 }
 
 export interface StreamSession {

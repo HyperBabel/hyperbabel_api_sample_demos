@@ -168,10 +168,18 @@ export default function VideoCallPage() {
   useEffect(() => {
     if (permStatus !== PERM.GRANTED) return;
 
-    const channelName = session?.session_id || session?.id || roomId;
+    /*
+     * The session carries the channel name the server actually allocated —
+     * never derive one from the session id or room id. A publisher token is
+     * signed with the session's channel and uid, so a locally-invented channel
+     * would be rejected (and, before it was rejected, would have run on a
+     * channel the server could not meter).
+     */
+    const sessionId = session?.id || session?.session_id;
+    const channelName = session?.channel_name;
     const uid = Math.abs(hashCode(user.user_id)) % 100000;
 
-    joinRtcSession(channelName, uid);
+    joinRtcSession(channelName, uid, sessionId);
     loadChatMessages();
 
     chatPollRef.current = setInterval(loadChatMessages, 5000);
@@ -196,10 +204,14 @@ export default function VideoCallPage() {
     return hash;
   };
 
-  const joinRtcSession = async (channelName, uid) => {
+  const joinRtcSession = async (channelName, uid, sessionId) => {
     try {
       setStatusText('Requesting session credentials...');
+      // `sessionId` is REQUIRED for a publisher token: HyperBabel checks that
+      // this user is a participant of that session and signs the token with the
+      // session's channel name and uid.
       const rtcChannelSession = await rtcService.joinChannel(channelName, uid, 'publisher', {
+        sessionId,
         externalUserId: user.user_id,
         userName: user.display_name,
         preferredLangCd: user.preferred_lang_cd,

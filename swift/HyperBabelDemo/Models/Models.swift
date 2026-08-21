@@ -112,10 +112,32 @@ struct SendMessageRequest: Codable {
 struct StartVideoCallRequest: Codable {
     let callerId: String
     let targetUserIds: [String]
+    /// Billing tier for this call: "hd" (default) | "fhd" | "2k" | "2k_plus".
+    /// Declare the tier that matches what you actually publish — the default
+    /// comes from `VideoQuality.declaredQuality()`, which is derived from the
+    /// same presets the client publishes with.
+    let quality: String
+    /// OPTIONAL self-check: what this client will actually publish at this call
+    /// size. The server multiplies it by the streams each participant receives
+    /// and returns `quality_warning` when the total exceeds `quality`. Never the
+    /// billing basis — `quality` is.
+    let publishResolution: PublishResolution
+
+    init(callerId: String, targetUserIds: [String],
+         quality: String = VideoQuality.declaredQuality(),
+         publishResolution: PublishResolution? = nil) {
+        self.callerId = callerId
+        self.targetUserIds = targetUserIds
+        self.quality = quality
+        self.publishResolution = publishResolution
+            ?? VideoQuality.publishResolution(forParticipantCount: 1 + max(targetUserIds.count, 1))
+    }
 
     enum CodingKeys: String, CodingKey {
         case callerId = "caller_id"
         case targetUserIds = "target_user_ids"
+        case quality
+        case publishResolution = "publish_resolution"
     }
 }
 
@@ -163,19 +185,38 @@ struct RealtimeTokenResponse: Codable {
     let orgId: String?
 
     enum CodingKeys: String, CodingKey {
-        case tokenRequest = "ably_token_request"
+        case tokenRequest = "realtime_token_request"
         case orgId = "org_id"
     }
 }
 
+/// A `publisher` token REQUIRES `sessionId` — the id of a live session created
+/// with `POST /video/sessions` or `POST /unitedchat/rooms/:roomId/video-call`.
+/// HyperBabel verifies the caller is a participant and signs the token with the
+/// session's channel name and uid, so join with the values in the *response*.
+/// Live-stream hosts do not use this endpoint: `POST /stream/sessions` already
+/// returns a 24-hour host token.
 struct RtcTokenRequest: Codable {
     let channelName: String
     let uid: Int
     let role: String
+    let sessionId: String?
+    let externalUserId: String?
+
+    init(channelName: String, uid: Int, role: String,
+         sessionId: String? = nil, externalUserId: String? = nil) {
+        self.channelName = channelName
+        self.uid = uid
+        self.role = role
+        self.sessionId = sessionId
+        self.externalUserId = externalUserId
+    }
 
     enum CodingKeys: String, CodingKey {
         case channelName = "channel_name"
         case uid, role
+        case sessionId = "session_id"
+        case externalUserId = "external_user_id"
     }
 }
 

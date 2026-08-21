@@ -37,10 +37,20 @@ export async function renderStreamHost(navigate) {
       title: `Live from ${user.display_name || user.user_id}`,
     });
     if (!session?.session_id) throw new Error('Server did not return a session.');
-    await videoEngine.joinCall({
+    // The create response already carries a 24-hour host token, the channel name
+    // and the uid — join with those instead of asking for a second credential.
+    // `/rtm/rtc/token` only issues publisher tokens for video-call sessions.
+    const host = session.host ?? {};
+    if (!host.rtc_token || !session.app_id) {
+      throw new Error('Server did not return a host token.');
+    }
+    await videoEngine.joinWithToken({
+      appId: session.app_id,
       channelName: session.channel_name,
-      uid: session.uid ?? Math.floor(Math.random() * 1_000_000),
-      role: 'publisher',
+      token: host.rtc_token,
+      uid: host.uid,
+      // Broadcast: the audience size never changes the tier — see video/videoQuality.js.
+      sessionKind: 'broadcast',
     });
     localTracks = await videoEngine.publishLocalTracks();
     localTracks.video.play('local-tile');

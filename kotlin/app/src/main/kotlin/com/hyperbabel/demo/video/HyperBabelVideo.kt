@@ -23,6 +23,24 @@ class HyperBabelVideo(private val appContext: Context) {
     private var engine: VideoEngine? = null
     private var localUid: Int = 0
 
+    /**
+     * Remote participants currently in the channel, by uid.
+     *
+     * HyperBabel meters video by the total resolution each participant
+     * RECEIVES, so the publishing resolution has to follow the call size —
+     * see [VideoQuality] for the budget and the presets. This matters more on
+     * mobile than on web: the SDK default (960x540) already exceeds the HD
+     * ceiling from three participants up.
+     *
+     * Membership is tracked by channel presence (onUserJoined / onUserOffline),
+     * not by who publishes video: a participant sitting in the call with the
+     * camera off can switch it on at any moment, and the frames around that
+     * moment must already be sized for them. Over-counting lowers the
+     * resolution (safe); under-counting is what pushes a call above the tier
+     * it declared.
+     */
+    private val remoteUids = linkedSetOf<Int>()
+
     fun init(appId: String, handler: VideoEventHandler) {
         if (engine != null) return
         val cfg = VideoEngineConfig().apply {
@@ -33,13 +51,73 @@ class HyperBabelVideo(private val appContext: Context) {
         engine = VideoEngine.create(cfg)
         engine?.enableVideo()
         engine?.enableAudio()
+        // Size the first published frame before joining — a late joiner walks
+        // into an already-populated channel and must not send one oversized
+        // frame. Re-applied on every roster change via [trackRemoteJoined] /
+        // [trackRemoteLeft], which the screen's event handler must call.
+        applyEncoder()
     }
+
+    /**
+     * Re-apply the publishing preset for the current call size.
+     *
+     * The return code is checked, never ignored: if the downshift does not
+     * land the call keeps publishing large, and every participant's received
+     * total moves into a higher (more expensive) tier than the one declared
+     * at session creation.
+     */
+    fun applyEncoder() {
+        val e = engine ?: return
+        val cfg = VideoQuality.encoderForRemoteCount(remoteUids.size)
+        val rc = e.setVideoEncoderConfiguration(cfg)
+        if (rc != 0) {
+            android.util.Log.w(
+                "HyperBabelVideo",
+                "could not apply ${cfg.dimensions.width}x${cfg.dimensions.height} for " +
+                    "${remoteUids.size} remote participant(s) (code $rc) — " +
+                    "the call may exceed the declared tier",
+            )
+        }
+    }
+
+    /** Call from `onUserJoined`. Keeps the resolution in step with the call size. */
+    fun trackRemoteJoined(uid: Int) {
+        if (remoteUids.add(uid)) applyEncoder()
+    }
+
+    /** Call from `onUserOffline`. */
+    fun trackRemoteLeft(uid: Int) {
+        if (remoteUids.remove(uid)) applyEncoder()
+    }
+
+    /**
+     * The billing tier to declare when creating a session, derived from the
+     * same presets this client publishes with.
+     */
+    fun declaredQuality(): String = VideoQuality.declaredQuality()
 
     /// Join a 1:1 / group video call. Fetches its own RTC token via the
     /// HyperBabel RTM endpoint — used by the in-room video call surface.
-    suspend fun joinCall(channelName: String, role: String = "publisher", uid: Int): VideoEngine? {
+    ///
+    /// @param sessionId REQUIRED when [role] is "publisher" — the id returned by
+    ///   `POST /video/sessions` or `POST /unitedchat/rooms/{roomId}/video-call`.
+    ///   Publisher tokens are minted from the session, so the server rejects the
+    ///   request with 400 `invalid_request` when it is absent.
+    suspend fun joinCall(
+        channelName: String,
+        role: String = "publisher",
+        uid: Int,
+        sessionId: String? = null,
+        externalUserId: String? = null,
+    ): VideoEngine? {
         val tok = ApiClient.rtm.rtcToken(
-            RtcTokenRequest(channelName = channelName, uid = uid, role = role),
+            RtcTokenRequest(
+                channelName = channelName,
+                uid = uid,
+                role = role,
+                sessionId = sessionId,
+                externalUserId = externalUserId,
+            ),
         )
         return joinWithToken(
             channelName = tok.channelName,
@@ -85,6 +163,7 @@ class HyperBabelVideo(private val appContext: Context) {
     fun leaveCall() {
         engine?.stopPreview()
         engine?.leaveChannel()
+        remoteUids.clear()
     }
 
     fun release() {
@@ -92,6 +171,7 @@ class HyperBabelVideo(private val appContext: Context) {
             VideoEngine.destroy()
             engine = null
         }
+        remoteUids.clear()
     }
 
     fun engineOrNull(): VideoEngine? = engine

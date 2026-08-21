@@ -33,17 +33,30 @@ struct VideoCallScreen: View {
     private func join() async {
         do {
             let active = try await UnitedChatService.getActiveVideoCall(roomId: roomId)
-            guard let session = active.session, let channelName = session.channelName else {
+            // Named `callSession` so it does not shadow the app's `session`
+            // (the EnvironmentObject that holds the signed-in user id).
+            guard let callSession = active.session, let channelName = callSession.channelName else {
                 status = "No active session for this room."
                 return
             }
-            let uid = session.uid ?? Int.random(in: 1...1_000_000)
+            guard let sessionId = callSession.sessionId else {
+                status = "Session has no id — cannot request a token."
+                return
+            }
+            let uid = callSession.uid ?? Int.random(in: 1...1_000_000)
+            // Publisher tokens are session-scoped: the server checks that this
+            // user is a participant and signs the token with the session's
+            // channel + uid, which the response echoes back.
             let token = try await RtmService.rtcToken(
-                RtcTokenRequest(channelName: channelName, uid: uid, role: "publisher")
+                RtcTokenRequest(channelName: channelName, uid: uid, role: "publisher",
+                                sessionId: sessionId, externalUserId: session.userId)
             )
             HyperBabelVideo.shared.initialize(appId: token.appId, delegate: nil)
-            try await HyperBabelVideo.shared.joinCall(channelName: channelName, role: "publisher", uid: uid)
-            status = "Joined \(channelName)"
+            try await HyperBabelVideo.shared.joinWithToken(
+                channelName: token.channelName, rtcToken: token.rtcToken,
+                uid: token.uid, role: "publisher"
+            )
+            status = "Joined \(token.channelName)"
         } catch {
             status = "Failed to start call: \((error as? ApiError)?.errorDescription ?? error.localizedDescription)"
         }

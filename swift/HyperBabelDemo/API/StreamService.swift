@@ -120,11 +120,32 @@ struct CreateStreamRequest: Codable {
     let title: String
     let hostUserId: String
     let hostDisplayName: String?
+    /// Billing tier for the broadcast: "hd" (default) | "fhd" | "2k" | "2k_plus".
+    /// Declare the tier that matches what you actually publish — the default
+    /// comes from `VideoQuality.declaredQuality()`, which is derived from the
+    /// same presets the client publishes with.
+    let quality: String
+    /// OPTIONAL self-check. A viewer subscribes to the host stream only, so a
+    /// broadcast's aggregate is this resolution itself. Never the billing
+    /// basis — `quality` is.
+    let publishResolution: PublishResolution
+
+    init(title: String, hostUserId: String, hostDisplayName: String?,
+         quality: String = VideoQuality.declaredQuality(),
+         publishResolution: PublishResolution = VideoQuality.publishResolution(forParticipantCount: 1)) {
+        self.title = title
+        self.hostUserId = hostUserId
+        self.hostDisplayName = hostDisplayName
+        self.quality = quality
+        self.publishResolution = publishResolution
+    }
 
     enum CodingKeys: String, CodingKey {
         case title
         case hostUserId = "host_user_id"
         case hostDisplayName = "host_display_name"
+        case quality
+        case publishResolution = "publish_resolution"
     }
 }
 

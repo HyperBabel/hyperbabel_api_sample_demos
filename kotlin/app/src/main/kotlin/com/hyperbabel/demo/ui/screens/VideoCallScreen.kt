@@ -47,19 +47,33 @@ fun VideoCallScreen(roomId: String, onHangup: () -> Unit) {
             }
             // Issue a token first so we have the appId before initialising.
             val uid = active.uid ?: Random.nextInt(1, 1_000_000)
+            val sessionId = active.sessionId
+                ?: return@LaunchedEffect run { status = "Session has no id — cannot request a token." }
             val tok = ApiClient.rtm.rtcToken(
                 com.hyperbabel.demo.data.RtcTokenRequest(
                     channelName = active.channelName,
                     uid = uid,
                     role = "publisher",
+                    // Publisher tokens are session-scoped: the server checks that
+                    // this user is a participant and signs the token with the
+                    // session's channel + uid, which the response echoes back.
+                    sessionId = sessionId,
+                    externalUserId = Session.userId,
                 ),
             )
             video.init(tok.appId, object : VideoEventHandler() {
                 override fun onJoinChannelSuccess(channel: String?, uid: Int, elapsed: Int) {
                     status = "Joined $channel"
                 }
-                override fun onUserJoined(uid: Int, elapsed: Int) { status = "Peer joined: $uid" }
+                override fun onUserJoined(uid: Int, elapsed: Int) {
+                    // Keep the publishing resolution in step with the call size —
+                    // HyperBabel meters by the total resolution each participant
+                    // receives (video/VideoQuality.kt).
+                    video.trackRemoteJoined(uid)
+                    status = "Peer joined: $uid"
+                }
                 override fun onUserOffline(uid: Int, reason: Int) {
+                    video.trackRemoteLeft(uid)
                     status = "Peer left ($reason)"
                     onHangup()
                 }

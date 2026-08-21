@@ -7,6 +7,7 @@
  */
 
 import { api } from './client.js';
+import { declaredQuality, publishResolutionFor } from '../video/videoQuality.js';
 
 // ── Rooms ─────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,15 @@ export const batchTranslateMessages = (roomId, messageIds, targetLangCd) =>
 export const startVideoCall = (roomId, callerId, targets) =>
   api.post(`/unitedchat/rooms/${roomId}/video-call`, {
     caller_id: callerId,
+    // Billing tier for this call. Derived from the publishing preset in
+    // video/videoQuality.js so the declared tier always matches the pixels
+    // actually sent — change both in that file, never just one.
+    quality: declaredQuality(),
+    // Optional self-check: what we will actually publish at this call size.
+    // The server multiplies it by the streams each participant receives and
+    // returns `quality_warning` if the total exceeds the tier above. Not the
+    // billing basis — `quality` is.
+    publish_resolution: publishResolutionFor(1 + (targets ? targets.length : 1)),
     ...(targets && targets.length ? { target_user_ids: targets } : {}),
   });
 

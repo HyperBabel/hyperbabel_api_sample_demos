@@ -30,6 +30,7 @@ export async function renderStreamViewer(sessionId, navigate) {
       channelName: tok.channel_name,
       uid: tok.uid ?? Math.floor(Math.random() * 1_000_000),
       role: 'subscriber',
+      sessionKind: 'broadcast',
     });
     videoEngine.onRemoteUserPublished((remoteUser, mediaType) => {
       if (mediaType === 'video' && remoteUser.videoTrack) {

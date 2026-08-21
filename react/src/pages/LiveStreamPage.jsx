@@ -27,6 +27,7 @@ import Header from '../components/Header';
 import ChatMessageList from '../components/ChatMessageList';
 import ChatInput from '../components/ChatInput';
 import * as streamService from '../services/streamService';
+import { declaredQuality, publishResolutionFor } from '../services/videoQuality';
 import * as chatService from '../services/chatService';
 import rtcService from '../services/rtcService';
 
@@ -126,16 +127,15 @@ export default function LiveStreamPage() {
     return () => clearInterval(chatPollRef.current);
   }, [chatChannelId]);
 
-  // ── NUMERIC UID for RTC ───────────────────────────────────────────────
-
-  const getUid = (userId) => {
-    let hash = 0;
-    for (let i = 0; i < userId.length; i++) {
-      hash = ((hash << 5) - hash) + userId.charCodeAt(i);
-      hash |= 0;
-    }
-    return Math.abs(hash) % 100000;
-  };
+  /*
+   * ── NUMERIC UID for RTC — no longer derived on the client ──────────────
+   *
+   * HyperBabel assigns the uid: the host's comes with `POST /stream/sessions`,
+   * the viewer's with `POST /stream/sessions/:id/viewer-token`. Hashing a user
+   * id locally used to produce collisions between viewers and needed a manual
+   * +50000 offset to stay clear of the host — the server has no such problem
+   * because it allocates from one place.
+   */
 
   // ── HOST: Create stream session ────────────────────────────────────────
 
@@ -151,6 +151,11 @@ export default function LiveStreamPage() {
         title: streamTitle,
         host_display_name: user.display_name,
         host_preferred_lang_cd: user.preferred_lang_cd,
+        // Billing tier for this broadcast — see services/videoQuality.js.
+        quality: declaredQuality(),
+        // Optional self-check. A viewer subscribes to the host stream only, so
+        // a broadcast's aggregate is this resolution itself — pass 1.
+        publish_resolution: publishResolutionFor(1),
       });
 
       const streamSession = result.session || result;
@@ -163,14 +168,17 @@ export default function LiveStreamPage() {
         await chatService.createChannel({ channel_name: channelId, channel_type: 'group' });
       } catch { /* May already exist */ }
 
-      // Step 3: Join RTC as publisher (host)
-      // HyperBabel issues the RTC credential via /rtm/rtc/token
+      // Step 3: Join RTC as publisher (host).
+      // The create response already carries a 24-hour host token plus the
+      // channel name and uid — join with those. Deriving a channel name on the
+      // client (e.g. from the session id) puts the broadcast on a channel the
+      // server does not know about, which is also a channel it cannot meter.
       setStatusText('Joining broadcast channel...');
-      const uid = getUid(user.user_id);
-      const hostRtcSession = await rtcService.joinAsHost(streamSession.id, uid, {
-        externalUserId: user.user_id,
-        userName: user.display_name,
-        preferredLangCd: user.preferred_lang_cd,
+      const hostRtcSession = await rtcService.joinAsHost({
+        appId: streamSession.app_id,
+        channelName: streamSession.channel_name,
+        token: streamSession.host?.rtc_token,
+        uid: streamSession.host?.uid,
       });
       hostSessionRef.current = hostRtcSession;
 
@@ -230,11 +238,18 @@ export default function LiveStreamPage() {
       // Step 2: Join as RTC subscriber
       // When the host publishes, the tracks are surfaced via the callback
       setStatusText('Connecting to stream...');
-      const uid = getUid(user.user_id) + 50000; // Offset to avoid colliding with host UID
+      // The viewer-token endpoint is session-scoped: it returns the real
+      // channel name, a uid that cannot collide with the host's, and a
+      // subscriber token. Nothing is derived on the client.
+      const vt = await streamService.getViewerToken(sessionId, { user_id: user.user_id });
 
       const viewerRtcSession = await rtcService.joinAsViewer(
-        sessionId,
-        uid,
+        {
+          appId: vt.app_id,
+          channelName: vt.channel_name,
+          token: vt.token ?? vt.rtc_token,
+          uid: vt.uid,
+        },
         ({ videoTrack, audioTrack, mediaType }) => {
           // Render the host's video track in the viewer element
           if (mediaType === 'video' && videoTrack && remoteVideoRef.current) {

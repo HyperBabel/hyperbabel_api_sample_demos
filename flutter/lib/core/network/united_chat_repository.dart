@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import '../video/video_quality.dart';
 
 /// Repository for HyperBabel United Chat REST APIs.
 class UnitedChatRepository {
@@ -189,6 +190,17 @@ class UnitedChatRepository {
           'caller_id': callerId,
           if (targetUserIds != null && targetUserIds.isNotEmpty)
             'target_user_ids': targetUserIds,
+          // Billing tier for this call. Derived from the publishing preset in
+          // core/video/video_quality.dart so the declared tier always matches
+          // the pixels actually sent — change both in that file, never just one.
+          'quality': VideoQuality.declaredQualityWire(),
+          // Optional self-check: what we will actually publish at this call
+          // size. The server multiplies it by the streams each participant
+          // receives and returns `quality_warning` when the total exceeds the
+          // tier above. Never the billing basis — `quality` is.
+          'publish_resolution': VideoQuality.publishResolutionFor(
+            1 + ((targetUserIds != null && targetUserIds.isNotEmpty) ? targetUserIds.length : 1),
+          ),
         },
       );
       return response.data is Map ? Map<String, dynamic>.from(response.data) : null;

@@ -46,7 +46,7 @@ export const requestToken = async (
   userName?: string,
   preferredLangCd?: string,
 ): Promise<object> => {
-  const data = await api.post<{ org_id: string; ably_token_request: object }>(`${BASE}/token`, {
+  const data = await api.post<{ org_id: string; realtime_token_request: object }>(`${BASE}/token`, {
     user_id:           userId,
     user_name:         userName,
     preferred_lang_cd: preferredLangCd,
@@ -54,7 +54,7 @@ export const requestToken = async (
   _orgId = data.org_id;
   // The HyperBabel token endpoint returns a signed token request object
   // that the real-time client uses to authenticate the connection.
-  return data.ably_token_request;
+  return data.realtime_token_request;
 };
 
 // ── Connection ────────────────────────────────────────────────────────────

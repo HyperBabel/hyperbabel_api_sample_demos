@@ -26,7 +26,7 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen> {
 
   static const _languages = <(String, String)>[
     ('en', 'English'),
-    ('ko', '한국어'),
+    ('ko', '한국어 (Korean)'),
     ('ja', '日本語'),
     ('zh', '中文'),
     ('es', 'Español'),
