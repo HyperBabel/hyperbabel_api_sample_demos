@@ -223,12 +223,12 @@ function MessageBubble({ msg, isSelf, translated, onDelete, onReply, onOpenThrea
           )}
 
           {/* Reactions row */}
-          {msg.reactions && msg.reactions.length > 0 && (
+          {Object.keys(msg.reactions ?? {}).length > 0 && (
             <View style={styles.reactionsRow}>
-              {msg.reactions.map((r, i) => (
-                <View key={i} style={styles.reactionChip}>
-                  <Text style={styles.reactionEmoji}>{r.emoji}</Text>
-                  {r.count && r.count > 1 && <Text style={styles.reactionCount}>{r.count}</Text>}
+              {Object.entries(msg.reactions ?? {}).map(([emoji, userIds]) => (
+                <View key={emoji} style={styles.reactionChip}>
+                  <Text style={styles.reactionEmoji}>{emoji}</Text>
+                  {userIds.length > 1 && <Text style={styles.reactionCount}>{userIds.length}</Text>}
                 </View>
               ))}
             </View>
@@ -494,21 +494,21 @@ export default function ChatRoomScreen() {
   const handleReaction = async (emoji: string) => {
     if (!reactTarget || !user || !roomId) return;
     try {
-      await chatService.addReaction(roomId, reactTarget.message_id, user.userId, emoji);
+      // The server returns the FULL reaction map — store it as-is instead of
+      // guessing an optimistic shape. That also keeps counts correct when
+      // several people react at once.
+      const { reactions } = await chatService.addReaction(
+        roomId, reactTarget.message_id, user.userId, emoji,
+      );
       haptic.light();
-      // Optimistically update reactions
-      setMessages((prev) => prev.map((m) => {
-        if (m.message_id !== reactTarget.message_id) return m;
-        const existing = m.reactions ?? [];
-        const idx = existing.findIndex((r) => r.emoji === emoji);
-        if (idx >= 0) {
-          const updated = [...existing];
-          updated[idx] = { ...updated[idx], count: (updated[idx].count ?? 1) + 1 };
-          return { ...m, reactions: updated };
-        }
-        return { ...m, reactions: [...existing, { emoji, user_id: user.userId, count: 1 }] };
-      }));
-    } catch { /* ignore */ }
+      setMessages((prev) => prev.map((m) =>
+        m.message_id === reactTarget.message_id ? { ...m, reactions } : m,
+      ));
+    } catch (err: any) {
+      // Never swallow this. A silent catch here hides auth/scope failures and
+      // makes the button look dead.
+      Alert.alert('Reaction failed', err?.message ?? 'Please try again.');
+    }
     setReactTarget(null);
   };
 

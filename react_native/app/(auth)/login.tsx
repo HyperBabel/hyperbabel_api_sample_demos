@@ -47,12 +47,12 @@ import { colors, spacing, textPresets, borderRadius } from '@/theme';
 const LANGUAGES = [
   { code: 'en', label: 'English' },
   { code: 'ko', label: '한국어 (Korean)' },
-  { code: 'ja', label: '日本語' },
-  { code: 'zh', label: '中文' },
-  { code: 'fr', label: 'Français' },
-  { code: 'es', label: 'Español' },
-  { code: 'de', label: 'Deutsch' },
-  { code: 'pt', label: 'Português' },
+  { code: 'ja', label: '日本語 (Japanese)' },
+  { code: 'zh', label: '中文 (Chinese)' },
+  { code: 'fr', label: 'Français (French)' },
+  { code: 'es', label: 'Español (Spanish)' },
+  { code: 'de', label: 'Deutsch (German)' },
+  { code: 'pt', label: 'Português (Portuguese)' },
 ];
 
 const PROD_BASE_URL =

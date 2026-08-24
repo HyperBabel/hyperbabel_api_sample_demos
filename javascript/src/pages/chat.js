@@ -127,11 +127,13 @@ export async function renderChat(roomId, navigate) {
       html += `<div>${escapeHtml(content || '')}</div>`;
     }
 
-    if (m.reactions && m.reactions.length) {
+    // Reactions are a map: { "👍": ["user_1", "user_2"] }
+    const reactionEntries = Object.entries(m.reactions || {}).filter(([, ids]) => ids && ids.length);
+    if (reactionEntries.length) {
       html += '<div style="display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;">' +
-        m.reactions.map((r) => {
-          const count = r.count ?? (r.users?.length ?? 0);
-          return `<span style="background: rgba(255,255,255,0.15); padding: 2px 6px; border-radius: 10px; font-size: 11px;">${escapeHtml(r.emoji)} ${count}</span>`;
+        reactionEntries.map(([emoji, ids]) => {
+          const count = ids.length;
+          return `<span style="background: rgba(255,255,255,0.15); padding: 2px 6px; border-radius: 10px; font-size: 11px;">${escapeHtml(emoji)}${count > 1 ? ' ' + count : ''}</span>`;
         }).join('') + '</div>';
     }
 
@@ -223,7 +225,14 @@ export async function renderChat(roomId, navigate) {
     if (!pick) return;
     const emoji = emojis.find((e) => pick.includes(e)) || pick.trim();
     if (!emoji) return;
-    chatApi.addReaction(msg.id, user.user_id, emoji).catch((err) => alert(err.message));
+    chatApi
+      .addReaction(roomId, msg.id, user.user_id, emoji)
+      .then((res) => {
+        // Server returns the full map — store it as-is.
+        msg.reactions = res.reactions || {};
+        renderMessages();
+      })
+      .catch((err) => alert(err.message));
   }
 
   async function editMessageFlow(msg) {

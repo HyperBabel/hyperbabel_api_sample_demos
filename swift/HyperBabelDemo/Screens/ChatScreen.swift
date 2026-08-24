@@ -220,8 +220,8 @@ struct ChatScreen: View {
 
                 if let reactions = msg.reactions, !reactions.isEmpty {
                     HStack(spacing: 4) {
-                        ForEach(reactions, id: \.emoji) { r in
-                            Text("\(r.emoji) \(r.count ?? r.users?.count ?? 0)")
+                        ForEach(reactions.sorted(by: { $0.key < $1.key }), id: \.key) { emoji, userIds in
+                            Text(userIds.count > 1 ? "\(emoji) \(userIds.count)" : emoji)
                                 .font(.caption2)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Color.secondary.opacity(0.15))
@@ -490,8 +490,17 @@ struct ChatScreen: View {
         guard let msg = reactionFor else { return }
         reactionFor = nil
         do {
-            _ = try await ChatService.addReaction(messageId: msg.id, userId: session.userId, emoji: emoji)
-        } catch { /* best-effort */ }
+            // The server returns the full reaction map — apply it as-is.
+            let res = try await ChatService.addReaction(
+                roomId: roomId, messageId: msg.id, userId: session.userId, emoji: emoji
+            )
+            if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
+                messages[idx].reactions = res.reactions
+            }
+        } catch {
+            // Never swallow silently — a dead-looking button is worse than a message.
+            errorText = error.localizedDescription
+        }
     }
 
     private func pingTyping() {

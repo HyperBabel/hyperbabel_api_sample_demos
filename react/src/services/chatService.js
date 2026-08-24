@@ -85,22 +85,29 @@ export const editMessage = (channelId, messageId, userId, content) =>
 // ── Reactions ────────────────────────────────────────────────────────────
 
 /**
+/**
  * Add an emoji reaction to a message (idempotent for same user+emoji).
- * @param {string} messageId
- * @param {string} userId
- * @param {string} emoji — e.g. '👍', '❤️'
+ *
+ * Emoji reactions are ROOM-SCOPED.
+ *
+ * Use `/unitedchat/rooms/:roomId/messages/:messageId/reactions`, not the
+ * `/chat/...` variant. The `/chat` route is server-to-server only and rejects
+ * end-user (Session-Token) JWTs — which is exactly what this demo signs in
+ * with, so it would fail with 403.
+ *
+ * The response is the FULL reaction map for that message:
+ *   { "reactions": { "👍": ["user_1", "user_2"], "❤️": ["user_3"] } }
+ * Store it as-is; do not hand-roll an optimistic array.
  */
-export const addReaction = (messageId, userId, emoji) =>
-  api.post(`${BASE}/messages/${messageId}/reactions`, { user_id: userId, emoji });
+export const addReaction = (roomId, messageId, userId, emoji) =>
+  api.post(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
 
 /**
- * Remove a previously added emoji reaction.
- * @param {string} messageId
- * @param {string} userId
- * @param {string} emoji
+ * Remove a previously added emoji reaction. Same room-scoped path as
+ * addReaction; returns the updated reaction map.
  */
-export const removeReaction = (messageId, userId, emoji) =>
-  api.delete(`${BASE}/messages/${messageId}/reactions`, { user_id: userId, emoji });
+export const removeReaction = (roomId, messageId, userId, emoji) =>
+  api.delete(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
 
 // ── Read Status ──────────────────────────────────────────────────────────
 

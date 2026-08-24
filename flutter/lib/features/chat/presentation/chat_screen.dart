@@ -325,7 +325,17 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     });
     try {
-      await _chat.addReaction(messageId: id, userId: _userId!, emoji: emoji);
+      // Server returns the full map — replace the optimistic guess with it so
+      // counts stay right when several people react at the same time.
+      final reactions = await _chat.addReaction(
+        roomId: widget.roomId, messageId: id, userId: _userId!, emoji: emoji,
+      );
+      if (mounted) {
+        setState(() {
+          final i = _messages.indexWhere((m) => (m['id'] ?? m['message_id']) == id);
+          if (i >= 0) _messages[i] = {..._messages[i], 'reactions': reactions};
+        });
+      }
     } catch (e) {
       _toast(e.toString());
     }

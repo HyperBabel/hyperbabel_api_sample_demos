@@ -443,6 +443,7 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
                             scope.launch {
                                 runCatching {
                                     ApiClient.chat.addReaction(
+                                        roomId,
                                         msg.id,
                                         mapOf("user_id" to Session.userId, "emoji" to e),
                                     )

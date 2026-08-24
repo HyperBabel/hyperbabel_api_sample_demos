@@ -27,12 +27,12 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen> {
   static const _languages = <(String, String)>[
     ('en', 'English'),
     ('ko', '한국어 (Korean)'),
-    ('ja', '日本語'),
-    ('zh', '中文'),
-    ('es', 'Español'),
-    ('fr', 'Français'),
-    ('de', 'Deutsch'),
-    ('pt', 'Português'),
+    ('ja', '日本語 (Japanese)'),
+    ('zh', '中文 (Chinese)'),
+    ('es', 'Español (Spanish)'),
+    ('fr', 'Français (French)'),
+    ('de', 'Deutsch (German)'),
+    ('pt', 'Português (Portuguese)'),
   ];
 
   bool _isValidEmail(String s) =>

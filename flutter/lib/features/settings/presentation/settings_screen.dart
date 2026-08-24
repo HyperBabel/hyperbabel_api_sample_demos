@@ -40,11 +40,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static const _languages = [
     ('en', 'English'),
     ('ko', '한국어 (Korean)'),
-    ('ja', '日本語'),
-    ('zh', '中文'),
-    ('fr', 'Français'),
-    ('es', 'Español'),
-    ('de', 'Deutsch'),
+    ('ja', '日本語 (Japanese)'),
+    ('zh', '中文 (Chinese)'),
+    ('fr', 'Français (French)'),
+    ('es', 'Español (Spanish)'),
+    ('de', 'Deutsch (German)'),
   ];
 
   @override

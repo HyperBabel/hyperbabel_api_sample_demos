@@ -27,7 +27,7 @@ the sibling `sample_demos/*` projects.
 | -------------------- | ---------------------------------------------------------- |
 | Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
 | Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
-| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` + `/chat/messages/:id/reactions` + Real-Time push |
+| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped) + Real-Time push |
 | Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm` |
 | Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
 | Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
@@ -157,7 +157,7 @@ swift/
     │   ├── ApiClient.swift            # Customer JWT HTTP client (B1) — proactive refresh + 401 fallback + org-key guard
     │   ├── FirebaseAuthService.swift  # Firebase → /customer/auth/firebase-exchange
     │   ├── AuthService.swift          # /auth/usage
-    │   ├── ChatService.swift          # /chat/* (reactions)
+    │   ├── ChatService.swift          # reactions (room-scoped)
     │   ├── UnitedChatService.swift    # rooms / messages / moderation / video-call lifecycle
     │   ├── StreamService.swift        # live stream session lifecycle
     │   ├── StorageService.swift       # 3-step presign upload

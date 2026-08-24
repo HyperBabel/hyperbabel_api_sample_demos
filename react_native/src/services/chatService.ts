@@ -33,12 +33,14 @@ export interface ChatMessage {
   message_type: string;
   reply_to?:    string | null;
   thread_count?: number;
-  reactions?:   ChatReaction[];
+  /** Server shape is a map: `{ "👍": ["user_1", "user_2"] }`. */
+  reactions?:   Record<string, string[]>;
   deleted_at?:  string | null;
   created_at:   string;
   updated_at?:  string;
 }
 
+/** @deprecated The server returns `Record<emoji, userId[]>` — see Message.reactions. */
 export interface ChatReaction {
   emoji:    string;
   user_id:  string;
@@ -103,25 +105,29 @@ export const deleteChannelMessage = (channelId: string, messageId: string, userI
 
 /**
  * Add an emoji reaction to a message. Reactions are message-scoped on the
- * server (not room-scoped), so the path doesn't need a room id.
+ * Emoji reactions are ROOM-SCOPED.
  *
- * The first arg is kept for source-compat with existing call sites that
- * still thread the room id around — it's deliberately ignored.
+ * Use `/unitedchat/rooms/:roomId/messages/:messageId/reactions`, not the
+ * `/chat/...` variant. The `/chat` route is server-to-server only and rejects
+ * end-user (Session-Token) JWTs — which is exactly what this demo signs in
+ * with, so it would fail with 403.
+ *
+ * The response is the FULL reaction map for that message:
+ *   { "reactions": { "👍": ["user_1", "user_2"], "❤️": ["user_3"] } }
+ * Store it as-is; do not hand-roll an optimistic array.
  */
-export const addReaction = (_roomId: string, messageId: string, userId: string, emoji: string) =>
-  api.post(`/chat/messages/${messageId}/reactions`, {
-    user_id: userId,
-    emoji,
-  });
+export const addReaction = (roomId: string, messageId: string, userId: string, emoji: string) =>
+  api.post<{ reactions: Record<string, string[]> }>(
+    `/unitedchat/rooms/${roomId}/messages/${messageId}/reactions`,
+    { user_id: userId, emoji },
+  );
 
-/**
- * Remove an emoji reaction from a message. Same path scoping as addReaction.
- */
-export const removeReaction = (_roomId: string, messageId: string, userId: string, emoji: string) =>
-  api.delete(`/chat/messages/${messageId}/reactions`, {
-    user_id: userId,
-    emoji,
-  });
+/** Remove an emoji reaction. Same room-scoped path; returns the updated map. */
+export const removeReaction = (roomId: string, messageId: string, userId: string, emoji: string) =>
+  api.delete<{ reactions: Record<string, string[]> }>(
+    `/unitedchat/rooms/${roomId}/messages/${messageId}/reactions`,
+    { user_id: userId, emoji },
+  );
 
 // ── Threads ───────────────────────────────────────────────────────────────
 

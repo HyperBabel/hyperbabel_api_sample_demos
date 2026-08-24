@@ -71,9 +71,9 @@ function PushTokenItem({ row }: { row: PushTokenRow }) {
 const LANGUAGES = [
   { code: 'en', label: 'English' },
   { code: 'ko', label: '한국어 (Korean)' },
-  { code: 'ja', label: '日本語' },
-  { code: 'zh', label: '中文' },
-  { code: 'fr', label: 'Français' },
+  { code: 'ja', label: '日本語 (Japanese)' },
+  { code: 'zh', label: '中文 (Chinese)' },
+  { code: 'fr', label: 'Français (French)' },
 ];
 
 export default function SettingsScreen() {

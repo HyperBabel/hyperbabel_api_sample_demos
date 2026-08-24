@@ -33,9 +33,9 @@ export async function renderVideoCall(roomId, navigate) {
       <label class="muted" style="font-size:.8rem;">Translate to
         <select id="cc-target" style="margin-left:4px;">
           <option value="en">English</option><option value="ko">한국어 (Korean)</option>
-          <option value="es">Español</option><option value="ja">日本語</option>
-          <option value="zh">中文</option><option value="fr">Français</option>
-          <option value="de">Deutsch</option><option value="hi">हिन्दी</option>
+          <option value="es">Español (Spanish)</option><option value="ja">日本語 (Japanese)</option>
+          <option value="zh">中文 (Chinese)</option><option value="fr">Français (French)</option>
+          <option value="de">Deutsch (German)</option><option value="hi">हिन्दी (Hindi)</option>
         </select>
       </label>
     </div>

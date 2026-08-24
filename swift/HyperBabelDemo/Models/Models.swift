@@ -45,11 +45,9 @@ struct CreateRoomRequest: Codable {
     }
 }
 
-struct Reaction: Codable, Hashable {
-    let emoji: String
-    let count: Int?
-    let users: [String]?
-}
+/// The server sends reactions as a MAP — `{ "👍": ["user_1", "user_2"] }` —
+/// not as a list of objects. `Message.reactions` uses that shape directly.
+typealias ReactionMap = [String: [String]]
 
 struct MessageMetadata: Codable, Hashable {
     let url: String?
@@ -74,7 +72,8 @@ struct Message: Codable, Hashable, Identifiable {
     let createdAt: String?
     let updatedAt: String?
     let deletedAt: String?
-    let reactions: [Reaction]?
+    /// emoji → the user ids that reacted with it.
+    var reactions: ReactionMap?
     let metadata: MessageMetadata?
 
     enum CodingKeys: String, CodingKey {
