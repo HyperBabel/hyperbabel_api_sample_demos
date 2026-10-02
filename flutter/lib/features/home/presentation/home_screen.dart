@@ -220,7 +220,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             _buildActionCard(
               context,
               title: 'Settings',
-              description: 'API usage, push tokens, language detection, blocked users.',
+              description: 'API usage, push tokens, language, blocked users.',
               icon: Icons.settings_outlined,
               onTap: () => context.go('/settings'),
             ),

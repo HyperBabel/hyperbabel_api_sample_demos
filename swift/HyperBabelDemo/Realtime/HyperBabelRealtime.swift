@@ -5,9 +5,11 @@
  *      org id we'll namespace channels with.
  *   2. Hand the payload to the underlying real-time SDK's authCallback so
  *      tokens auto-renew in the background.
- *   3. Subscribe on `hb:{compactOrgId}:room:{roomId}` for room events. Both
+ *   3. Subscribe with the room's `realtime_channel` from the REST API. Both
  *      chat messages and typing pings come through this single channel —
  *      callers should look at the payload's `type` field to disambiguate.
+ *   4. Subscribe to the user's PRIVATE channel, `user:{orgId}:{userId}`, for
+ *      peer signals such as incoming-call invites (`subscribeUserSignals`).
  *
  * Vendor SDK class names are imported under neutral aliases so the body of
  * this file talks about HyperBabel concepts only.
@@ -27,13 +29,28 @@ final class HyperBabelRealtime {
 
     private var client: RealtimeClient?
     private var orgId: String?
+    /// The connect in flight, shared by concurrent callers (the incoming-call
+    /// listener and a chat screen can both ask at once).
+    private var connecting: Task<Void, Error>?
+    /// Bumped by `disconnect()` so a connect that is still waiting on its
+    /// token cannot open a connection after the user signed out.
+    private var generation = 0
 
     /// Open a long-lived connection. The first token round-trip also tells
-    /// us which `orgId` to namespace channels with — keep that on hand for
-    /// `subscribeRoom`. Idempotent: calling twice while already connected
-    /// is a no-op.
+    /// us which `orgId` names the user's private channel — kept for
+    /// `subscribeUserSignals`. Idempotent: calling again while connected, or
+    /// while a connect is already in flight, waits for that one.
     func connect() async throws {
         if client != nil { return }
+        if let connecting { return try await connecting.value }
+        let started = generation
+        let task = Task { try await self.openConnection(generation: started) }
+        connecting = task
+        defer { if connecting == task { connecting = nil } }
+        try await task.value
+    }
+
+    private func openConnection(generation started: Int) async throws {
         let initial = try await RtmService.realtimeToken(
             RealtimeTokenRequest(
                 userId: Session.shared.userId,
@@ -43,6 +60,10 @@ final class HyperBabelRealtime {
         )
         guard let payload = initial.tokenRequest else {
             throw realtimeError("Server did not return a real-time token request payload")
+        }
+        // `disconnect()` ran (sign-out) while the token was in flight.
+        guard started == generation else {
+            throw realtimeError("Disconnected while connecting")
         }
         let oid = initial.orgId ?? ""
         orgId = oid
@@ -97,6 +118,10 @@ final class HyperBabelRealtime {
                 case .failed, .suspended:
                     resumed = true
                     cont.resume(throwing: stateChange.reason ?? realtimeError("Realtime connect failed"))
+                case .closed:
+                    // `disconnect()` closed the client before it connected.
+                    resumed = true
+                    cont.resume(throwing: realtimeError("Real-time connection closed"))
                 default:
                     break
                 }
@@ -104,14 +129,22 @@ final class HyperBabelRealtime {
         }
     }
 
-    /// Subscribe to room-scoped events. Returns an unsubscribe closure. The
-    /// channel name format (`hb:{compactOrgId}:room:{roomId}`) is fixed by
-    /// the server and must be reproduced exactly. Callers receive the
-    /// event name (e.g. `message`, `message.deleted`, `read_receipt`) and
-    /// a Swift dictionary view of the payload.
-    func subscribeRoom(_ roomId: String, onEvent: @escaping (String, Any?) -> Void) -> () -> Void {
-        guard let active = client else { return { /* not connected */ } }
-        let channel: RealtimeChannel = active.channels.get(channelName(for: roomId))
+    /// Subscribe to a room's real-time events. Returns an unsubscribe closure.
+    ///
+    /// `realtimeChannel` MUST be the room's `realtime_channel` value from the
+    /// REST API, passed through verbatim. Do not rebuild it from a room id —
+    /// the server derives the name from values this client does not have, so a
+    /// reconstructed name subscribes to a channel nobody publishes on and the
+    /// failure is silent.
+    ///
+    /// Typing indicators arrive on this same channel as a `{ type: "typing" }`
+    /// payload; there is no separate typing channel.
+    ///
+    /// Callers receive the event name (e.g. `message`, `message.deleted`,
+    /// `read_receipt`) and a Swift dictionary view of the payload.
+    func subscribeRoom(_ realtimeChannel: String, onEvent: @escaping (String, Any?) -> Void) -> () -> Void {
+        guard let active = client, !realtimeChannel.isEmpty else { return { /* not connected */ } }
+        let channel: RealtimeChannel = active.channels.get(realtimeChannel)
         let listener = channel.subscribe { msg in
             let name = msg.name ?? ""
             let data: Any? = Self.normalize(msg.data)
@@ -124,22 +157,43 @@ final class HyperBabelRealtime {
         }
     }
 
+    /// Subscribe to the signed-in user's PRIVATE channel,
+    /// `user:{orgId}:{userId}`. Returns an unsubscribe closure.
+    ///
+    /// Peer-scoped signals land here — most importantly the incoming-call
+    /// invite. Every one is published under the event name `signal`; the
+    /// payload's `type` field says which signal it is (`CALL_INVITE`,
+    /// `CALL_BUSY`, …). The real-time token grants subscribe on this one
+    /// channel for the signed-in user only.
+    ///
+    /// Call `connect()` first: the org id that names the channel comes from
+    /// the token response.
+    func subscribeUserSignals(onSignal: @escaping ([String: Any]) -> Void) -> () -> Void {
+        let userId = Session.shared.userId
+        guard let active = client, let oid = orgId, !oid.isEmpty, !userId.isEmpty else {
+            return { /* not connected */ }
+        }
+        let channel: RealtimeChannel = active.channels.get("user:\(oid):\(userId)")
+        let listener = channel.subscribe("signal") { msg in
+            guard let data = Self.normalize(msg.data) as? [String: Any] else { return }
+            Task { @MainActor in onSignal(data) }
+        }
+        return { [weak channel, weak listener] in
+            if let channel, let listener {
+                channel.unsubscribe(listener)
+            }
+        }
+    }
+
     func disconnect() {
+        generation += 1
+        connecting = nil
         client?.close()
         client = nil
         orgId = nil
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
-
-    nonisolated private func channelName(for roomId: String) -> String {
-        // Read of @MainActor `orgId` from a nonisolated context — safe in
-        // practice because `connect()` runs to completion before subscribe is
-        // exposed and we never reassign during steady-state use.
-        let compact = (MainActor.assumeIsolated { orgId } ?? "unknown")
-            .replacingOccurrences(of: "-", with: "")
-        return "hb:\(compact):room:\(roomId)"
-    }
 
     /// Bridge our wire payload into ARTTokenRequest via the SDK's `fromJson`
     /// helper. Going through fromJson sidesteps cross-platform field-type

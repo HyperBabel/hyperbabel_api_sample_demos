@@ -33,8 +33,8 @@ class StorageRepository {
         if (folder != null) 'folder': folder,
       },
     );
-    // cf_workers_api wraps the payload as `{ message, data: { upload_url, key, … } }`.
-    // hb_api returned a flat `{ presigned_url, key }`. Tolerate both.
+    // The HyperBabel API wraps the payload as `{ message, data: { upload_url, key, … } }`.
+    // Older API versions returned a flat `{ presigned_url, key }`. Tolerate both.
     final rawPresign = presignResp.data as Map<String, dynamic>;
     final presignData =
         (rawPresign['data'] as Map<String, dynamic>?) ?? rawPresign;

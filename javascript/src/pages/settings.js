@@ -1,11 +1,11 @@
 /**
- * Settings page — profile, language, API usage, push tokens, language detect
- * playground, and a link to the Block management screen.
+ * Settings page — profile, language, API usage, push tokens, a note on
+ * language detection (it needs your backend), and a link to the Block
+ * management screen.
  */
 
 import * as auth from '../api/auth.js';
 import * as push from '../api/push.js';
-import * as translate from '../api/translate.js';
 import { logoutAndClear } from '../api/firebaseAuth.js';
 
 export async function renderSettings(navigate) {
@@ -43,12 +43,13 @@ export async function renderSettings(navigate) {
 
     <div class="card">
       <h3 style="margin-top: 0;">Language Detection</h3>
-      <p class="muted" style="margin-top: 0;">Type any text to see what language the AI Translation engine identifies it as.</p>
-      <div class="chat-input-row">
-        <input id="detect-input" placeholder="Type something to detect…" />
-        <button id="detect-btn">Detect</button>
-      </div>
-      <div id="detect-result" class="muted" style="margin-top: 8px;"></div>
+      <p class="muted" style="margin: 0;">
+        Needs your backend. <code>POST /translate/detect</code>, like every
+        <code>/translate/*</code> endpoint, accepts only your organization API key,
+        which must never ship in a browser — call it from your server
+        (see <code>src/api/translate.js</code>). Signed-in users can still
+        translate chat messages: in a room, open a message's actions and pick Translate.
+      </p>
     </div>
 
     <div class="card">
@@ -69,16 +70,22 @@ export async function renderSettings(navigate) {
       const box = document.getElementById('usage');
       if (!u) { box.textContent = 'Unable to load usage.'; return; }
       box.innerHTML = '';
+      // GET /auth/usage returns your organization's totals for this month next
+      // to the plan allowance (`monthly_*`, where -1 means unlimited). 64-bit
+      // counters arrive as strings.
       const rows = [
-        ['Chat Messages', u.chat_messages_sent, u.plan_limits?.chat_messages],
-        ['Video Minutes', u.video_minutes,      u.plan_limits?.video_minutes],
-        ['Stream Minutes', u.stream_minutes,    u.plan_limits?.stream_minutes],
-        ['Translations',  u.translations,       u.plan_limits?.translations],
+        ['Plan',                       u.plan_name,       null],
+        ['Chat messages',              u.messages_sent,   u.monthly_messages],
+        ['HD video minutes',           u.hd_video_mins,   u.monthly_hd_video_mins],
+        ['HD stream minutes',          u.hd_stream_mins,  u.monthly_hd_stream_mins],
+        ['Translated characters',      u.translate_chars, u.monthly_translate_chars],
+        ['Speech translation minutes', u.stt_mins,        u.monthly_stt_mins],
       ];
       for (const [label, value, limit] of rows) {
+        const limitText = limit == null ? '' : Number(limit) < 0 ? ' / unlimited' : ` / ${limit}`;
         const row = document.createElement('div');
         row.className = 'row';
-        row.innerHTML = `<div>${escapeHtml(label)}</div><div style="text-align: right;">${value ?? '—'}${limit ? ' / ' + limit : ''}</div>`;
+        row.innerHTML = `<div>${escapeHtml(label)}</div><div style="text-align: right;">${escapeHtml(value ?? '—')}${escapeHtml(limitText)}</div>`;
         box.appendChild(row);
       }
     })
@@ -105,25 +112,6 @@ export async function renderSettings(navigate) {
       }
     })
     .catch(() => { document.getElementById('tokens').textContent = 'Unable to load tokens.'; });
-
-  // Language detection playground.
-  const detect = async () => {
-    const text = document.getElementById('detect-input').value.trim();
-    if (!text) return;
-    const out = document.getElementById('detect-result');
-    out.textContent = 'Detecting…';
-    try {
-      const res = await translate.detectLanguage(text);
-      const conf = Math.round((res.confidence ?? 0) * 100);
-      out.textContent = `${res.language ?? '?'}  (${conf}% confidence)`;
-    } catch (err) {
-      out.textContent = `Error: ${err.message}`;
-    }
-  };
-  document.getElementById('detect-btn').onclick = detect;
-  document.getElementById('detect-input').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); detect(); }
-  });
 }
 
 function escapeHtml(s) {

@@ -4,6 +4,13 @@
  * Host publishes video and audio (broadcaster role via RtcClient).
  * Supports StreamChat overlay once Go Live is active.
  *
+ * ⚠️ Backend required — this screen cannot work from the app alone. The
+ *    `/stream/*` calls it makes authenticate with your ORGANIZATION API key,
+ *    which never ships on a device, so they return 401
+ *    `invalid_api_key_format` here. Proxy them through your own server:
+ *    app → your backend (holds hb_live_…) → HyperBabel /stream/*.
+ *    See src/services/streamService.ts for the full explanation.
+ *
  * Route: /live-stream/host
  * Params: sessionId (from createSession)
  */

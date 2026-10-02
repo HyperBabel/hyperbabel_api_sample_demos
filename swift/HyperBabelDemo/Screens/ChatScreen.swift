@@ -6,6 +6,7 @@
  *   - Members modal with promote / demote / ban + room mute toggle
  *   - Freeze toggle for owner / sub_admin
  *   - Locale-aware timestamps + edited indicator
+ *   - Video-call events shown as one-line notices
  */
 import PhotosUI
 import SwiftUI
@@ -24,6 +25,8 @@ struct ChatScreen: View {
     @State private var unsubscribe: (() -> Void)?
 
     @State private var role: String = "member"
+    /// Room member ids — a group-room call has to name who to ring.
+    @State private var memberIds: [String] = []
     @State private var isFrozen = false
     @State private var isMuted = false
     @State private var typingFrom: String?
@@ -94,7 +97,7 @@ struct ChatScreen: View {
             .environmentObject(session)
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoSelection, matching: .images)
-        .onChange(of: photoSelection) { _, item in
+        .onChange(of: photoSelection) { item in
             guard let item else { return }
             Task { await handleImagePick(item) }
         }
@@ -137,12 +140,16 @@ struct ChatScreen: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(messages) { msg in
-                        messageRow(msg)
+                        if msg.messageType == "video_call" {
+                            callNotice(msg)
+                        } else {
+                            messageRow(msg)
+                        }
                     }
                 }
                 .padding(12)
             }
-            .onChange(of: messages.count) { _, _ in
+            .onChange(of: messages.count) { _ in
                 if let last = messages.last {
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
@@ -180,7 +187,7 @@ struct ChatScreen: View {
             }
             TextField("Type a message", text: $input)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: input) { _, _ in pingTyping() }
+                .onChange(of: input) { _ in pingTyping() }
             Button("Send") { Task { await send() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(sending)
@@ -194,8 +201,11 @@ struct ChatScreen: View {
     private func messageRow(_ msg: Message) -> some View {
         let own = msg.senderId == session.userId
         let isDeleted = msg.deletedAt != nil
-        let edited = (msg.updatedAt != nil) && (msg.updatedAt != msg.createdAt) && msg.createdAt != nil
-        let parent: Message? = msg.metadata?.replyTo.flatMap { rid in messages.first(where: { $0.id == rid }) }
+        let edited = msg.editedAt != nil
+        // Replies are linked by the top-level `reply_to`; `metadata.reply_to`
+        // is only a fallback for clients that put it there.
+        let parentId = msg.replyTo ?? msg.metadata?.replyTo
+        let parent: Message? = parentId.flatMap { rid in messages.first(where: { $0.id == rid }) }
         HStack {
             if own { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 2) {
@@ -245,6 +255,28 @@ struct ChatScreen: View {
         .onLongPressGesture(minimumDuration: 0.5) {
             if !isDeleted { actionFor = msg }
         }
+    }
+
+    /// `video_call` system messages have empty content; the call event is in
+    /// `metadata.event`. Shown as a one-line notice, never as a bubble.
+    private func callNotice(_ msg: Message) -> some View {
+        let text: String
+        switch msg.metadata?.event {
+        case "call_started":  text = "Video call started"
+        case "call_accepted": text = "Call answered"
+        case "call_ended":    text = "Video call ended"
+        case "call_rejected": text = "Call declined"
+        case "call_missed":   text = "Missed call"
+        case "call_busy":     text = "Busy"
+        default:              text = "Video call"
+        }
+        let time = TimeUtils.formatMessageTime(msg.createdAt)
+        return Text(time.isEmpty ? text : "\(text) · \(time)")
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 2)
+            .id(msg.id)
     }
 
     @ViewBuilder
@@ -318,9 +350,16 @@ struct ChatScreen: View {
     private func refreshRole() async {
         do {
             let resp = try await UnitedChatService.getMembers(roomId: roomId)
-            let me = resp.members?.first(where: { $0.userId == session.userId })
-            role = me?.role ?? "member"
+            let members = resp.members ?? []
+            memberIds = members.map(\.userId)
+            role = members.first(where: { $0.userId == session.userId })?.role ?? "member"
         } catch { /* best-effort */ }
+    }
+
+    /// A message can arrive twice — in the send response and as the
+    /// real-time echo of the same send — so each id is added once.
+    private func appendIfNew(_ m: Message) {
+        if !messages.contains(where: { $0.id == m.id }) { messages.append(m) }
     }
 
     private func refreshMute() async {
@@ -332,12 +371,17 @@ struct ChatScreen: View {
 
     private func attachRealtime() async {
         do {
+            // The channel name comes from the API and is used verbatim — it
+            // cannot be rebuilt from the room id (see subscribeRoom's doc).
+            let res = try await UnitedChatService.getRoom(roomId: roomId, userId: session.userId)
+            guard let realtimeChannel = res.room.realtimeChannel, !realtimeChannel.isEmpty else { return }
+
             try await HyperBabelRealtime.shared.connect()
-            unsubscribe = HyperBabelRealtime.shared.subscribeRoom(roomId) { name, raw in
+            unsubscribe = HyperBabelRealtime.shared.subscribeRoom(realtimeChannel) { name, raw in
                 guard let envelope = raw as? [String: Any] else { return }
                 switch name {
-                // Workers publishes both real messages and typing pings under
-                // event-name 'message' — disambiguate by the inner `type`.
+                // The server publishes both real messages and typing pings
+                // under event-name 'message' — disambiguate by the inner `type`.
                 case "message":
                     let inner = envelope["type"] as? String
                     if inner == "typing" {
@@ -353,46 +397,42 @@ struct ChatScreen: View {
                         }
                     } else if inner == "message" {
                         guard let payload = envelope["data"] as? [String: Any],
-                              let id = payload["id"] as? String,
-                              !messages.contains(where: { $0.id == id }) else { return }
-                        messages.append(Message(
+                              let id = payload["id"] as? String else { return }
+                        // Live captions also arrive here, but the message list
+                        // never returns them — showing them would make lines
+                        // that vanish on the next load.
+                        if (payload["message_type"] as? String) == "caption" { return }
+                        appendIfNew(Message(
                             id: id,
                             senderId: payload["sender_id"] as? String ?? "",
                             senderName: payload["sender_name"] as? String,
                             content: payload["content"] as? String,
                             messageType: payload["message_type"] as? String,
                             createdAt: payload["created_at"] as? String,
-                            updatedAt: payload["updated_at"] as? String,
+                            editedAt: payload["edited_at"] as? String,
                             deletedAt: payload["deleted_at"] as? String,
                             reactions: nil,
-                            metadata: nil
+                            metadata: MessageMetadata(json: payload["metadata"]),
+                            replyTo: payload["reply_to"] as? String
                         ))
                     }
+                // Delete and edit events carry the message id INSIDE `data`:
+                //   message.deleted → { type, timestamp, data: { message_id, deleted_by } }
+                //   message.updated → { type, timestamp, data: { message_id, content, edited_at } }
                 case "message.deleted":
-                    let id = (envelope["id"] as? String) ?? (envelope["message_id"] as? String)
-                    if let id, let idx = messages.firstIndex(where: { $0.id == id }) {
-                        let m = messages[idx]
-                        messages[idx] = Message(
-                            id: m.id, senderId: m.senderId, senderName: m.senderName,
-                            content: m.content, messageType: m.messageType,
-                            createdAt: m.createdAt, updatedAt: m.updatedAt,
-                            deletedAt: ISO8601DateFormatter().string(from: Date()),
-                            reactions: m.reactions, metadata: m.metadata
-                        )
+                    let data = envelope["data"] as? [String: Any]
+                    if let id = data?["message_id"] as? String,
+                       let idx = messages.firstIndex(where: { $0.id == id }) {
+                        messages[idx].deletedAt = ISO8601DateFormatter().string(from: Date())
                     }
                 case "message.updated":
-                    let id = (envelope["id"] as? String) ?? (envelope["message_id"] as? String)
-                    let nextContent = envelope["content"] as? String
-                    if let id, let nextContent, let idx = messages.firstIndex(where: { $0.id == id }) {
-                        let m = messages[idx]
-                        messages[idx] = Message(
-                            id: m.id, senderId: m.senderId, senderName: m.senderName,
-                            content: nextContent, messageType: m.messageType,
-                            createdAt: m.createdAt,
-                            updatedAt: ISO8601DateFormatter().string(from: Date()),
-                            deletedAt: m.deletedAt,
-                            reactions: m.reactions, metadata: m.metadata
-                        )
+                    let data = envelope["data"] as? [String: Any]
+                    if let id = data?["message_id"] as? String,
+                       let nextContent = data?["content"] as? String,
+                       let idx = messages.firstIndex(where: { $0.id == id }) {
+                        messages[idx].content = nextContent
+                        messages[idx].editedAt = (data?["edited_at"] as? String)
+                            ?? ISO8601DateFormatter().string(from: Date())
                     }
                 default: break
                 }
@@ -410,15 +450,17 @@ struct ChatScreen: View {
         input = ""
         replyTo = nil
         do {
-            _ = try await UnitedChatService.sendMessage(
+            let sent = try await UnitedChatService.sendMessage(
                 roomId: roomId,
                 body: SendMessageRequest(
                     senderId: session.userId,
                     senderName: session.displayName,
                     content: text,
-                    messageType: "text"
+                    messageType: "text",
+                    replyTo: savedReply?.id
                 )
             )
+            appendIfNew(sent)
         } catch {
             self.error = (error as? ApiError)?.errorDescription ?? error.localizedDescription
             input = text
@@ -428,10 +470,15 @@ struct ChatScreen: View {
     }
 
     private func startCall() async {
+        // A group room must name who to ring (`target_user_ids`, 400 when it
+        // is empty); a 1:1 room rings the other member and ignores the list.
+        // This demo's call screen is 1:1 (see VideoQuality.swift), so it rings
+        // one other member.
+        let targets = Array(memberIds.filter { $0 != session.userId }.prefix(1))
         do {
             _ = try await UnitedChatService.startVideoCall(
                 roomId: roomId,
-                body: StartVideoCallRequest(callerId: session.userId, targetUserIds: [])
+                body: StartVideoCallRequest(callerId: session.userId, targetUserIds: targets)
             )
             onStartCall()
         } catch {
@@ -453,13 +500,7 @@ struct ChatScreen: View {
         do {
             _ = try await UnitedChatService.deleteMessage(roomId: roomId, messageId: msg.id, userId: session.userId)
             if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
-                messages[idx] = Message(
-                    id: msg.id, senderId: msg.senderId, senderName: msg.senderName,
-                    content: msg.content, messageType: msg.messageType,
-                    createdAt: msg.createdAt, updatedAt: msg.updatedAt,
-                    deletedAt: ISO8601DateFormatter().string(from: Date()),
-                    reactions: msg.reactions, metadata: msg.metadata
-                )
+                messages[idx].deletedAt = ISO8601DateFormatter().string(from: Date())
             }
         } catch { /* best-effort */ }
     }
@@ -474,14 +515,8 @@ struct ChatScreen: View {
                 roomId: roomId, messageId: msg.id, userId: session.userId, content: next
             )
             if let idx = messages.firstIndex(where: { $0.id == msg.id }) {
-                messages[idx] = Message(
-                    id: msg.id, senderId: msg.senderId, senderName: msg.senderName,
-                    content: next, messageType: msg.messageType,
-                    createdAt: msg.createdAt,
-                    updatedAt: ISO8601DateFormatter().string(from: Date()),
-                    deletedAt: msg.deletedAt,
-                    reactions: msg.reactions, metadata: msg.metadata
-                )
+                messages[idx].content = next
+                messages[idx].editedAt = ISO8601DateFormatter().string(from: Date())
             }
         } catch { /* best-effort */ }
     }
@@ -499,7 +534,7 @@ struct ChatScreen: View {
             }
         } catch {
             // Never swallow silently — a dead-looking button is worse than a message.
-            errorText = error.localizedDescription
+            self.error = error.localizedDescription
         }
     }
 
@@ -552,7 +587,7 @@ struct ChatScreen: View {
                 channelId: roomId
             )
             let cdn = confirmed.url ?? confirmed.cdnUrl ?? ""
-            _ = try await UnitedChatService.sendMessage(
+            let sent = try await UnitedChatService.sendMessage(
                 roomId: roomId,
                 body: SendMessageRequest(
                     senderId: session.userId,
@@ -561,6 +596,7 @@ struct ChatScreen: View {
                     messageType: messageType
                 )
             )
+            appendIfNew(sent)
             try? FileManager.default.removeItem(at: copy)
         } catch {
             self.error = "Upload failed: \(error.localizedDescription)"

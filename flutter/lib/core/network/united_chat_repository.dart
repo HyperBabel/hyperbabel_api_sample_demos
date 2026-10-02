@@ -16,7 +16,8 @@ class UnitedChatRepository {
         queryParameters: {'user_id': userId},
       );
       final data = response.data as Map<String, dynamic>;
-      return (data['rooms'] ?? data['member_rooms'] ?? []) as List<dynamic>;
+      // `{ rooms, open_rooms }` — `open_rooms` (public rooms to join) is not used here.
+      return (data['rooms'] ?? []) as List<dynamic>;
     } on DioException catch (e) {
       throw Exception('Failed to fetch rooms: ${e.message}');
     }
@@ -56,6 +57,21 @@ class UnitedChatRepository {
     }
   }
 
+  /// Fetch a single room, including its `realtime_channel`.
+  ///
+  /// The real-time channel name CANNOT be derived from the room id — always
+  /// read it from this endpoint and pass it to `subscribeRoom()` verbatim.
+  Future<Map<String, dynamic>> getRoom(String roomId) async {
+    try {
+      final response =
+          await _apiClient.client.get('/unitedchat/rooms/$roomId');
+      final data = response.data as Map<String, dynamic>;
+      return (data['room'] ?? data) as Map<String, dynamic>;
+    } on DioException catch (e) {
+      throw Exception('Failed to fetch room: ${e.message}');
+    }
+  }
+
   /// List members of a room with their roles (owner / sub_admin / member).
   Future<List<dynamic>> getMembers(String roomId) async {
     try {
@@ -88,13 +104,17 @@ class UnitedChatRepository {
     }
   }
 
-  /// Send a text or media message to a room.
+  /// Send a text or media message to a room. Pass [replyTo] (the quoted
+  /// message's `id`) to send a reply — it is a top-level field, not metadata.
+  ///
+  /// Returns the stored message. The API wraps it as `{ message: { ... } }`.
   Future<Map<String, dynamic>> sendMessage(
     String roomId, {
     required String senderId,
     String? senderName,
     required String content,
     String messageType = 'text',
+    String? replyTo,
     Map<String, dynamic>? metadata,
   }) async {
     try {
@@ -105,22 +125,25 @@ class UnitedChatRepository {
           if (senderName != null) 'sender_name': senderName,
           'content': content,
           'message_type': messageType,
+          if (replyTo != null) 'reply_to': replyTo,
           if (metadata != null) 'metadata': metadata,
         },
       );
-      return response.data as Map<String, dynamic>;
+      final data = response.data as Map<String, dynamic>;
+      return Map<String, dynamic>.from((data['message'] ?? data) as Map);
     } on DioException catch (e) {
       throw Exception('Failed to send message: ${e.message}');
     }
   }
 
   /// Soft-delete a message (only the sender or owner/sub_admin can do this).
+  /// `user_id` travels in a JSON body — the endpoint does not read the query.
   Future<void> deleteMessage(
       String roomId, String messageId, String userId) async {
     try {
       await _apiClient.client.delete(
         '/unitedchat/rooms/$roomId/messages/$messageId',
-        queryParameters: {'user_id': userId},
+        data: {'user_id': userId},
       );
     } on DioException catch (e) {
       throw Exception('Failed to delete message: ${e.message}');
@@ -156,18 +179,27 @@ class UnitedChatRepository {
     }
   }
 
-  /// Batch translate messages to a target language code.
-  Future<List<dynamic>> batchTranslateMessages(
-      String roomId, List<String> messageIds, String targetLangCd) async {
+  /// Batch translate up to 100 messages of this room to a target language
+  /// code. This is the end-user translation endpoint — the `/translate/*`
+  /// APIs need your organization API key and belong on your backend.
+  ///
+  /// Returns `{ messageId: translatedText }`. Messages that need no
+  /// translation (already in the target language, media, …) are absent. The
+  /// response's `limited: true` flag — set when the daily translation limit
+  /// stopped new translations — is not surfaced by this helper.
+  Future<Map<String, String>> batchTranslateMessages(
+      String roomId, List<String> messageIds, String targetLang) async {
     try {
       final response = await _apiClient.client.post(
         '/unitedchat/rooms/$roomId/messages/batch-translate',
         data: {
           'message_ids': messageIds,
-          'target_lang_cd': targetLangCd,
+          'target_lang': targetLang,
         },
       );
-      return (response.data['translated'] ?? []) as List<dynamic>;
+      final raw = (response.data as Map)['translations'];
+      if (raw is! Map) return const {};
+      return raw.map((k, v) => MapEntry('$k', '$v'));
     } on DioException catch (e) {
       throw Exception('Failed to translate messages: ${e.message}');
     }
@@ -175,9 +207,10 @@ class UnitedChatRepository {
 
   // ── Video call lifecycle (subset used by the demo) ───────────────────────
 
-  /// Start a video call in this room. The server broadcasts a CALL_INVITE
-  /// to every other member's private channel. Pass [targetUserIds] for
-  /// group calls — omit it to ring the whole room.
+  /// Start a video call in this room. The server sends a `CALL_INVITE`
+  /// signal to each callee's private channel. In a 1:1 room the other member
+  /// is rung — send no targets. A group room REQUIRES [targetUserIds] (400
+  /// without them), at most 2 of them: a call holds 3 people at most.
   Future<Map<String, dynamic>?> startVideoCall(
     String roomId,
     String callerId, {
@@ -209,15 +242,124 @@ class UnitedChatRepository {
     }
   }
 
-  /// Decline an incoming video call so the server stops ringing the user.
-  Future<void> rejectVideoCall(String roomId, String userId) async {
+  /// Accept an incoming video call. [sessionId] is the `sessionId` carried by
+  /// the `CALL_INVITE` signal; the API answers 400 without it, and 410 when
+  /// the call has already ended.
+  Future<void> acceptVideoCall(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+  }) async {
+    try {
+      await _apiClient.client.post(
+        '/unitedchat/rooms/$roomId/video-call/accept',
+        data: {'user_id': userId, 'session_id': sessionId},
+      );
+    } on DioException catch (e) {
+      if (e.response?.statusCode == 410) {
+        throw Exception('This call has already ended.');
+      }
+      throw Exception('Failed to accept call: ${e.message}');
+    }
+  }
+
+  /// Decline an incoming video call. [sessionId] is the `sessionId` carried
+  /// by the `CALL_INVITE` signal. Pass [reason] `'missed'` when the call rang
+  /// out unanswered (`'busy'` is the other special value). The server posts
+  /// `call_rejected` / `call_missed` / `call_busy` to the room; the session
+  /// itself stays open.
+  Future<void> rejectVideoCall(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+    String? reason,
+  }) async {
     try {
       await _apiClient.client.post(
         '/unitedchat/rooms/$roomId/video-call/reject',
-        data: {'user_id': userId},
+        data: {
+          'user_id': userId,
+          'session_id': sessionId,
+          if (reason != null) 'reason': reason,
+        },
       );
     } on DioException catch (e) {
       throw Exception('Failed to reject call: ${e.message}');
+    }
+  }
+
+  /// Tell the server this device reached the RTC channel — call once from the
+  /// video engine's join-success event. The stamp is how HyperBabel knows the
+  /// call connected (billing and stale-call cleanup both rely on it).
+  /// Returns `matched`: false means it did not land yet, so retry.
+  Future<bool> markJoinedRtc(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+  }) async {
+    try {
+      final response = await _apiClient.client.post(
+        '/unitedchat/rooms/$roomId/video-call/joined-rtc',
+        data: {'user_id': userId, 'session_id': sessionId},
+      );
+      return (response.data as Map)['matched'] == true;
+    } on DioException catch (e) {
+      throw Exception('Failed to mark RTC join: ${e.message}');
+    }
+  }
+
+  /// Liveness ping — every 60 s while on the call screen. The server ends a
+  /// call whose newest ping is 10 minutes old. A ping the server could not
+  /// store still answers 200 (`success: false`) — the next one corrects it.
+  Future<void> sendCallHeartbeat(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+  }) async {
+    try {
+      await _apiClient.client.post(
+        '/unitedchat/rooms/$roomId/video-call/heartbeat',
+        data: {'user_id': userId, 'session_id': sessionId},
+      );
+    } on DioException catch (e) {
+      throw Exception('Failed to send call heartbeat: ${e.message}');
+    }
+  }
+
+  /// A fresh 1-hour RTC token for this user's slot in the call:
+  /// `{ session_id, channel_name, uid, rtc_token, app_id, expires_in }`.
+  /// 404 once the call is no longer live, 403 for a non-participant.
+  Future<Map<String, dynamic>> renewCallToken(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+  }) async {
+    try {
+      final response = await _apiClient.client.post(
+        '/unitedchat/rooms/$roomId/video-call/renew-token',
+        data: {'user_id': userId, 'session_id': sessionId},
+      );
+      return Map<String, dynamic>.from(response.data as Map);
+    } on DioException catch (e) {
+      throw Exception('Failed to renew call token: ${e.message}');
+    }
+  }
+
+  /// Hang up: leave the CALL (not the chat room — that is [leaveRoom]).
+  /// Any participant may leave; once at most one active participant remains,
+  /// the server ends the session for everyone.
+  Future<void> leaveVideoCall(
+    String roomId, {
+    required String userId,
+    required String sessionId,
+  }) async {
+    try {
+      await _apiClient.client.post(
+        '/unitedchat/rooms/$roomId/video-call/leave',
+        data: {'user_id': userId, 'session_id': sessionId},
+      );
+    } on DioException catch (e) {
+      throw Exception('Failed to leave call: ${e.message}');
     }
   }
 
@@ -240,23 +382,28 @@ class UnitedChatRepository {
 
   // ── Moderation: Ban ──────────────────────────────────────────────────────
 
-  /// Ban a user from the room (owner / sub_admin only).
-  Future<void> banUser(String roomId, String adminId, String userId) async {
+  /// Ban a user from the room (owner / sub_admin only). [bannedBy] is the
+  /// moderator acting — the signed-in user.
+  Future<void> banUser(String roomId, String bannedBy, String userId) async {
     try {
       await _apiClient.client.post(
         '/unitedchat/rooms/$roomId/ban',
-        data: {'admin_id': adminId, 'user_id': userId},
+        data: {'banned_by': bannedBy, 'user_id': userId},
       );
     } on DioException catch (e) {
       throw Exception('Failed to ban user: ${e.message}');
     }
   }
 
-  /// Lift a ban — the user can rejoin afterwards.
-  Future<void> unbanUser(String roomId, String userId) async {
+  /// Lift a ban — the user can rejoin afterwards. [unbannedBy] is the
+  /// moderator acting (owner / sub_admin), sent in a JSON body.
+  Future<void> unbanUser(
+      String roomId, String unbannedBy, String userId) async {
     try {
-      await _apiClient.client
-          .delete('/unitedchat/rooms/$roomId/ban/$userId');
+      await _apiClient.client.delete(
+        '/unitedchat/rooms/$roomId/ban/$userId',
+        data: {'unbanned_by': unbannedBy},
+      );
     } on DioException catch (e) {
       throw Exception('Failed to unban user: ${e.message}');
     }
@@ -328,7 +475,7 @@ class UnitedChatRepository {
   // ── Reply helper ─────────────────────────────────────────────────────────
 
   /// Send a message that quotes another. Identical to [sendMessage] except
-  /// for the explicit `reply_to` field.
+  /// for the explicit `reply_to` field (the quoted message's `id`).
   Future<Map<String, dynamic>> sendReply(
     String roomId, {
     required String senderId,
@@ -342,7 +489,7 @@ class UnitedChatRepository {
       senderName: senderName,
       content: content,
       messageType: 'text',
-      metadata: {'reply_to': replyTo},
+      replyTo: replyTo,
     );
   }
 
@@ -360,11 +507,15 @@ class UnitedChatRepository {
     }
   }
 
-  /// Demote a sub_admin back to member (owner only).
-  Future<void> removeSubAdmin(String roomId, String userId) async {
+  /// Demote a sub_admin back to member (owner only). [ownerId] is the room
+  /// owner acting — the signed-in user — sent in a JSON body.
+  Future<void> removeSubAdmin(
+      String roomId, String ownerId, String userId) async {
     try {
-      await _apiClient.client
-          .delete('/unitedchat/rooms/$roomId/sub-admins/$userId');
+      await _apiClient.client.delete(
+        '/unitedchat/rooms/$roomId/sub-admins/$userId',
+        data: {'owner_id': ownerId},
+      );
     } on DioException catch (e) {
       throw Exception('Failed to demote: ${e.message}');
     }

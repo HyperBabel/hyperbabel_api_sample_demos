@@ -108,7 +108,11 @@ export const joinChannel = async (channelName, uid, role, userMeta = {}) => {
   const eventHandlers = {
     onRemoteUser: null,
     onRemoteUserLeft: null,
+    onPeerJoined: null,
+    onPeerLeft: null,
     onConnectionChange: null,
+    onTokenWillExpire: null,
+    onTokenExpired: null,
   };
 
   /*
@@ -144,10 +148,18 @@ export const joinChannel = async (channelName, uid, role, userMeta = {}) => {
   client.on('user-joined', (user) => {
     remoteUids.add(user.uid);
     applyEncoderForCurrentCall();
+    if (eventHandlers.onPeerJoined) eventHandlers.onPeerJoined({ user });
   });
-  client.on('user-left', (user) => {
+  client.on('user-left', (user, reason) => {
     remoteUids.delete(user.uid);
     applyEncoderForCurrentCall();
+    // Count who is still here only after this event has fully settled, so the
+    // number never depends on the order in which listeners ran.
+    setTimeout(() => {
+      if (eventHandlers.onPeerLeft) {
+        eventHandlers.onPeerLeft({ user, reason, remaining: client.remoteUsers.length });
+      }
+    }, 0);
   });
 
   // Step 3: Wire up remote user events before joining
@@ -173,6 +185,22 @@ export const joinChannel = async (channelName, uid, role, userMeta = {}) => {
   client.on('connection-state-change', (state) => {
     if (eventHandlers.onConnectionChange) {
       eventHandlers.onConnectionChange(state);
+    }
+  });
+
+  // Fires about 30 s before the RTC token (valid for one hour) expires.
+  client.on('token-privilege-will-expire', () => {
+    if (eventHandlers.onTokenWillExpire) {
+      eventHandlers.onTokenWillExpire();
+    }
+  });
+
+  // Fires when the token HAS expired (e.g. the renewal above failed). The
+  // client is disconnected by then: a fresh token must be used to join again
+  // — renewToken() no longer works at this point.
+  client.on('token-privilege-did-expire', () => {
+    if (eventHandlers.onTokenExpired) {
+      eventHandlers.onTokenExpired();
     }
   });
 
@@ -246,11 +274,31 @@ export const joinChannel = async (channelName, uid, role, userMeta = {}) => {
     },
 
     /**
-     * Register a callback for when a remote participant leaves.
+     * Register a callback for when a remote participant stops publishing a
+     * track (camera or microphone turned off, or leaving).
      * @param {function} handler — ({ user }) => void
      */
     onRemoteUserLeft: (handler) => {
       eventHandlers.onRemoteUserLeft = handler;
+    },
+
+    /**
+     * Register a callback for when another participant enters the channel
+     * (whether or not they publish anything).
+     * @param {function} handler — ({ user }) => void
+     */
+    onPeerJoined: (handler) => {
+      eventHandlers.onPeerJoined = handler;
+    },
+
+    /**
+     * Register a callback for when another participant leaves the channel
+     * (hung up, or no data from them for 20 s). `remaining` is how many other
+     * participants are still in the channel after that.
+     * @param {function} handler — ({ user, reason, remaining }) => void
+     */
+    onPeerLeft: (handler) => {
+      eventHandlers.onPeerLeft = handler;
     },
 
     /**
@@ -259,6 +307,43 @@ export const joinChannel = async (channelName, uid, role, userMeta = {}) => {
      */
     onConnectionChange: (handler) => {
       eventHandlers.onConnectionChange = handler;
+    },
+
+    /**
+     * Register a callback fired shortly before the RTC token expires (tokens
+     * are valid for one hour). Fetch a fresh token for the same session —
+     * e.g. `POST /unitedchat/rooms/:roomId/video-call/renew-token` — and pass
+     * it to renewToken(), or the call drops when the hour is up.
+     * @param {function} handler — () => void
+     */
+    onTokenWillExpire: (handler) => {
+      eventHandlers.onTokenWillExpire = handler;
+    },
+
+    /**
+     * Swap in a fresh RTC token without leaving the channel.
+     * @param {string} token — `rtc_token` from the renewal response
+     */
+    renewToken: (token) => client.renewToken(token),
+
+    /**
+     * Register a callback for when the token has already expired and the
+     * client was disconnected. Fetch a fresh token and pass it to rejoin().
+     * @param {function} handler — () => void
+     */
+    onTokenExpired: (handler) => {
+      eventHandlers.onTokenExpired = handler;
+    },
+
+    /**
+     * Join the same channel again with a fresh token after it expired, and
+     * re-publish the local camera / microphone.
+     * @param {string} token — `rtc_token` from the renewal response
+     */
+    rejoin: async (token) => {
+      await client.join(app_id, joinChannelName, token, joinUid);
+      const tracks = [localAudioTrack, localVideoTrack].filter(Boolean);
+      if (tracks.length > 0) await client.publish(tracks);
     },
 
     /**

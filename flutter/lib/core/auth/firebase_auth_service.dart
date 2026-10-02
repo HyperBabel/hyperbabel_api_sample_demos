@@ -17,7 +17,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 ///      device after exchange.
 ///
 /// The device never sees the integrator's org API key — the HyperBabel
-/// Worker resolves the org from the Firebase project ID claim after
+/// API resolves the org from the Firebase project ID claim after
 /// verifying the signature against Google JWKS.
 ///
 /// Prerequisites:

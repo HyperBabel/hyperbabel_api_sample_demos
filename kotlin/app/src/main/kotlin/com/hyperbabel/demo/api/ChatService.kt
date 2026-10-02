@@ -13,12 +13,18 @@
  */
 package com.hyperbabel.demo.api
 
+import kotlinx.serialization.Serializable
 import retrofit2.http.Body
 import retrofit2.http.HTTP
 import retrofit2.http.POST
 import retrofit2.http.Path
 
-/** Response of both reaction calls — the full emoji → user-ids map. */
+/**
+ * Response of both reaction calls — the full emoji → user-ids map.
+ * Must be @Serializable: the converter cannot decode a plain class, and the
+ * call would report an error even though the reaction was saved.
+ */
+@Serializable
 data class ReactionsResponse(
     val reactions: Map<String, List<String>> = emptyMap(),
 )

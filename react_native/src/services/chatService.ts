@@ -1,116 +1,42 @@
 /**
- * HyperBabel Demo — Low-Level Chat Service
+ * HyperBabel Demo — Reactions, Threads and Search
  *
- * The low-level Chat API provides direct channel-level control:
- * channels, messages, reactions, and thread replies.
+ * These three features are room-scoped and live under `/unitedchat`, which is
+ * the surface an END-USER token may call. Everything else about a room —
+ * creating it, listing rooms, loading and sending messages — is in
+ * `unitedChatService`; this file only adds what sits on top of a message.
  *
- * Use this in addition to unitedChatService when you need:
- *  - Emoji reactions on messages
- *  - Thread replies (reply chains)
- *  - Direct channel subscriptions
+ * WHY NOTHING HERE CALLS `/chat`
+ *   The `/chat/*` endpoints are the server-to-server surface: they take an
+ *   organization API key, not an end-user token, and they reject end-user
+ *   tokens with 403 on reads as well as writes. This demo signs in as an end
+ *   user (see firebaseAuthService), and `api.ts` refuses organization keys
+ *   outright, so a `/chat` call from this app can never succeed. Every helper
+ *   here therefore uses a room-scoped `/unitedchat` path.
  *
- * Base path: /chat
+ * Base path: /unitedchat
  */
 
 import api from './api';
-
-const BASE = '/chat';
-
-// ── Types ─────────────────────────────────────────────────────────────────
-
-export interface ChatChannel {
-  channel_id:   string;
-  channel_name: string;
-  created_at:   string;
-}
-
-export interface ChatMessage {
-  message_id:   string;
-  channel_id:   string;
-  sender_id:    string;
-  sender_name?: string;
-  content:      string;
-  message_type: string;
-  reply_to?:    string | null;
-  thread_count?: number;
-  /** Server shape is a map: `{ "👍": ["user_1", "user_2"] }`. */
-  reactions?:   Record<string, string[]>;
-  deleted_at?:  string | null;
-  created_at:   string;
-  updated_at?:  string;
-}
-
-/** @deprecated The server returns `Record<emoji, userId[]>` — see Message.reactions. */
-export interface ChatReaction {
-  emoji:    string;
-  user_id:  string;
-  count?:   number;
-}
-
-export interface ThreadMessage {
-  thread_id:    string;
-  parent_id:    string;
-  sender_id:    string;
-  sender_name?: string;
-  content:      string;
-  created_at:   string;
-}
-
-// ── Channels ──────────────────────────────────────────────────────────────
+import { getMessages } from './unitedChatService';
+import type { Message } from './unitedChatService';
 
 /**
- * Create a channel.
+ * How far back to scan for thread replies.
  *
- * Wire shape per cf_workers_api/src/routes/chat.ts createChannelSchema:
- *   - `channel_name` is required and must match `^[a-z0-9:-]+$`
- *   - `channel_type` defaults to 'group'
- *   - `members` is optional
+ * `/unitedchat` has no dedicated thread endpoint because a thread reply is
+ * just an ordinary message with `reply_to` set, so we read the room's recent
+ * messages and keep the ones pointing at the parent. 100 is the server's
+ * per-page maximum. A production app would page with `next_cursor` until it
+ * reaches the parent's `created_at`; a demo thread never gets that long.
  */
-export const createChannel = (channelName: string, members?: string[]) =>
-  api.post<ChatChannel>(`${BASE}/channels`, {
-    channel_name: channelName,
-    ...(members ? { members } : {}),
-  });
-
-/** List channels for a user. */
-export const listChannels = (userId: string) =>
-  api.get<{ channels: ChatChannel[] }>(`${BASE}/channels?user_id=${userId}`);
-
-// ── Messages ──────────────────────────────────────────────────────────────
-
-/** Send a message to a channel. */
-export const sendChannelMessage = (channelId: string, data: {
-  sender_id:     string;
-  content:       string;
-  message_type?: string;
-  reply_to?:     string;
-}) => api.post<ChatMessage>(`${BASE}/channels/${channelId}/messages`, data);
-
-/** Get paginated messages from a channel. */
-export const getChannelMessages = (channelId: string, params: {
-  cursor?: string;
-  limit?:  number;
-} = {}) => {
-  const qs = new URLSearchParams(params as Record<string, string>).toString();
-  return api.get<{ messages: ChatMessage[]; next_cursor: string | null }>(
-    `${BASE}/channels/${channelId}/messages${qs ? `?${qs}` : ''}`,
-  );
-};
-
-/** Delete a channel message. */
-export const deleteChannelMessage = (channelId: string, messageId: string, userId: string) =>
-  api.delete(`${BASE}/channels/${channelId}/messages/${messageId}`, { user_id: userId });
+const THREAD_SCAN_LIMIT = 100;
 
 // ── Reactions ─────────────────────────────────────────────────────────────
 
 /**
- * Add an emoji reaction to a message. Reactions are message-scoped on the
- * Emoji reactions are ROOM-SCOPED.
- *
- * Use `/unitedchat/rooms/:roomId/messages/:messageId/reactions`, not the
- * `/chat/...` variant. The `/chat` route is server-to-server only and rejects
- * end-user (Session-Token) JWTs — which is exactly what this demo signs in
- * with, so it would fail with 403.
+ * Add an emoji reaction to a message. Emoji reactions are ROOM-SCOPED, so the
+ * path carries the room id, not a channel id.
  *
  * The response is the FULL reaction map for that message:
  *   { "reactions": { "👍": ["user_1", "user_2"], "❤️": ["user_3"] } }
@@ -132,29 +58,42 @@ export const removeReaction = (roomId: string, messageId: string, userId: string
 // ── Threads ───────────────────────────────────────────────────────────────
 
 /**
- * Get thread replies for a parent message. The thread endpoint lives under
- * the low-level chat surface (`/chat/channels/:channelId/...`), and a
- * united-chat room id is the same as its channel id internally.
+ * Get thread replies for a parent message.
+ *
+ * There is no dedicated "read thread" endpoint, for the same reason there is
+ * no dedicated "post thread reply" one (see `sendThreadReply`): a reply is an
+ * ordinary room message carrying `reply_to`. So read the room's recent
+ * messages and keep the ones that point at this parent.
+ *
+ * The room messages endpoint returns NEWEST FIRST, so sort back into
+ * chronological order — a thread reads top to bottom. Soft-deleted replies
+ * (`deleted_at`) are dropped rather than rendered as blanks.
  */
-export const getThreadReplies = (channelId: string, parentMessageId: string) =>
-  api.get<{ replies: ChatMessage[] }>(
-    `${BASE}/channels/${channelId}/messages/${parentMessageId}/thread`,
-  );
+export const getThreadReplies = async (
+  roomId: string,
+  parentMessageId: string,
+): Promise<{ replies: Message[] }> => {
+  const { messages } = await getMessages(roomId, { limit: THREAD_SCAN_LIMIT });
+  const replies = messages
+    .filter((m) => m.reply_to === parentMessageId && !m.deleted_at)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return { replies };
+};
 
 /**
  * Post a reply in a thread.
  *
  * There's no dedicated "thread reply" POST endpoint — thread replies are
- * just regular messages with `reply_to` set to the parent message id, and
- * united-chat's room id is the same as the channel id we send to.
+ * just regular messages with `reply_to` set to the parent message `id`.
+ * Like any send, the response is WRAPPED: `{ message: { … } }`.
  */
 export const sendThreadReply = (
-  channelId: string,
+  roomId: string,
   parentMessageId: string,
   data: { sender_id: string; content: string },
 ) =>
-  api.post<ChatMessage>(
-    `/unitedchat/rooms/${channelId}/messages`,
+  api.post<{ message: Message }>(
+    `/unitedchat/rooms/${roomId}/messages`,
     {
       sender_id: data.sender_id,
       content: data.content,
@@ -170,6 +109,6 @@ export const sendThreadReply = (
  * — the leading-slash variant `/messages/search` does not exist.
  */
 export const searchMessages = (roomId: string, query: string, userId: string) =>
-  api.get<{ messages: ChatMessage[] }>(
+  api.get<{ messages: Message[] }>(
     `/unitedchat/rooms/${roomId}/search?q=${encodeURIComponent(query)}&user_id=${userId}`,
   );

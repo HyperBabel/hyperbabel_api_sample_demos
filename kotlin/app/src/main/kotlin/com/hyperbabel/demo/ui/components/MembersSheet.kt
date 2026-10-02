@@ -84,7 +84,7 @@ fun MembersSheet(
                 TextButton(onClick = {
                     scope.launch {
                         runCatching {
-                            if (isMuted) ApiClient.unitedChat.unmuteRoom(roomId)
+                            if (isMuted) ApiClient.unitedChat.unmuteRoom(roomId, mapOf("user_id" to Session.userId))
                             else ApiClient.unitedChat.muteRoom(roomId, kotlinx.serialization.json.buildJsonObject {
                                 put("user_id", kotlinx.serialization.json.JsonPrimitive(Session.userId))
                             })
@@ -117,7 +117,14 @@ fun MembersSheet(
                     },
                     onDemote = { uid ->
                         scope.launch {
-                            runCatching { ApiClient.unitedChat.removeSubAdmin(roomId, uid) }
+                            runCatching {
+                                // `owner_id` (you) goes in the JSON body — required.
+                                ApiClient.unitedChat.removeSubAdmin(
+                                    roomId,
+                                    uid,
+                                    mapOf("owner_id" to Session.userId),
+                                )
+                            }
                             runCatching {
                                 val r = ApiClient.unitedChat.getMembers(roomId)
                                 val list: JsonArray = r["members"]?.jsonArray ?: JsonArray(emptyList())
@@ -134,7 +141,7 @@ fun MembersSheet(
                                 runCatching {
                                     ApiClient.unitedChat.banUser(
                                         roomId,
-                                        mapOf("admin_id" to Session.userId, "user_id" to uid),
+                                        mapOf("banned_by" to Session.userId, "user_id" to uid),
                                     )
                                     members.removeIf {
                                         it["user_id"]?.jsonPrimitive?.content == uid

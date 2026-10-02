@@ -5,9 +5,9 @@
  *  - Profile info (userId, base URL)
  *  - Language preference update
  *  - Privacy → Blocked Users link
- *  - API usage statistics (current billing period)
+ *  - API usage statistics (current month vs. plan allowance)
  *  - Push notification token list
- *  - Language detection playground
+ *  - Language detection note — `/translate/*` needs your backend
  *  - Logout
  *
  * Webhooks are managed in the HyperBabel Console (https://console.hyperbabel.com),
@@ -18,7 +18,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  SafeAreaView, Alert, TextInput, ActivityIndicator,
+  SafeAreaView, Alert, ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 
@@ -28,7 +28,7 @@ import { Button } from '@/components/ui/Button';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import * as authService from '@/services/authService';
 import * as pushService from '@/services/pushService';
-import * as translateService from '@/services/translateService';
+import { usageNumber, usageLimit } from '@/services/authService';
 import type { UsageStats } from '@/services/authService';
 
 type PushTokenRow = { token: string; platform: 'ios' | 'android' | 'web'; created_at: string };
@@ -82,11 +82,6 @@ export default function SettingsScreen() {
   const [pushTokens,    setPushTokens]    = useState<PushTokenRow[]>([]);
   const [loading,       setLoading]       = useState(true);
 
-  // Language detection playground state
-  const [detectInput,   setDetectInput]   = useState('');
-  const [detectResult,  setDetectResult]  = useState<string | null>(null);
-  const [detecting,     setDetecting]     = useState(false);
-
   const loadData = useCallback(async () => {
     if (!user) return;
     try {
@@ -108,21 +103,6 @@ export default function SettingsScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Logout', style: 'destructive', onPress: async () => { await logout(); router.replace('/(auth)/login'); } },
     ]);
-  };
-
-  const handleDetectLanguage = async () => {
-    const text = detectInput.trim();
-    if (!text) return;
-    setDetecting(true);
-    setDetectResult(null);
-    try {
-      const res = await translateService.detectLanguage(text);
-      setDetectResult(`${res.language}  (${Math.round((res.confidence ?? 0) * 100)}% confidence)`);
-    } catch (err: any) {
-      setDetectResult(`Error: ${err?.message ?? 'Failed to detect language'}`);
-    } finally {
-      setDetecting(false);
-    }
   };
 
   return (
@@ -174,10 +154,11 @@ export default function SettingsScreen() {
             <ActivityIndicator color={colors.primary} />
           ) : usage ? (
             <>
-              <UsageRow label="Chat Messages" value={usage.chat_messages_sent} limit={usage.plan_limits?.chat_messages} />
-              <UsageRow label="Video Minutes"  value={usage.video_minutes}    limit={usage.plan_limits?.video_minutes} />
-              <UsageRow label="Stream Minutes" value={usage.stream_minutes}   limit={usage.plan_limits?.stream_minutes} />
-              <UsageRow label="Translations"   value={usage.translations}     limit={usage.plan_limits?.translations} />
+              {/* Large counters arrive as strings and -1 means unlimited — see usageNumber / usageLimit. */}
+              <UsageRow label="Chat Messages"         value={usageNumber(usage.messages_sent)}   limit={usageLimit(usage.monthly_messages)} />
+              <UsageRow label="Video Minutes (HD)"    value={usageNumber(usage.hd_video_mins)}   limit={usageLimit(usage.monthly_hd_video_mins)} />
+              <UsageRow label="Stream Minutes (HD)"   value={usageNumber(usage.hd_stream_mins)}  limit={usageLimit(usage.monthly_hd_stream_mins)} />
+              <UsageRow label="Translated Characters" value={usageNumber(usage.translate_chars)} limit={usageLimit(usage.monthly_translate_chars)} />
             </>
           ) : (
             <Text style={styles.errorText}>Unable to load usage stats.</Text>
@@ -196,32 +177,16 @@ export default function SettingsScreen() {
           )}
         </Card>
 
-        {/* Language detection playground */}
+        {/* Language detection — needs your backend */}
         <Text style={styles.sectionTitle}>Language Detection</Text>
         <Card style={styles.card}>
           <Text style={styles.helperText}>
-            Type any text and tap Detect to see what language the AI Translation
-            engine identifies it as.
+            ⚠️ Needs your backend. Language detection and free-text translation
+            (/translate/*) accept only your organization API key, which must
+            never ship in an app — call them from your server and expose a thin
+            endpoint to the app. In-chat translation works from the app as-is:
+            it uses the room batch-translate endpoint.
           </Text>
-          <View style={styles.detectRow}>
-            <TextInput
-              style={styles.detectInput}
-              placeholder="Type something to detect…"
-              placeholderTextColor={colors.textMuted}
-              value={detectInput}
-              onChangeText={setDetectInput}
-              autoCapitalize="none"
-            />
-            <Button
-              label={detecting ? '…' : 'Detect'}
-              onPress={handleDetectLanguage}
-              disabled={detecting}
-              size="sm"
-            />
-          </View>
-          {detectResult && (
-            <Text style={styles.detectResult}>{detectResult}</Text>
-          )}
         </Card>
 
         {/* Logout */}
@@ -265,9 +230,6 @@ const styles = StyleSheet.create({
   pushPlatformText: { ...textPresets.caption, color: colors.white, fontWeight: '700', textTransform: 'uppercase' },
   pushToken:      { ...textPresets.caption, color: colors.text, flex: 1 },
 
-  detectRow:      { flexDirection: 'row', alignItems: 'center', gap: spacing[3], marginTop: spacing[3] },
-  detectInput:    { flex: 1, ...textPresets.body, color: colors.text, backgroundColor: colors.surface, borderRadius: borderRadius.lg, borderWidth: 1, borderColor: colors.border, paddingHorizontal: spacing[3], paddingVertical: spacing[2] },
-  detectResult:   { ...textPresets.label, color: colors.text, marginTop: spacing[3], padding: spacing[3], backgroundColor: colors.surface, borderRadius: borderRadius.lg },
   helperText:     { ...textPresets.caption, color: colors.textMuted },
 
   emptyText:      { ...textPresets.label, color: colors.textMuted, paddingVertical: spacing[4], textAlign: 'center' },

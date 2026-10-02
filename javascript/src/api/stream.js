@@ -3,6 +3,23 @@
  *
  * Hosts open a session, broadcast as publisher, and end it. Viewers exchange
  * a viewer token to subscribe to the same channel.
+ *
+ * ⚠️ EVERY CALL HERE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THE BROWSER.
+ *
+ *   `/stream/*` authenticates with your ORGANIZATION API KEY
+ *   (`Authorization: Bearer hb_live_…`). Anything else is rejected up front:
+ *
+ *       POST /api/v1/stream/sessions
+ *       -> 401 { "error": { "code": "invalid_api_key_format" } }
+ *
+ *   Creating a broadcast allocates paid capacity and is metered against your
+ *   organization, so the caller has to be YOU, not a signed-in end user. This
+ *   demo only ever holds a customer JWT (the API client refuses to put an org
+ *   key in a browser bundle), so these calls fail here by design.
+ *
+ *   Ship it as:  browser -> your backend (holds hb_live_…) -> HyperBabel /stream/*
+ *   The paths, payloads and call order below are accurate — implement them
+ *   on your server and expose a thin endpoint the browser can call.
  */
 
 import { api } from './client.js';
@@ -12,7 +29,7 @@ export const listSessions = () => api.get('/stream/sessions');
 
 export const createSession = ({ hostUserId, hostName, title }) =>
   api.post('/stream/sessions', {
-    // Wire shape per cf_workers_api/src/routes/stream.ts createStreamSchema:
+    // Wire shape per the HyperBabel Stream API (POST /stream/sessions):
     // flat { title, host_user_id, host_display_name? }. `title` is required
     // (min length 1).
     title: title || `Live from ${hostName || hostUserId}`,

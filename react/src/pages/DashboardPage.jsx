@@ -3,22 +3,24 @@
  *
  * The central hub for the demo application. Provides quick access to:
  * - Unified Chat Hub (1:1, Group, Open chat rooms)
- * - Live Stream (Host / Viewer)
- * - Translation playground
+ * - Live Stream (Host / Viewer) — needs your backend
+ * - Standalone translation — needs your backend (chat translation does not)
  * - API Usage monitoring
- * - Webhook management
  *
  * This page demonstrates how developers can build a dashboard
  * that integrates multiple HyperBabel API features.
+ *
+ * Endpoints that authenticate with the organization API key (`/stream/*`,
+ * `/translate/*`) are deliberately NOT called from here: the browser only
+ * holds an end-user token, so they answer 401 — and every 401 also makes the
+ * HTTP client spend a token refresh. Call them from your own server.
  */
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import * as authService from '../services/authService';
-import * as translateService from '../services/translateService';
 import * as presenceService from '../services/presenceService';
-import * as streamService from '../services/streamService';
 import firebaseService from '../services/firebaseService';
 
 export default function DashboardPage() {
@@ -27,14 +29,12 @@ export default function DashboardPage() {
 
   // State for API usage stats
   const [usage, setUsage] = useState(null);
-  // State for the translation playground
-  const [translateInput, setTranslateInput] = useState('');
-  const [translateLang, setTranslateLang] = useState('ko');
-  const [translateResult, setTranslateResult] = useState('');
-  const [translating, setTranslating] = useState(false);
   // Push notification registration status
   const [pushStatus, setPushStatus] = useState(null); // null | 'granted' | 'denied' | 'unavailable'
-  // Live stream discovery list — polls GET /stream/sessions?status=live every 10 seconds
+  // Live stream discovery list. Fill it from YOUR backend, which can call
+  // GET /stream/sessions?status=live with the organization API key — the
+  // browser cannot (see the note in the effect below).
+  // eslint-disable-next-line no-unused-vars
   const [liveStreams, setLiveStreams] = useState([]);
 
   // Redirect to login if no user is stored
@@ -52,7 +52,8 @@ export default function DashboardPage() {
     // Send initial heartbeat immediately
     presenceService.heartbeat(user.user_id, 'web').catch(() => {});
 
-    // Fetch API usage stats on mount
+    // Fetch API usage stats on mount (404 when the organization has no
+    // active subscription — the card is simply not shown then)
     authService.getUsage()
       .then(setUsage)
       .catch(() => setUsage(null));
@@ -63,40 +64,18 @@ export default function DashboardPage() {
       .then((token) => { setPushStatus(token ? 'granted' : 'unavailable'); })
       .catch(() => setPushStatus('denied'));
 
-    // Poll live stream list every 10 seconds
-    // Shows currently active broadcasts so viewers can join by clicking
-    const fetchLiveStreams = () => {
-      streamService.listSessions({ status: 'live', limit: 20 })
-        .then((data) => setLiveStreams(data.sessions || []))
-        .catch(() => {}); // Silently ignore if endpoint not yet available
-    };
-    fetchLiveStreams();
-    const streamsPoll = setInterval(fetchLiveStreams, 10000);
+    // The live stream list is NOT fetched here. `GET /stream/sessions`
+    // authenticates with the organization API key; with the end-user token
+    // this browser holds it answers 401 `invalid_api_key_format`, and each 401
+    // also costs a token refresh — polling it would churn refreshes forever.
+    // Proxy it through your own server and call setLiveStreams() with the result.
 
     return () => {
       clearInterval(heartbeatInterval);
-      clearInterval(streamsPoll);
     };
   }, []);
 
-  /**
-   * Demonstrate the Translation API — translate user input text.
-   */
-  const handleTranslate = async () => {
-    if (!translateInput.trim()) return;
-    setTranslating(true);
-    try {
-      const result = await translateService.translateText(
-        translateInput,
-        translateLang
-      );
-      setTranslateResult(result.translated_text || JSON.stringify(result));
-    } catch (err) {
-      setTranslateResult(`Error: ${err.message}`);
-    } finally {
-      setTranslating(false);
-    }
-  };
+  const usageSummary = usage ? authService.summarizeUsage(usage) : null;
 
   return (
     <>
@@ -216,9 +195,10 @@ export default function DashboardPage() {
             <div className="dashboard-card-icon" style={{ background: 'linear-gradient(135deg, #555578, #8888A8)' }}>
               ⚙️
             </div>
-            <div className="dashboard-card-title">Settings & Webhooks</div>
+            <div className="dashboard-card-title">Settings</div>
             <div className="dashboard-card-desc">
-              View API usage stats, manage webhook endpoints, and configure push notification settings.
+              View API usage stats and the push notification tokens registered for you.
+              Webhooks are managed in the HyperBabel Console.
             </div>
           </div>
         </div>
@@ -232,11 +212,19 @@ export default function DashboardPage() {
             </span>
           </h2>
           {liveStreams.length === 0 ? (
-            <div className="glass-card" style={{ padding: '24px', textAlign: 'center', color: 'var(--hb-text-muted)', fontSize: '0.9rem' }}>
-              No live streams right now. <span
-                style={{ color: 'var(--hb-accent)', cursor: 'pointer', textDecoration: 'underline' }}
-                onClick={() => navigate('/live-stream/host')}
-              >Start one?</span>
+            <div className="glass-card" style={{ padding: '24px', textAlign: 'center', color: 'var(--hb-text-muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
+              <div><strong>Live streaming needs a backend.</strong></div>
+              <div style={{ marginTop: '4px' }}>
+                Listing and creating broadcasts authenticates with your organization API key,
+                which never ships in a browser bundle — so this list stays empty here.
+                Proxy <code>/stream/*</code> through your own server to light it up.
+              </div>
+              <div style={{ marginTop: '8px' }}>
+                <span
+                  style={{ color: 'var(--hb-accent)', cursor: 'pointer', textDecoration: 'underline' }}
+                  onClick={() => navigate('/live-stream/host')}
+                >See the call sequence →</span>
+              </div>
             </div>
           ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '16px' }}>
@@ -274,86 +262,54 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* ── Translation Playground ── */}
+        {/* ── Translation ── */}
         <div style={{ marginTop: '40px' }}>
           <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '16px' }}>
-            🌐 Translation Playground
+            🌐 Translation
           </h2>
-          <div className="glass-card" style={{ padding: '24px' }}>
-            <div className="flex gap-md" style={{ flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: '200px' }}>
-                <label className="input-label">Input Text</label>
-                <textarea
-                  className="input-field"
-                  placeholder="Type any text to translate..."
-                  value={translateInput}
-                  onChange={(e) => setTranslateInput(e.target.value)}
-                  rows={3}
-                  style={{ resize: 'vertical' }}
-                />
-              </div>
-              <div style={{ minWidth: '150px' }}>
-                <label className="input-label">Target Language</label>
-                <select
-                  className="input-field"
-                  value={translateLang}
-                  onChange={(e) => setTranslateLang(e.target.value)}
-                >
-                  <option value="en">English</option>
-                  <option value="ko">Korean</option>
-                  <option value="ja">Japanese</option>
-                  <option value="zh">Chinese</option>
-                  <option value="es">Spanish</option>
-                  <option value="fr">French</option>
-                  <option value="de">German</option>
-                  <option value="pt">Portuguese</option>
-                  <option value="ar">Arabic</option>
-                  <option value="hi">Hindi</option>
-                </select>
-                <button
-                  className="btn btn-primary"
-                  onClick={handleTranslate}
-                  disabled={translating || !translateInput.trim()}
-                  style={{ width: '100%', marginTop: '12px' }}
-                >
-                  {translating ? '⏳ Translating...' : '🔄 Translate'}
-                </button>
-              </div>
+          <div className="glass-card" style={{ padding: '24px', color: 'var(--hb-text-muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
+            <div><strong>Chat translation runs right here</strong> — every chat room and the
+              in-call chat translate messages into your language with{' '}
+              <code>POST /unitedchat/rooms/:roomId/messages/batch-translate</code>, which
+              accepts the signed-in user&rsquo;s token.</div>
+            <div style={{ marginTop: '8px' }}>
+              <strong>Standalone translation needs your backend.</strong>{' '}
+              <code>/translate/text</code>, <code>/translate/batch</code>,{' '}
+              <code>/translate/detect</code> and <code>/translate/languages</code>{' '}
+              authenticate with your organization API key, which never ships in a browser
+              bundle. Call them from your own server — see{' '}
+              <code>src/services/translateService.js</code> for the request shapes.
             </div>
-            {translateResult && (
-              <div style={{
-                marginTop: '16px',
-                padding: '16px',
-                background: 'var(--hb-surface-alt)',
-                borderRadius: 'var(--hb-radius-sm)',
-                borderLeft: '3px solid var(--hb-accent)',
-              }}>
-                <div className="text-sm text-muted" style={{ marginBottom: '4px' }}>
-                  Translation Result:
-                </div>
-                <div style={{ fontSize: '1rem' }}>{translateResult}</div>
-              </div>
-            )}
           </div>
         </div>
 
         {/* ── API Usage Stats ── */}
-        {usage && (
+        {usageSummary && (
           <div style={{ marginTop: '40px' }}>
             <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '16px' }}>
-              📊 API Usage — {usage.period || 'Current Month'}
+              📊 API Usage — Current Month
             </h2>
             <div className="glass-card" style={{ padding: '24px' }}>
-              <div style={{ marginBottom: '12px' }}>
+              <div style={{ marginBottom: '12px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 <span className="badge badge-primary" style={{ fontSize: '0.8rem' }}>
-                  Plan: {usage.plan || 'Free'}
+                  Plan: {usageSummary.plan}
                 </span>
+                {usageSummary.periodEnd && (
+                  <span className="badge badge-success" style={{ fontSize: '0.8rem' }}>
+                    Billing period ends: {new Date(usageSummary.periodEnd).toLocaleDateString()}
+                  </span>
+                )}
               </div>
               <div className="usage-grid">
-                {usage.usage && Object.entries(usage.usage).map(([key, val]) => (
-                  <div key={key} className="usage-item">
-                    <div className="usage-value">{typeof val === 'number' ? val.toLocaleString() : val}</div>
-                    <div className="usage-label">{key.replace(/_/g, ' ')}</div>
+                {usageSummary.items.map((item) => (
+                  <div key={item.key} className="usage-item">
+                    <div className="usage-value">
+                      {item.used.toLocaleString()}
+                      <span className="text-muted text-sm">
+                        {' / '}{item.limit === null ? 'Unlimited' : item.limit.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="usage-label">{item.label}</div>
                   </div>
                 ))}
               </div>

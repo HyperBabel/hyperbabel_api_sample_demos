@@ -5,6 +5,18 @@
  * Use for standalone text translation, batch multi-language output,
  * language detection, or to query supported language codes.
  *
+ * ⚠️ BACKEND ONLY. Every `/translate/*` endpoint authenticates with your
+ * organization API key (`hb_live_…`). The end-user token this browser demo
+ * holds is rejected with 401 `invalid_api_key_format` (and each 401 also
+ * costs a token refresh in services/api.js), so no page in this demo calls
+ * these functions. They document the request shapes — run the same calls
+ * from your own server and expose a thin endpoint to the browser.
+ *
+ * To translate CHAT messages from a client app you do not need any of this:
+ * use `batchTranslateMessages()` in unitedChatService.js
+ * (POST /unitedchat/rooms/:roomId/messages/batch-translate), which accepts
+ * the end-user token.
+ *
  * Base path: /translate
  */
 

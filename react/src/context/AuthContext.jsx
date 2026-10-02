@@ -7,6 +7,9 @@
  *
  * Single mode: Customer Auth pattern B1 (Firebase Direct Exchange).
  * See https://hyperbabel.com/docs#customer-auth for the full architecture.
+ *
+ * Sign-out also closes the app-wide HyperBabel Real-Time connection (opened
+ * by IncomingCallListener when a user signs in).
  */
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
@@ -16,6 +19,7 @@ import {
   STORAGE_KEY_EXPIRES_AT,
 } from '../services/api';
 import { firebaseSignOut } from '../services/firebaseAuthService';
+import realtimeService from '../services/realtimeService';
 
 // ── Identity storage keys ─────────────────────────────────────────────────
 
@@ -89,6 +93,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
+    realtimeService.disconnect();
     localStorage.removeItem(STORAGE_KEY_USER);
     localStorage.removeItem(STORAGE_KEY_USER_ID);
     localStorage.removeItem(STORAGE_KEY_USERNAME);

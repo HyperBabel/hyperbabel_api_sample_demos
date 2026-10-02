@@ -23,19 +23,21 @@ The per-org Firebase project allow-list is configured in the
 | **1:1 Chat** | United Chat — Rooms, Messages, Batch-Translate |
 | **Group Chat** | United Chat — Rooms, Messages, Members, Sub-Admins, Ban/Unban |
 | **Open Chat** | United Chat — Rooms, Join, Leave |
-| **1:1 Video Call** | United Chat — Video Call (start, accept, reject, end) |
-| **Group Video Call** | United Chat — Video Call (start, accept, leave, end) |
-| **Live Stream (Host)** | Stream — Create, Start, End |
-| **Live Stream (Viewer)** | Stream — Viewer Token |
-| **Auto-Translation** | Translation — Text, Batch, Detect, Languages |
+| **1:1 Video Call** | United Chat — Video Call (start, accept, reject, joined-rtc, heartbeat, renew-token, end) |
+| **Group Video Call** | United Chat — Video Call (start, accept, joined-rtc, heartbeat, renew-token, leave, end) — up to 3 participants including the caller |
+| **Incoming Call Popup** | Real-Time private channel — `CALL_INVITE` signal (works on every page) |
+| **Live Stream (Host)** ⚠️ | Stream — Create, Start, End — **needs your backend**, see note below |
+| **Live Stream (Viewer)** ⚠️ | Stream — Viewer Token — **needs your backend**, see note below |
+| **Auto-Translation** | United Chat — `messages/batch-translate` (chat rooms and in-call chat) |
+| **Standalone Translation / Language Detection** ⚠️ | Translation — Text, Batch, Detect, Languages — **needs your backend**, see note below |
 | **In-Call Chat** | United Chat — Messages with auto-translation |
 | **In-Call Live Captions** | Speech Translation — `wss /stt-relay` (live STT + translation subtitles), `GET /stt/languages` |
-| **Live Stream Chat** | Chat — Channels, Messages with auto-translation |
+| **Live Stream Chat** ⚠️ | Chat — Channels, Messages — **needs your backend** (rides on the stream page above) |
 | **File Upload** | Storage — Presign → Upload → Confirm (3-step) |
-| **Typing Indicators** | Chat — Typing endpoint |
-| **Reactions** | Chat — Add/Remove Reactions |
-| **Message Threads** | Chat — Thread Replies |
-| **Full-Text Search** | Chat — Search Messages |
+| **Typing Indicators** | United Chat — Typing endpoint |
+| **Reactions** (display only) | Rendered from `message.reactions` + realtime deltas. Adding/removing is **not wired** in this demo — see `unitedChatService` for the end-user endpoint |
+| **Message Threads** | Not wired in this demo — a reply is a message with `reply_to`; see the React Native demo for a working panel |
+| **Full-Text Search** | Not wired in this demo — the search box filters the room list client-side. Server search is `GET /unitedchat/rooms/:id/search` |
 | **Read Receipts** | United Chat — Mark as Read |
 | **Pin Messages** | United Chat — Pin/Unpin |
 | **Mute/Unmute Rooms** | United Chat — Mute/Unmute |
@@ -43,11 +45,48 @@ The per-org Firebase project allow-list is configured in the
 | **Presence (Online/Offline)** | Presence — Heartbeat, Status, Bulk Query |
 | **Push Notifications** | Push — Register/Unregister Token |
 | **API Usage Monitoring** | Auth — Usage |
-| **Language Detection** | Translation — Detect |
 
 > Webhook CRUD, billing, and other tenant-admin endpoints aren't in the
 > demo — they require a console-session JWT (not an API key) and are
 > managed in the [HyperBabel Console](https://console.hyperbabel.com).
+
+### ⚠️ Live streaming and standalone translation need your backend
+
+The rows marked ⚠️ above are the only ones that do **not** run from this demo,
+and that is by design rather than a gap.
+
+Every `/stream/*` and `/translate/*` endpoint authenticates with your
+**organization API key** (`Authorization: Bearer hb_live_…`). A request
+carrying anything else is rejected before it reaches the handler:
+
+```
+POST /api/v1/stream/sessions
+→ 401 { "error": { "code": "invalid_api_key_format" } }
+```
+
+Creating a broadcast allocates paid capacity and is metered against your
+organization, so the caller has to be **you**, not a signed-in end user. This
+demo holds only a customer JWT — `src/services/api.js` refuses to put an org
+key in a browser bundle — so the demo does not call these endpoints at all.
+(Calling them anyway would also be wasteful: the client answers every 401 by
+refreshing the customer JWT, so a polling loop would churn refreshes.)
+
+Run them as:
+
+```
+browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*, /translate/*
+```
+
+`src/pages/LiveStreamPage.jsx` still documents the exact live-stream call
+sequence and payloads, and `src/services/translateService.js` the translation
+requests; implement them on your server and expose a thin endpoint the browser
+can call.
+
+Chat translation is **not** affected: chat rooms and the in-call chat use
+`POST /unitedchat/rooms/{roomId}/messages/batch-translate`, which accepts the
+customer JWT. Everything else in this demo — chat (including its
+auto-translation), video calls, storage, presence, push — is an end-user
+surface and runs as-is.
 
 ---
 
@@ -142,12 +181,12 @@ react/
 │   │   ├── api.js                  # Customer JWT HTTP client (B1)
 │   │   ├── firebaseAuthService.js  # Firebase → /customer/auth/firebase-exchange
 │   │   ├── firebaseService.js      # FCM web push registration (optional)
-│   │   ├── authService.js          # Auth — Usage & Webhooks
+│   │   ├── authService.js          # Auth — Usage
 │   │   ├── unitedChatService.js    # United Chat — Rooms, Messages, Video Call, Ban, Mute, Freeze
 │   │   ├── chatService.js          # Chat — Low-level channels, messages, reactions, threads
 │   │   ├── videoService.js         # Video — Standalone session management
-│   │   ├── streamService.js        # Stream — Live broadcast sessions
-│   │   ├── translateService.js     # Translation — Text, Batch, Detect, Languages
+│   │   ├── streamService.js        # Stream — Live broadcast sessions (org API key — backend only)
+│   │   ├── translateService.js     # Translation — Text, Batch, Detect, Languages (org API key — backend only)
 │   │   ├── storageService.js       # Storage — 3-step presigned-URL upload
 │   │   ├── realtimeService.js      # Real-Time channel subscriptions
 │   │   ├── rtcService.js           # Video / Live Stream engine wrapper
@@ -157,6 +196,7 @@ react/
 │   ├── components/                 # Reusable UI components
 │   │   ├── Header.jsx              # Navigation header with presence toggle
 │   │   ├── ChatMessageList.jsx     # Scrollable message list with translations
+│   │   ├── IncomingCallListener.jsx # App-wide real-time connection + CALL_INVITE listener
 │   │   ├── IncomingCallOverlay.jsx # Incoming call popup
 │   │   └── ChatInput.jsx           # Message input with file attach & typing
 │   │
@@ -171,7 +211,7 @@ react/
 │   │   ├── ChatHubPage.jsx         # Unified Chat Hub
 │   │   ├── VideoCallPage.jsx       # Video call with in-call chat
 │   │   ├── LiveStreamPage.jsx      # Live stream (host/viewer) with chat
-│   │   └── SettingsPage.jsx        # Usage, Webhooks, Push, Language Detection
+│   │   └── SettingsPage.jsx        # Usage, Push tokens
 │   │
 │   ├── utils/
 │   │   └── ringtone.js             # Incoming call ringtone via Web Audio API
@@ -194,23 +234,52 @@ react/
 ## Incoming Video Call Flow
 
 The diagram below illustrates the full lifecycle of an incoming video call:
-accepting, rejecting, 30-second auto-reject timeout, and the busy-rejection
-path when the callee is already in another call.
+accepting, rejecting, the auto-reject timeout (45 seconds in this demo), and
+the busy-rejection path when the callee is already in another call.
 
 ![Incoming Video Call Flow](docs/video_call_flow.png)
 
+> The diagram predates two details — the table below is authoritative: the
+> ring timeout is **45 s** (not 30 s), and a busy callee is declined with
+> `POST …/video-call/reject` and `reason: 'busy'` (there is no
+> `…/video-call/busy` endpoint). Every accept / reject also sends `session_id`.
+
 | Scenario | API Call | Result |
 |---|---|---|
-| **Accept** | `POST /unitedchat/rooms/{roomId}/video-call/accept` | Navigate to VideoCallPage |
-| **Reject** | `POST /unitedchat/rooms/{roomId}/video-call/reject` | Dismiss popup |
-| **Timeout (30s)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` | Auto-dismiss |
-| **Busy (in another call)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` (with reason) | Silent rejection, no popup |
+| **Accept** | `POST /unitedchat/rooms/{roomId}/video-call/accept` `{ user_id, session_id }` | Navigate to VideoCallPage (410 = caller already hung up → popup closes) |
+| **Reject** | `POST /unitedchat/rooms/{roomId}/video-call/reject` `{ user_id, session_id }` | Dismiss popup |
+| **Timeout (45 s)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` `{ …, reason: 'missed' }` | Auto-dismiss |
+| **Busy (in another call)** | `POST /unitedchat/rooms/{roomId}/video-call/reject` `{ …, reason: 'busy' }` | Silent rejection, no popup |
+| **Caller hangs up while ringing** | — (a `call_ended` event arrives on the room channel) | Popup closes |
 
-> The incoming call event arrives via the HyperBabel Real-Time private
-> channel (`hb:{orgId}:private:{userId}`) subscribed by
-> `IncomingCallListener.jsx`. The global `isInCall` flag (`CallContext.jsx`)
-> determines whether the popup is shown or a silent busy-rejection is
-> sent instead.
+> The incoming call arrives on the HyperBabel Real-Time private channel
+> (`user:{orgId}:{userId}`) as an event named `signal` whose payload has
+> `type: 'CALL_INVITE'` plus `sessionId`, `roomId`, `channelName`,
+> `callType` and `roomSignalChannel`. `IncomingCallListener.jsx` opens the
+> real-time connection at sign-in and keeps that subscription alive on every
+> page (`AuthContext.logout()` closes it). The global `isInCall` flag
+> (`CallContext.jsx`) determines whether the popup is shown or a silent
+> busy-rejection is sent instead. Every call action — accept, reject, leave,
+> end — must send the invite's `sessionId` as `session_id`.
+
+### On the call screen
+
+Call events arrive on the room's real-time channel as `video_call` system
+messages (event `message`, `data.metadata = { event, session_id, … }`;
+`event` is `call_started`, `call_accepted`, `call_ended`, `call_rejected`,
+`call_missed` or `call_busy`). `VideoCallPage.jsx` reacts like this:
+
+| Situation | What the demo does |
+|---|---|
+| `call_ended` for this session | Leaves the screen (no API call — the session is over) |
+| Caller of a 1:1 call, nobody joined yet, `call_rejected` / `call_missed` / `call_busy` | `POST …/video-call/leave`, shows "Declined" / "No answer" / "Busy", leaves |
+| Caller of any call, nobody joined 45 s after the caller is in the call | `POST …/video-call/leave`, shows "No answer", leaves |
+| The last other participant leaves the media channel | `POST …/video-call/leave`, leaves (a group call carries on while anyone remains) |
+| While connected | `joined-rtc` once, `heartbeat` every 60 s, `renew-token` before the 1-hour RTC token expires |
+
+The chat screen renders these events as one-line notices ("Video call
+started", "Video call ended", "Call declined", …); live-caption messages that
+also ride the room channel are not added to the chat list.
 
 ---
 
@@ -273,18 +342,32 @@ const otherMsgIds = messages
   .filter((m) => m.sender_id !== myUserId)
   .map((m) => m.id);
 
-const translated = await unitedChat.batchTranslateMessages(
+// Up to 100 ids per call. Works with the end-user token.
+const { translations } = await unitedChat.batchTranslateMessages(
   roomId, otherMsgIds, 'ko', // → Korean
 );
+// translations = { [messageId]: 'translated text', ... }
+// (plus `limited: true` when the user hit the daily fair-use translation limit)
 ```
 
 ### 4. Video Call from Chat Room
 
 ```javascript
-const result = await unitedChat.startVideoCall(roomId, myUserId);
-await unitedChat.acceptVideoCall(roomId, calleeUserId);
-await unitedChat.leaveVideoCall(roomId, myUserId);
-await unitedChat.endVideoCall(roomId, myUserId);
+// Caller — the response carries the session id every later call needs.
+const { session } = await unitedChat.startVideoCall(roomId, myUserId);
+
+// Callee — `sessionId` comes with the CALL_INVITE signal.
+await unitedChat.acceptVideoCall(roomId, myUserId, sessionId);
+await unitedChat.rejectVideoCall(roomId, myUserId, sessionId); // or reason 'missed' / 'busy'
+
+// While connected (see VideoCallPage.jsx):
+await unitedChat.markJoinedRtc(roomId, myUserId, session.id);          // once, after the media join
+await unitedChat.sendVideoCallHeartbeat(roomId, myUserId, session.id); // every 60 s
+const { rtc_token } = await unitedChat.renewVideoCallToken(roomId, myUserId, session.id); // before the 1-hour token expires
+
+// Hang up
+await unitedChat.leaveVideoCall(roomId, myUserId, session.id); // just me
+await unitedChat.endVideoCall(roomId, myUserId, session.id);   // everyone (caller, room owner or sub-admin only)
 ```
 
 ### 5. File Upload (3-step presign)
@@ -351,13 +434,15 @@ tier on every session-creation call:
 
 - `src/services/videoQuality.js` — the presets and the `quality` value are both defined here.
 - 1280 × 720 when a participant receives at most one remote stream
-  (live-stream host, 1:1 call); 640 × 480 from three participants up, so a
-  four-way call still totals 3 × 307,200 = 921,600 px.
+  (live-stream host, 1:1 call); 640 × 480 from three participants up. Chat-room
+  calls (the ones this demo starts) allow at most 3 participants including the
+  caller; the standalone `/video/sessions` API allows 4, and even a four-way
+  call still totals 3 × 307,200 = 921,600 px.
 - `quality` is sent as `"hd"`. If you publish above these presets, change the
   preset **and** the declared tier together in that one file — the declared
   value is what your invoice is calculated from (Terms §5.1 / §5.2).
 - The roster is re-evaluated on every join **and** every leave, so a call
-  that drops from four participants to two moves back up to 1280 × 720 and a
+  that drops from three participants to two moves back up to 1280 × 720 and a
   participant who rejoins pulls everyone back down before publishing a frame.
 
 ### Always send `publish_resolution`

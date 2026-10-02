@@ -33,7 +33,7 @@ struct BlocksScreen: View {
             }
             TextField("Search by user ID…", text: $query)
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: query) { _, _ in page = 0 }
+                .onChange(of: query) { _ in page = 0 }
             Text("⚠️ Blocks apply to every room, not just one.")
                 .font(.caption2).foregroundStyle(.secondary)
 

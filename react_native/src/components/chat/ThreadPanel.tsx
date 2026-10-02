@@ -5,13 +5,16 @@
  * Allows users to send new replies in the thread context.
  *
  * Architecture:
- *  - Loads thread replies from chatService.getThreadReplies()
- *  - Real-time thread updates come through room channel subscription
- *    (message events with reply_to === parentMessage.message_id)
+ *  - Loads thread replies from chatService.getThreadReplies() — which reads
+ *    the room's recent messages and keeps the ones with reply_to set
+ *  - Live replies come from `roomMessages`: the chat screen's message list,
+ *    which its room-channel subscription keeps current. Replies to the parent
+ *    (reply_to === parentMessage.id) that arrive while the panel is open are
+ *    merged in, and replies deleted meanwhile drop out.
  *  - Sends via chatService.sendThreadReply()
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, FlatList, TextInput, TouchableOpacity,
   StyleSheet, Modal, Pressable, ActivityIndicator,
@@ -21,7 +24,6 @@ import dayjs from 'dayjs';
 import { Avatar } from '@/components/ui/Avatar';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import { getThreadReplies, sendThreadReply } from '@/services/chatService';
-import type { ChatMessage } from '@/services/chatService';
 import type { Message } from '@/services/unitedChatService';
 
 interface ThreadPanelProps {
@@ -29,22 +31,38 @@ interface ThreadPanelProps {
   parentMessage: Message | null;
   currentUserId: string;
   roomId:        string;
+  /** The chat screen's live message list — see the header. */
+  roomMessages?: Message[];
   onClose:       () => void;
 }
 
 export function ThreadPanel({
-  visible, parentMessage, currentUserId, roomId, onClose,
+  visible, parentMessage, currentUserId, roomId, roomMessages, onClose,
 }: ThreadPanelProps) {
-  const [replies,   setReplies]  = useState<ChatMessage[]>([]);
+  const [replies,   setReplies]  = useState<Message[]>([]);
   const [loading,   setLoading]  = useState(false);
   const [inputText, setInput]    = useState('');
   const [sending,   setSending]  = useState(false);
   const listRef = useRef<FlatList>(null);
 
+  // Loaded replies plus any that reached the chat screen since, minus the ones
+  // deleted meanwhile — oldest first.
+  const shownReplies = useMemo(() => {
+    if (!parentMessage) return replies;
+    const live = roomMessages ?? [];
+    const deleted = new Set(live.filter((m) => m.deleted_at).map((m) => m.id));
+    const seen = new Set(replies.map((r) => r.id));
+    const added = live.filter(
+      (m) => m.reply_to === parentMessage.id && !m.deleted_at && !seen.has(m.id),
+    );
+    return [...replies.filter((r) => !deleted.has(r.id)), ...added]
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  }, [replies, roomMessages, parentMessage]);
+
   useEffect(() => {
     if (!visible || !parentMessage) return;
     setLoading(true);
-    getThreadReplies(roomId, parentMessage.message_id)
+    getThreadReplies(roomId, parentMessage.id)
       .then(({ replies: r }) => setReplies(r))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -56,7 +74,7 @@ export function ThreadPanel({
     setInput('');
     setSending(true);
     try {
-      const reply = await sendThreadReply(roomId, parentMessage.message_id, {
+      const { message: reply } = await sendThreadReply(roomId, parentMessage.id, {
         sender_id: currentUserId,
         content:   text,
       });
@@ -77,7 +95,7 @@ export function ThreadPanel({
           {/* Handle */}
           <View style={styles.handle} />
           <View style={styles.header}>
-            <Text style={styles.title}>Thread · {replies.length} {replies.length === 1 ? 'reply' : 'replies'}</Text>
+            <Text style={styles.title}>Thread · {shownReplies.length} {shownReplies.length === 1 ? 'reply' : 'replies'}</Text>
             <TouchableOpacity onPress={onClose}><Text style={styles.closeBtn}>✕</Text></TouchableOpacity>
           </View>
 
@@ -96,8 +114,8 @@ export function ThreadPanel({
           ) : (
             <FlatList
               ref={listRef}
-              data={replies}
-              keyExtractor={(r) => r.message_id}
+              data={shownReplies}
+              keyExtractor={(r) => r.id}
               renderItem={({ item }) => (
                 <View style={styles.replyRow}>
                   <Avatar name={item.sender_name ?? item.sender_id} size={32} />

@@ -3,20 +3,29 @@
  *
  * Covers the room and message endpoints used by this demo. The full surface
  * is documented at https://hyperbabel.com/docs.
+ *
+ * DELETE routes that take a JSON body (unban, demote, unfreeze, unmute,
+ * delete message) are declared with `@HTTP(method = "DELETE", hasBody = true)`.
+ * Sending them without a body — or with the ids as query parameters — fails
+ * JSON parsing on the server and comes back as an error.
  */
 package com.hyperbabel.demo.api
 
 import com.hyperbabel.demo.data.ActiveVideoCallResponse
+import com.hyperbabel.demo.data.BatchTranslateRequest
+import com.hyperbabel.demo.data.BatchTranslateResponse
 import com.hyperbabel.demo.data.CreateRoomRequest
-import com.hyperbabel.demo.data.Message
+import com.hyperbabel.demo.data.JoinedRtcResponse
 import com.hyperbabel.demo.data.MessageListResponse
-import com.hyperbabel.demo.data.Room
+import com.hyperbabel.demo.data.RenewTokenResponse
 import com.hyperbabel.demo.data.RoomListResponse
+import com.hyperbabel.demo.data.RoomResponse
 import com.hyperbabel.demo.data.SendMessageRequest
+import com.hyperbabel.demo.data.SendMessageResponse
 import com.hyperbabel.demo.data.StartVideoCallRequest
 import retrofit2.http.Body
-import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.HTTP
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -27,19 +36,20 @@ interface UnitedChatService {
     suspend fun listRooms(@Query("user_id") userId: String): RoomListResponse
 
     @POST("api/v1/unitedchat/rooms")
-    suspend fun createRoom(@Body body: CreateRoomRequest): Room
+    suspend fun createRoom(@Body body: CreateRoomRequest): RoomResponse
 
     @GET("api/v1/unitedchat/rooms/{roomId}")
     suspend fun getRoom(
         @Path("roomId") roomId: String,
         @Query("user_id") userId: String,
-    ): Room
+    ): RoomResponse
 
+    /** Answers `{ "message": { … } }` — the stored message, wrapped. */
     @POST("api/v1/unitedchat/rooms/{roomId}/messages")
     suspend fun sendMessage(
         @Path("roomId") roomId: String,
         @Body body: SendMessageRequest,
-    ): Message
+    ): SendMessageResponse
 
     @GET("api/v1/unitedchat/rooms/{roomId}/messages")
     suspend fun getMessages(
@@ -54,30 +64,51 @@ interface UnitedChatService {
         @Body body: Map<String, String>,
     )
 
+    // ── Video calls ──────────────────────────────────────────────────────
+    //
+    // Every call action below needs BOTH `user_id` and `session_id` in the
+    // body (400 otherwise). The session id is `session.id` from
+    // startVideoCall / getActiveVideoCall, or `sessionId` from the
+    // CALL_INVITE signal on the callee side.
+
+    /**
+     * Group rooms must list who to ring in `target_user_ids` (at most 2, so
+     * 3 people per call); 1:1 rooms ring the other member, so send none.
+     * Open rooms have no calls. The response carries `session.id` and the
+     * caller's own `caller.rtc_token` / `uid`.
+     */
     @POST("api/v1/unitedchat/rooms/{roomId}/video-call")
     suspend fun startVideoCall(
         @Path("roomId") roomId: String,
         @Body body: StartVideoCallRequest,
     )
 
+    /** Body: `{ user_id, session_id }`. 410 when the caller already hung up. */
     @POST("api/v1/unitedchat/rooms/{roomId}/video-call/accept")
     suspend fun acceptVideoCall(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
+    /** Body: `{ user_id, session_id, reason? }`. */
     @POST("api/v1/unitedchat/rooms/{roomId}/video-call/reject")
     suspend fun rejectVideoCall(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
+    /** Ends the call for EVERYONE. Body: `{ user_id, session_id }`. Caller, owner or sub_admin only. */
     @POST("api/v1/unitedchat/rooms/{roomId}/video-call/end")
     suspend fun endVideoCall(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
+    /**
+     * Leave the CALL (not the chat room — that is [leaveRoom]).
+     * Body: `{ user_id, session_id }`. The server ends the session when the
+     * last active participant leaves.
+     */
     @POST("api/v1/unitedchat/rooms/{roomId}/video-call/leave")
     suspend fun leaveVideoCall(
         @Path("roomId") roomId: String,
@@ -89,28 +120,60 @@ interface UnitedChatService {
         @Path("roomId") roomId: String,
     ): ActiveVideoCallResponse
 
+    /**
+     * Body: `{ user_id, session_id }`. Send right after joining the RTC channel;
+     * retry while `matched` is false. Without it (and without heartbeats) the
+     * server treats the call as never connected and may end it.
+     */
+    @POST("api/v1/unitedchat/rooms/{roomId}/video-call/joined-rtc")
+    suspend fun markJoinedRtc(
+        @Path("roomId") roomId: String,
+        @Body body: Map<String, String>,
+    ): JoinedRtcResponse
+
+    /** Body: `{ user_id, session_id }`. Every 60 s while on the call. */
+    @POST("api/v1/unitedchat/rooms/{roomId}/video-call/heartbeat")
+    suspend fun videoCallHeartbeat(
+        @Path("roomId") roomId: String,
+        @Body body: Map<String, String>,
+    )
+
+    /** Body: `{ user_id, session_id }`. RTC tokens last 1 hour — renew before they expire. */
+    @POST("api/v1/unitedchat/rooms/{roomId}/video-call/renew-token")
+    suspend fun renewVideoCallToken(
+        @Path("roomId") roomId: String,
+        @Body body: Map<String, String>,
+    ): RenewTokenResponse
+
+    /**
+     * Translate chat messages with the end-user token. (The standalone
+     * `/translate/…` endpoints accept only an organization API key, so they
+     * are not callable from an app — see README.)
+     */
     @POST("api/v1/unitedchat/rooms/{roomId}/messages/batch-translate")
     suspend fun batchTranslateMessages(
         @Path("roomId") roomId: String,
-        @Body body: Map<String, Any>,
-    )
+        @Body body: BatchTranslateRequest,
+    ): BatchTranslateResponse
 
-    @DELETE("api/v1/unitedchat/rooms/{roomId}/messages/{messageId}")
+    /** Body: `{ user_id }` — the sender, or an owner / sub_admin. */
+    @HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/messages/{messageId}", hasBody = true)
     suspend fun deleteMessage(
         @Path("roomId") roomId: String,
         @Path("messageId") messageId: String,
-        @Query("user_id") userId: String,
+        @Body body: Map<String, String>,
     )
 
     // ── Member management & moderation ───────────────────────────────────
 
+    /** Leave the chat ROOM. Never use this to hang up a call — see [leaveVideoCall]. */
     @POST("api/v1/unitedchat/rooms/{roomId}/leave")
     suspend fun leaveRoom(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
-    @retrofit2.http.GET("api/v1/unitedchat/rooms/{roomId}/members")
+    @GET("api/v1/unitedchat/rooms/{roomId}/members")
     suspend fun getMembers(@Path("roomId") roomId: String): kotlinx.serialization.json.JsonObject
 
     @POST("api/v1/unitedchat/rooms/{roomId}/typing")
@@ -119,6 +182,7 @@ interface UnitedChatService {
         @Body body: Map<String, String>,
     )
 
+    /** Body: `{ user_id, content }`. Text messages only. */
     @retrofit2.http.PUT("api/v1/unitedchat/rooms/{roomId}/messages/{messageId}")
     suspend fun editMessage(
         @Path("roomId") roomId: String,
@@ -126,49 +190,65 @@ interface UnitedChatService {
         @Body body: Map<String, String>,
     )
 
+    /** Body: `{ user_id, banned_by }` — `banned_by` is you (owner / sub_admin). */
     @POST("api/v1/unitedchat/rooms/{roomId}/ban")
     suspend fun banUser(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
-    @retrofit2.http.HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/ban/{userId}", hasBody = false)
+    /** Body: `{ unbanned_by }` — you (owner / sub_admin). */
+    @HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/ban/{userId}", hasBody = true)
     suspend fun unbanUser(
         @Path("roomId") roomId: String,
         @Path("userId") userId: String,
+        @Body body: Map<String, String>,
     )
 
+    /** Body: `{ user_id, owner_id }` — `owner_id` is you (room owner only). */
     @POST("api/v1/unitedchat/rooms/{roomId}/sub-admins")
     suspend fun addSubAdmin(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
-    @retrofit2.http.HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/sub-admins/{userId}", hasBody = false)
+    /** Body: `{ owner_id }` — you (room owner only). */
+    @HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/sub-admins/{userId}", hasBody = true)
     suspend fun removeSubAdmin(
         @Path("roomId") roomId: String,
         @Path("userId") userId: String,
+        @Body body: Map<String, String>,
     )
 
+    /** Body: `{ user_id }` — you (owner / sub_admin). */
     @POST("api/v1/unitedchat/rooms/{roomId}/freeze")
     suspend fun freezeRoom(
         @Path("roomId") roomId: String,
         @Body body: Map<String, String>,
     )
 
-    @retrofit2.http.HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/freeze", hasBody = false)
-    suspend fun unfreezeRoom(@Path("roomId") roomId: String)
+    /** Body: `{ user_id }` — you (owner / sub_admin). */
+    @HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/freeze", hasBody = true)
+    suspend fun unfreezeRoom(
+        @Path("roomId") roomId: String,
+        @Body body: Map<String, String>,
+    )
 
+    /** Body: `{ user_id, duration_minutes? }` — mutes the room's notifications for you. */
     @POST("api/v1/unitedchat/rooms/{roomId}/mute")
     suspend fun muteRoom(
         @Path("roomId") roomId: String,
         @Body body: kotlinx.serialization.json.JsonObject,
     )
 
-    @retrofit2.http.HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/mute", hasBody = false)
-    suspend fun unmuteRoom(@Path("roomId") roomId: String)
+    /** Body: `{ user_id }`. */
+    @HTTP(method = "DELETE", path = "api/v1/unitedchat/rooms/{roomId}/mute", hasBody = true)
+    suspend fun unmuteRoom(
+        @Path("roomId") roomId: String,
+        @Body body: Map<String, String>,
+    )
 
-    @retrofit2.http.GET("api/v1/unitedchat/rooms/{roomId}/mute/{userId}")
+    @GET("api/v1/unitedchat/rooms/{roomId}/mute/{userId}")
     suspend fun getMuteStatus(
         @Path("roomId") roomId: String,
         @Path("userId") userId: String,

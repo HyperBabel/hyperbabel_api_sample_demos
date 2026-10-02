@@ -71,7 +71,7 @@ class _MembersSheetState extends State<MembersSheet> {
     final userId = member['user_id'] as String?;
     if (userId == null || !_isOwner) return;
     try {
-      await _repo.removeSubAdmin(widget.roomId, userId);
+      await _repo.removeSubAdmin(widget.roomId, widget.currentUserId, userId);
       _toast('$userId demoted to member');
       await _load();
     } catch (e) {

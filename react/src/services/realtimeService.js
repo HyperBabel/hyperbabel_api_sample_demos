@@ -8,16 +8,36 @@
  * client to publish and subscribe through HyperBabel's real-time
  * infrastructure — no third-party credentials needed in application code.
  *
- * Channel naming convention (managed by HyperBabel):
- *  - Room messages  : `hb:{orgId}:room:{roomId}`
- *  - Typing events  : `hb:{orgId}:room:{roomId}:typing`
- *  - Private user   : `hb:{orgId}:private:{userId}`
- *  - Presence       : `hb:{orgId}:presence:{roomId}`
+ * Channel naming — READ THIS BEFORE CHANGING ANYTHING HERE
+ *
+ *  - Room messages: pass the room's `realtime_channel` string EXACTLY as the
+ *    REST API returns it (`POST /unitedchat/rooms`, `GET /unitedchat/rooms`,
+ *    `GET /unitedchat/rooms/{roomId}`). NEVER rebuild it from a room id — the
+ *    server derives the name from values the client cannot guess, so a
+ *    reconstructed name silently subscribes to a channel nobody publishes on.
+ *
+ *  - Per-user private channel (call invitations and other per-user signals):
+ *    `user:{orgId}:{userId}`, where `orgId` is the `org_id` returned by
+ *    `POST /rtm/token`, used as-is. Signals arrive with the event name
+ *    `signal`; what kind of signal it is lives in the payload's `type` field
+ *    (e.g. `{ type: 'CALL_INVITE', sessionId, roomId, ... }`).
+ *
+ *  - There is NO separate typing channel and NO presence channel. Typing
+ *    arrives on the room channel as a `{ type: 'typing' }` payload, and
+ *    presence is a REST endpoint (`/presence`), not a real-time channel.
+ *
+ * One connection per signed-in user: `init()` is safe to call from several
+ * places (concurrent callers share one connection attempt) and returns the
+ * existing connection once it is up. Close it on sign-out with `disconnect()`
+ * — not when a page unmounts, or the app-wide incoming-call listener goes deaf.
  *
  * Usage:
  *   import realtimeService from './realtimeService';
  *   const channelService = await realtimeService.init(userId, userName, langCode);
- *   await channelService.subscribe('room-id', ({ message }) => renderMessage(message));
+ *   const stopRoom = channelService.subscribeToRoom(room.realtime_channel, ({ message }) => renderMessage(message));
+ *   const stopInbox = channelService.subscribeToPrivate(userId, ({ data }) => {
+ *     if (data?.type === 'CALL_INVITE') showIncomingCall(data);
+ *   });
  */
 
 import * as Realtime from 'ably';
@@ -31,6 +51,10 @@ const BASE = '/rtm';
 let _client = null;
 /** Organization ID returned with the token (used for channel scoping) */
 let _orgId = null;
+/** In-flight connection attempt, shared by concurrent init() callers */
+let _connecting = null;
+/** Bumped by disconnect() so an attempt still in flight cannot revive a closed session */
+let _generation = 0;
 
 // ── Token Request (via HyperBabel API) ───────────────────────────────────
 
@@ -75,52 +99,89 @@ export const init = async (userId, userName, preferredLangCd = 'en') => {
     // Already connected — return the existing service
     return createChannelService();
   }
+  // Another caller is already connecting — share that attempt instead of
+  // opening a second connection.
+  if (_connecting) return _connecting;
 
-  // Pre-fetch the first token to get the orgId.
-  // The server issues tokens with clientId = "{orgId}:{userId}" for multi-tenant isolation.
-  // We must tell HyperBabel Real-Time the same composite clientId to avoid a 403 mismatch.
-  const initialToken = await requestToken(userId, userName, preferredLangCd);
-  const compositeClientId = _orgId ? `${_orgId}:${userId}` : userId;
+  const generation = _generation;
+  const attempt = (async () => {
+    // Pre-fetch the first token to get the orgId.
+    // The server issues tokens with clientId = "{orgId}:{userId}" for multi-tenant isolation.
+    // We must tell HyperBabel Real-Time the same composite clientId to avoid a 403 mismatch.
+    const initialToken = await requestToken(userId, userName, preferredLangCd);
+    if (generation !== _generation) {
+      // disconnect() ran while the token request was in flight (sign-out).
+      throw new Error('Real-time connection was closed before it was established');
+    }
+    const compositeClientId = _orgId ? `${_orgId}:${userId}` : userId;
 
-  // Create client with HyperBabel's authCallback — token is fetched from our own API
-  _client = new Realtime.Realtime({
-    authCallback: async (tokenParams, callback) => {
-      try {
-        // On renewal, reuse the pre-fetched token or request a fresh one
-        if (initialToken && !_client._initialTokenConsumed) {
-          _client._initialTokenConsumed = true;
-          callback(null, initialToken);
-        } else {
-          const tokenRequest = await requestToken(userId, userName, preferredLangCd);
-          callback(null, tokenRequest);
+    // Create client with HyperBabel's authCallback — token is fetched from our own API
+    let initialTokenConsumed = false;
+    const client = new Realtime.Realtime({
+      authCallback: async (tokenParams, callback) => {
+        try {
+          // The first authentication reuses the pre-fetched token; every
+          // renewal after that requests a fresh one.
+          if (initialToken && !initialTokenConsumed) {
+            initialTokenConsumed = true;
+            callback(null, initialToken);
+          } else {
+            const tokenRequest = await requestToken(userId, userName, preferredLangCd);
+            callback(null, tokenRequest);
+          }
+        } catch (err) {
+          callback(err, null);
         }
-      } catch (err) {
-        callback(err, null);
+      },
+      clientId: compositeClientId,
+    });
+    _client = client;
+
+    // Wait for connection to be established
+    try {
+      await new Promise((resolve, reject) => {
+        client.connection.once('connected', resolve);
+        client.connection.once('failed', reject);
+        // Timeout fallback
+        setTimeout(() => resolve(), 8000);
+      });
+    } catch (err) {
+      // A failed connection does not recover on its own — drop it so the
+      // next init() starts from scratch instead of reusing a dead client.
+      if (_client === client) {
+        try { client.close(); } catch { /* already in a terminal state */ }
+        _client = null;
       }
-    },
-    clientId: compositeClientId,
-  });
+      throw err;
+    }
+    if (generation !== _generation) {
+      // disconnect() ran while we were waiting for the connection.
+      throw new Error('Real-time connection was closed before it was established');
+    }
 
-  // Wait for connection to be established
-  await new Promise((resolve, reject) => {
-    _client.connection.once('connected', resolve);
-    _client.connection.once('failed', reject);
-    // Timeout fallback
-    setTimeout(() => resolve(), 8000);
-  });
+    return createChannelService();
+  })();
 
-  return createChannelService();
+  _connecting = attempt;
+  try {
+    return await attempt;
+  } finally {
+    if (_connecting === attempt) _connecting = null;
+  }
 };
 
 /**
- * Disconnect the real-time client (call on logout).
+ * Disconnect the real-time client. Call this on sign-out (AuthContext does),
+ * not when a page unmounts — the connection is shared app-wide.
  */
 export const disconnect = () => {
+  _generation += 1;
+  _connecting = null;
   if (_client) {
     _client.close();
     _client = null;
-    _orgId = null;
   }
+  _orgId = null;
 };
 
 // ── Channel Service Interface ─────────────────────────────────────────────
@@ -131,20 +192,22 @@ export const disconnect = () => {
  */
 const createChannelService = () => ({
   /**
-   * Subscribe to new messages in a room.
-   * Messages are published by HyperBabel when a message is sent via the
-   * United Chat or Chat REST API.
+   * Subscribe to a room's real-time events.
    *
-   * @param {string}   roomId
-   * @param {function} onMessage — Called with { message } on each new message
+   * Messages are published by HyperBabel when a message is sent via the
+   * United Chat or Chat REST API. Typing indicators arrive on this same
+   * channel with a `{ type: 'typing' }` payload — there is no separate
+   * typing channel.
+   *
+   * @param {string}   realtimeChannel — The room's `realtime_channel` value
+   *                   from the REST API, passed through VERBATIM.
+   * @param {function} onMessage — Called with { message, type } on each event
    * @returns {function} Unsubscribe function
    */
-  subscribeToRoom: (roomId, onMessage) => {
-    if (!_client || !_orgId) return () => {};
+  subscribeToRoom: (realtimeChannel, onMessage) => {
+    if (!_client || !realtimeChannel) return () => {};
 
-    // Channel name follows HyperBabel's internal naming convention
-    const channelName = `hb:${_orgId}:room:${roomId}`;
-    const channel = _client.channels.get(channelName);
+    const channel = _client.channels.get(realtimeChannel);
 
     const listener = (msg) => {
       if (msg.data) {
@@ -165,37 +228,23 @@ const createChannelService = () => ({
   },
 
   /**
-   * Subscribe to typing indicator events in a room.
-   *
-   * @param {string}   roomId
-   * @param {function} onTyping — Called with { user_id, is_typing }
-   * @returns {function} Unsubscribe function
-   */
-  subscribeToTyping: (roomId, onTyping) => {
-    if (!_client || !_orgId) return () => {};
-
-    const channelName = `hb:${_orgId}:room:${roomId}:typing`;
-    const channel = _client.channels.get(channelName);
-
-    const listener = (msg) => {
-      if (msg.data) onTyping(msg.data);
-    };
-
-    channel.subscribe('typing', listener);
-    return () => channel.unsubscribe('typing', listener);
-  },
-
-  /**
    * Subscribe to private events for the current user (call invitations, etc.).
    *
+   * Every event is delivered as `{ event, data }`: `event` is the real-time
+   * event name (`signal` for call signalling) and `data` is the payload. Match
+   * on `data.type` — e.g. `'CALL_INVITE'` (an incoming call) or `'CALL_BUSY'`
+   * (someone you called is already in another call).
+   *
    * @param {string}   userId
-   * @param {function} onEvent — Called with event data
+   * @param {function} onEvent — Called with `{ event, data }`
    * @returns {function} Unsubscribe function
    */
   subscribeToPrivate: (userId, onEvent) => {
     if (!_client || !_orgId) return () => {};
 
-    const channelName = `hb:${_orgId}:private:${userId}`;
+    // Must match the server's per-user channel exactly. `_orgId` is the
+    // `org_id` from POST /rtm/token, used as-is (no transformation).
+    const channelName = `user:${_orgId}:${userId}`;
     const channel = _client.channels.get(channelName);
 
     const listener = (msg) => {
@@ -205,24 +254,6 @@ const createChannelService = () => ({
     // Subscribe to all events on the private channel
     channel.subscribe(listener);
     return () => channel.unsubscribe(listener);
-  },
-
-  /**
-   * Subscribe to presence updates (online/offline) in a room.
-   *
-   * @param {string}   roomId
-   * @param {function} onPresence — Called with presence data
-   * @returns {function} Unsubscribe function
-   */
-  subscribeToPresence: (roomId, onPresence) => {
-    if (!_client || !_orgId) return () => {};
-
-    const channelName = `hb:${_orgId}:presence:${roomId}`;
-    const channel = _client.channels.get(channelName);
-
-    const listener = (presenceMsg) => onPresence(presenceMsg);
-    channel.presence.subscribe(listener);
-    return () => channel.presence.unsubscribe(listener);
   },
 
   /** Get current connection state */

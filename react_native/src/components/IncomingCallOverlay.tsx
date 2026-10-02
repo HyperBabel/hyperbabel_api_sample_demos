@@ -7,31 +7,50 @@
  *
  * Architecture:
  *  - Reads incomingCall from CallContext (populated by IncomingCallListener)
- *  - Accept: stops ringtone, calls acceptVideoCall API, navigates to VideoCallScreen
+ *  - Accept: stops ringtone, calls acceptVideoCall API (with the invite's
+ *    session id), navigates to VideoCallScreen. If the call already ended
+ *    (410) the overlay closes with a notice; any other failure keeps the
+ *    overlay up with an error so the user can retry or decline.
  *  - Decline: stops ringtone, calls rejectVideoCall API, clears overlay
+ *  - While ringing: listens on the invite's room channel and closes if the
+ *    caller hangs up (call_ended); after 45 s unanswered it declines the
+ *    invite as missed.
  */
 
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Animated, Easing, Alert } from 'react-native';
 import { BlurView } from 'expo-blur';
 
 import { useCall } from '@/context/CallContext';
 import { useAuth } from '@/context/AuthContext';
+import { useRealtime } from '@/context/RealtimeContext';
 import { Avatar } from '@/components/ui/Avatar';
+import { useToast } from '@/components/ui/Toast';
 import { startRingtone, stopRingtone } from '@/utils/ringtone';
 import { colors, spacing, textPresets, borderRadius, shadows } from '@/theme';
 import * as unitedChat from '@/services/unitedChatService';
+import { ApiError } from '@/services/api';
 import { router } from 'expo-router';
+
+/** How long an invite rings before it is declined as missed. */
+const RING_TIMEOUT_MS = 45_000;
 
 export function IncomingCallOverlay() {
   const { incomingCall, clearIncomingCall, setIsInCall } = useCall();
   const { user } = useAuth();
+  const { channelService } = useRealtime();
+  const { show: showToast } = useToast();
+  const userId = user?.userId ?? '';
+  // Set while an Accept request is in flight, so the ring timeout cannot
+  // decline a call the user is answering at that moment.
+  const acceptingRef = useRef(false);
 
-  // Pulsing animation for the accept button
-  const pulseAnim = React.useRef(new Animated.Value(1)).current;
+  // Pulsing animation for the accept button (created once, never replaced)
+  const [pulseAnim] = React.useState(() => new Animated.Value(1));
 
   useEffect(() => {
     if (!incomingCall) return;
+    const call = incomingCall;
 
     // Start ringtone + vibration
     startRingtone();
@@ -45,26 +64,59 @@ export function IncomingCallOverlay() {
     );
     pulse.start();
 
+    // The caller hanging up ends the session, and the room channel carries a
+    // call_ended event for it. The cleanup below removes ONLY this listener —
+    // the chat screen may be subscribed to the same channel and must keep it.
+    const unsubscribe = channelService && call.roomSignalChannel
+      ? channelService.subscribeToRoom(call.roomSignalChannel, ({ message, type }) => {
+          const evt = unitedChat.callEventFrom(type, message);
+          if (evt?.event !== 'call_ended' || evt.session_id !== call.sessionId) return;
+          clearIncomingCall();
+          showToast({ title: 'Missed call', message: call.callerName, type: 'info' });
+        })
+      : () => {};
+
+    // Unanswered: tell the server it was missed (the caller sees "Missed
+    // call") and stop ringing.
+    const missedTimer = setTimeout(() => {
+      if (acceptingRef.current) return;
+      clearIncomingCall();
+      unitedChat.rejectVideoCall(call.roomId, userId, call.sessionId, 'missed').catch(() => {});
+    }, RING_TIMEOUT_MS);
+
     return () => {
+      clearTimeout(missedTimer);
+      unsubscribe();
       pulse.stop();
       stopRingtone();
     };
-  }, [incomingCall]);
+  }, [incomingCall, channelService, clearIncomingCall, showToast, userId, pulseAnim]);
 
   if (!incomingCall) return null;
 
   const handleAccept = async () => {
     stopRingtone();
+    acceptingRef.current = true;
     try {
-      const callData = await unitedChat.acceptVideoCall(incomingCall.roomId, user?.userId ?? '');
+      await unitedChat.acceptVideoCall(incomingCall.roomId, userId, incomingCall.sessionId);
       setIsInCall(true);
       clearIncomingCall();
       router.push({
         pathname: '/video-call/[roomId]',
         params:   { roomId: incomingCall.roomId, sessionId: incomingCall.sessionId, isIncoming: '1' },
       });
-    } catch {
-      clearIncomingCall();
+    } catch (err: any) {
+      if (err instanceof ApiError && err.status === 410) {
+        // The caller hung up (or the call was ended) before we answered.
+        clearIncomingCall();
+        showToast({ title: 'Call ended', message: 'This call has already ended.', type: 'info' });
+        return;
+      }
+      // Anything else (network, auth, server) — keep the invite on screen so
+      // the user can try Accept again or Decline, and say what went wrong.
+      Alert.alert('Could not join the call', err?.message ?? 'Please try again.');
+    } finally {
+      acceptingRef.current = false;
     }
   };
 
@@ -72,8 +124,8 @@ export function IncomingCallOverlay() {
     stopRingtone();
     clearIncomingCall();
     try {
-      await unitedChat.rejectVideoCall(incomingCall.roomId, user?.userId ?? '');
-    } catch { /* ignore */ }
+      await unitedChat.rejectVideoCall(incomingCall.roomId, userId, incomingCall.sessionId);
+    } catch { /* best effort — the caller's ring times out on its own */ }
   };
 
   return (

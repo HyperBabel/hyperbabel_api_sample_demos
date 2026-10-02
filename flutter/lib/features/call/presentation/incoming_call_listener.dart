@@ -1,21 +1,38 @@
 import 'dart:async';
 
-import 'package:ably_flutter/ably_flutter.dart' as auth_realtime;
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/network/united_chat_repository.dart';
 import '../../../core/realtime/hyperbabel_realtime_client.dart';
 import '../../../core/theme/app_theme.dart';
 
-/// Wraps the app shell and listens on the user's HyperBabel private channel
-/// for `CALL_INVITE` events. When one arrives, a fullscreen Accept / Reject
-/// overlay slides in over whatever screen the user is on.
+/// Wraps the app shell and listens on the signed-in user's HyperBabel private
+/// channel (`user:{orgId}:{userId}`) for incoming calls. The server publishes
+/// every call signal under the real-time message name `signal`; the payload's
+/// `type` tells them apart, and `CALL_INVITE` is the one that rings. When it
+/// arrives, a fullscreen Accept / Reject overlay slides in over whatever
+/// screen the user is on.
 ///
-/// Mounted once near the root of the widget tree (see [main.dart]).
+/// While it rings, the overlay follows the invite's room channel
+/// (`roomSignalChannel`): it closes on `call_ended` (the caller hung up), and
+/// after 45 s unanswered it records a missed call and closes.
+///
+/// Mounted once near the root of the widget tree (see [main.dart]), ABOVE the
+/// router — so it cannot navigate with `context.go`; [onJoinCall] does that.
 class IncomingCallListener extends StatefulWidget {
-  const IncomingCallListener({super.key, required this.child});
+  const IncomingCallListener({
+    super.key,
+    required this.userId,
+    required this.onJoinCall,
+    required this.child,
+  });
+
+  /// The signed-in user's id, or null while signed out. The listener connects
+  /// when it becomes non-null and tears the connection down when it goes null.
+  final String? userId;
+
+  /// Opens the call screen for the room of a call the user just accepted.
+  final void Function(String roomId) onJoinCall;
 
   final Widget child;
 
@@ -24,68 +41,192 @@ class IncomingCallListener extends StatefulWidget {
 }
 
 class _IncomingCallListenerState extends State<IncomingCallListener> {
+  /// How long an unanswered invite rings before it counts as missed.
+  static const _ringTimeout = Duration(seconds: 45);
+
   final UnitedChatRepository _repo = UnitedChatRepository();
-  StreamSubscription<auth_realtime.Message>? _sub;
+  StreamSubscription<RealtimeMessage>? _sub;
   Map<String, dynamic>? _incoming;
-  String? _userId;
+
+  /// While ringing: the room-channel listener and the missed-call timer.
+  StreamSubscription<RealtimeMessage>? _ringSub;
+  Timer? _ringTimer;
+
+  /// Bumped on every (re)attach, so a slow attach for a previous user can
+  /// tell it has been superseded and drop its subscription.
+  int _attachGeneration = 0;
 
   @override
   void initState() {
     super.initState();
-    _attach();
+    _attach(widget.userId);
+  }
+
+  @override
+  void didUpdateWidget(covariant IncomingCallListener oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.userId != widget.userId) _attach(widget.userId);
   }
 
   @override
   void dispose() {
+    _attachGeneration++;
     _sub?.cancel();
+    _stopRinging();
+    _incoming = null; // Lets an in-flight ring attach see it was superseded.
     super.dispose();
   }
 
-  Future<void> _attach() async {
-    final prefs = await SharedPreferences.getInstance();
-    _userId = prefs.getString('hb_user_id');
-    final apiKey = prefs.getString('hb_api_key');
-    if (_userId == null || apiKey == null) return;
+  Future<void> _attach(String? userId) async {
+    final generation = ++_attachGeneration;
+    final previous = _sub;
+    _sub = null;
+    await previous?.cancel();
+    if (generation != _attachGeneration) return;
+    _close();
 
+    final rt = HyperBabelRealtimeClient();
+    if (userId == null) {
+      // Signed out — close the connection so the next user starts clean.
+      await rt.disconnect();
+      return;
+    }
     try {
-      final rt = HyperBabelRealtimeClient();
+      // Authenticates with the user's session token (see the client's doc).
       await rt.connect();
-      _sub = await rt.subscribePrivate((event) {
-        if (event.name != 'CALL_INVITE' && event.name != 'video_call.started') {
-          return;
-        }
-        final raw = event.data;
-        if (raw is! Map) return;
-        setState(() => _incoming = Map<String, dynamic>.from(raw));
-      });
+      if (generation != _attachGeneration) return;
+      final sub = await rt.subscribePrivate(_onSignal);
+      if (generation != _attachGeneration) {
+        await sub?.cancel();
+        return;
+      }
+      _sub = sub;
     } catch (_) {
       // Best-effort — the overlay simply never shows if Real-Time is unavailable.
     }
   }
 
+  void _onSignal(RealtimeMessage event) {
+    // Every call signal shares the name `signal`; `data.type` says which one
+    // it is. Only CALL_INVITE rings this device — others (e.g. CALL_BUSY) are
+    // meant for the caller's screen.
+    if (event.name != 'signal') return;
+    final raw = event.data;
+    if (raw is! Map) return;
+    final data = Map<String, dynamic>.from(raw);
+    if (data['type'] != 'CALL_INVITE' || !mounted) return;
+    _stopRinging(); // A newer invite replaces the one on screen.
+    setState(() => _incoming = data);
+    _startRinging(data);
+  }
+
+  /// Follow the invite's room while it rings: close on `call_ended` for this
+  /// session (the caller hung up), and give up after [_ringTimeout].
+  Future<void> _startRinging(Map<String, dynamic> invite) async {
+    _ringTimer = Timer(_ringTimeout, () => _missed(invite));
+    // The room's real-time channel, the same one the chat screen subscribes
+    // to — passed through verbatim.
+    final channel = invite['roomSignalChannel'] as String?;
+    if (channel == null || channel.isEmpty) return;
+    try {
+      final sub = await HyperBabelRealtimeClient().subscribeRoom(channel, (event) {
+        final call = HyperBabelRealtimeClient.callEventOf(event);
+        if (call != null &&
+            call['event'] == 'call_ended' &&
+            call['session_id'] == invite['sessionId'] &&
+            identical(_incoming, invite)) {
+          _close();
+        }
+      });
+      // Answered, declined or replaced while the channel was attaching.
+      if (!identical(_incoming, invite)) {
+        await sub?.cancel();
+        return;
+      }
+      _ringSub = sub;
+    } catch (_) {
+      // Best-effort — the missed-call timer still closes the overlay.
+    }
+  }
+
+  /// Stop following the ringing call. Cancelling removes only this listener:
+  /// a chat screen open on the same room keeps its own.
+  void _stopRinging() {
+    _ringTimer?.cancel();
+    _ringTimer = null;
+    _ringSub?.cancel();
+    _ringSub = null;
+  }
+
+  /// Hide the overlay and stop ringing.
+  void _close() {
+    _stopRinging();
+    if (_incoming == null) return;
+    if (mounted) {
+      setState(() => _incoming = null);
+    } else {
+      _incoming = null;
+    }
+  }
+
+  /// Unanswered for [_ringTimeout]: report a missed call (the caller's screen
+  /// stops ringing) and close.
+  Future<void> _missed(Map<String, dynamic> invite) async {
+    final userId = widget.userId;
+    if (!identical(_incoming, invite) || userId == null) return;
+    _close();
+    final roomId = invite['roomId'] as String?;
+    final sessionId = invite['sessionId'] as String?;
+    if (roomId == null || sessionId == null) return;
+    try {
+      await _repo.rejectVideoCall(roomId,
+          userId: userId, sessionId: sessionId, reason: 'missed');
+    } catch (_) {
+      // Best-effort, like a decline.
+    }
+  }
+
   Future<void> _accept() async {
     final invite = _incoming;
-    if (invite == null) return;
-    final roomId = (invite['room_id'] ?? invite['roomId']) as String?;
-    setState(() => _incoming = null);
-    if (!mounted || roomId == null) return;
-    // The video screen handles the RTC join. A production app would also
-    // call /video-call/accept here so the server transitions the session;
-    // the included video screen is a skeleton so we keep this minimal.
-    context.go('/video/$roomId');
+    final userId = widget.userId;
+    if (invite == null || userId == null) return;
+    _close();
+    final roomId = invite['roomId'] as String?;
+    final sessionId = invite['sessionId'] as String?;
+    if (roomId == null || sessionId == null) return;
+    try {
+      // Accept first: it marks this user active in the session. A call that
+      // ended while it was ringing is rejected here and there is nothing to
+      // join.
+      await _repo.acceptVideoCall(roomId, userId: userId, sessionId: sessionId);
+    } catch (e) {
+      _toast(e.toString());
+      return;
+    }
+    if (!mounted) return;
+    // The video screen looks up the session for this room and joins it.
+    widget.onJoinCall(roomId);
   }
 
   Future<void> _reject() async {
     final invite = _incoming;
-    if (invite == null || _userId == null) return;
-    final roomId = (invite['room_id'] ?? invite['roomId']) as String?;
-    setState(() => _incoming = null);
-    if (roomId == null) return;
+    final userId = widget.userId;
+    if (invite == null || userId == null) return;
+    _close();
+    final roomId = invite['roomId'] as String?;
+    final sessionId = invite['sessionId'] as String?;
+    if (roomId == null || sessionId == null) return;
     try {
-      await _repo.rejectVideoCall(roomId, _userId!);
+      await _repo.rejectVideoCall(roomId, userId: userId, sessionId: sessionId);
     } catch (_) {
       // Fire-and-forget: caller will hit timeout if the network is gone.
     }
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.maybeOf(context)
+        ?.showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -99,9 +240,10 @@ class _IncomingCallListenerState extends State<IncomingCallListener> {
   }
 
   Widget _buildOverlay(Map<String, dynamic> invite) {
-    final caller = (invite['caller_name'] ?? invite['caller_id'] ?? 'Unknown') as String;
-    final roomId = (invite['room_id'] ?? invite['roomId'] ?? '') as String;
-    final callType = (invite['call_type'] ?? invite['callType'] ?? '1to1') as String;
+    // Field names follow the server's CALL_INVITE payload (camelCase).
+    final caller = (invite['callerName'] ?? invite['callerId'] ?? 'Unknown') as String;
+    final roomId = (invite['roomId'] ?? '') as String;
+    final callType = (invite['callType'] ?? '1to1') as String;
     return Material(
       color: Colors.black.withOpacity(0.85),
       child: Center(

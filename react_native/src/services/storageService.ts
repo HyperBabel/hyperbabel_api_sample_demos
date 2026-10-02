@@ -84,7 +84,7 @@ export interface UploadFileOption {
 /**
  * Step 1 — Pre-validate the file and receive a presigned upload URL.
  *
- * Unwraps the cf_workers_api envelope so callers see a flat PresignResult.
+ * Unwraps the HyperBabel response envelope so callers see a flat PresignResult.
  */
 export const presign = async (data: PresignParams): Promise<PresignResult> => {
   const resp = await api.post<PresignEnvelope | PresignResult>(`${BASE}/presign`, data);

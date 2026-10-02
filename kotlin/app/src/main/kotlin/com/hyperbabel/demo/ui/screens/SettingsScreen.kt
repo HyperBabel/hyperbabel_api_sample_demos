@@ -1,7 +1,10 @@
 /*
- * Settings — surfaces every account-level read endpoint the demo cares about
- * plus a small Language Detection playground. Webhooks are explicitly
- * excluded; manage those in the HyperBabel Console.
+ * Settings — surfaces every account-level read endpoint the demo cares about.
+ * Webhooks are explicitly excluded; manage those in the HyperBabel Console.
+ *
+ * There is no language-detection / text-translation playground: the
+ * standalone Translation endpoints (`/translate/…`) accept only your
+ * organization API key, so they belong on your backend, never in an app.
  */
 package com.hyperbabel.demo.ui.screens
 
@@ -18,23 +21,21 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.hyperbabel.demo.api.ApiClient
 import com.hyperbabel.demo.data.Session
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -45,13 +46,9 @@ fun SettingsScreen(
     onOpenBlocks: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    val scope = rememberCoroutineScope()
     var usage by remember { mutableStateOf<JsonObject?>(null) }
     var tokens by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    var detectInput by remember { mutableStateOf("") }
-    var detectResult by remember { mutableStateOf("") }
-    var detecting by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         loading = true
@@ -101,16 +98,29 @@ fun SettingsScreen(
                 else if (usage == null) Text("Unable to load usage stats.",
                     color = MaterialTheme.colorScheme.error)
                 else {
-                    val limits = (usage!!["plan_limits"]?.jsonObject)
+                    // GET /auth/usage is ONE flat object: this month's usage
+                    // (`messages_sent`, `hd_video_mins`, …) next to the plan's
+                    // monthly allowance (`monthly_messages`, …; -1 = unlimited).
+                    val u = usage!!
+                    fun field(key: String): String? = u[key]?.jsonPrimitive?.contentOrNull
+                    field("plan_name")?.let { plan ->
+                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text("Plan", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(plan, style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
                     listOf(
-                        "Chat Messages"  to ("chat_messages_sent" to "chat_messages"),
-                        "Video Minutes"  to ("video_minutes" to "video_minutes"),
-                        "Stream Minutes" to ("stream_minutes" to "stream_minutes"),
-                        "Translations"   to ("translations" to "translations"),
+                        "Chat Messages"          to ("messages_sent"   to "monthly_messages"),
+                        "HD Video Minutes"       to ("hd_video_mins"   to "monthly_hd_video_mins"),
+                        "Full HD Video Minutes"  to ("fhd_video_mins"  to "monthly_fhd_video_mins"),
+                        "HD Stream Minutes"      to ("hd_stream_mins"  to "monthly_hd_stream_mins"),
+                        "Full HD Stream Minutes" to ("fhd_stream_mins" to "monthly_fhd_stream_mins"),
+                        "Translation Characters" to ("translate_chars" to "monthly_translate_chars"),
                     ).forEach { (label, keys) ->
                         val (vKey, lKey) = keys
-                        val value = usage!![vKey]?.jsonPrimitive?.content ?: "—"
-                        val limit = limits?.get(lKey)?.jsonPrimitive?.content
+                        val value = field(vKey) ?: "—"
+                        val limit = field(lKey)?.let { if (it == "-1") "Unlimited" else it }
                         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -141,54 +151,6 @@ fun SettingsScreen(
                             style = MaterialTheme.typography.labelSmall)
                         Text(short, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
                     }
-                }
-            }
-        }
-
-        Section("Language Detection")
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Type any text and tap Detect to see what language the AI " +
-                        "Translation engine identifies it as.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(modifier = Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = detectInput,
-                        onValueChange = { detectInput = it },
-                        modifier = Modifier.fillMaxWidth(0.7f),
-                        label = { Text("Type to detect…") },
-                        singleLine = true,
-                    )
-                    Button(
-                        onClick = {
-                            val text = detectInput.trim()
-                            if (text.isEmpty()) return@Button
-                            detecting = true
-                            detectResult = ""
-                            scope.launch {
-                                try {
-                                    val res = ApiClient.translate.detect(mapOf("text" to text))
-                                    val lang = res["language"]?.toString() ?: "?"
-                                    val conf = (res["confidence"]?.toString()?.toDoubleOrNull() ?: 0.0)
-                                    detectResult = "$lang  (${(conf * 100).toInt()}% confidence)"
-                                } catch (t: Throwable) {
-                                    detectResult = "Error: ${t.message}"
-                                } finally { detecting = false }
-                            }
-                        },
-                        enabled = !detecting,
-                        modifier = Modifier.padding(start = 8.dp),
-                    ) { Text(if (detecting) "…" else "Detect") }
-                }
-                if (detectResult.isNotBlank()) {
-                    Text(
-                        detectResult,
-                        modifier = Modifier.padding(top = 8.dp),
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
                 }
             }
         }

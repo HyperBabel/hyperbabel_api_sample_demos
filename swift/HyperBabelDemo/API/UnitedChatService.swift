@@ -14,19 +14,23 @@ enum UnitedChatService {
         )
     }
 
-    static func createRoom(_ body: CreateRoomRequest) async throws -> Room {
+    static func createRoom(_ body: CreateRoomRequest) async throws -> RoomResponse {
         try await ApiClient.shared.request("POST", "/unitedchat/rooms", body: body)
     }
 
-    static func getRoom(roomId: String, userId: String) async throws -> Room {
+    static func getRoom(roomId: String, userId: String) async throws -> RoomResponse {
         try await ApiClient.shared.request(
             "GET", "/unitedchat/rooms/\(roomId)",
             query: [("user_id", userId)]
         )
     }
 
+    /// Returns the stored message. The response is wrapped — `{ message: { … } }`.
     static func sendMessage(roomId: String, body: SendMessageRequest) async throws -> Message {
-        try await ApiClient.shared.request("POST", "/unitedchat/rooms/\(roomId)/messages", body: body)
+        let res: SendMessageResponse = try await ApiClient.shared.request(
+            "POST", "/unitedchat/rooms/\(roomId)/messages", body: body
+        )
+        return res.message
     }
 
     static func getMessages(roomId: String, userId: String, limit: Int = 50) async throws -> MessageListResponse {
@@ -47,31 +51,46 @@ enum UnitedChatService {
         try await ApiClient.shared.request("POST", "/unitedchat/rooms/\(roomId)/video-call", body: body)
     }
 
-    static func acceptVideoCall(roomId: String, userId: String) async throws -> EmptyResponse {
+    // Accept / reject / end / leave all require BOTH `user_id` and
+    // `session_id` (400 otherwise). The session id is `sessionId` in the
+    // CALL_INVITE signal and `session.id` in `GET …/video-call/active`.
+
+    static func acceptVideoCall(roomId: String, sessionId: String, userId: String) async throws -> EmptyResponse {
         try await ApiClient.shared.request(
             "POST", "/unitedchat/rooms/\(roomId)/video-call/accept",
-            body: ["user_id": userId]
+            body: ["user_id": userId, "session_id": sessionId]
         )
     }
 
-    static func rejectVideoCall(roomId: String, userId: String) async throws -> EmptyResponse {
-        try await ApiClient.shared.request(
+    /// `reason: "missed"` (ring timeout) or `"busy"` posts that event instead
+    /// of a plain decline. Rejecting does not end the session.
+    static func rejectVideoCall(
+        roomId: String, sessionId: String, userId: String, reason: String? = nil
+    ) async throws -> EmptyResponse {
+        var body = ["user_id": userId, "session_id": sessionId]
+        if let reason { body["reason"] = reason }
+        return try await ApiClient.shared.request(
             "POST", "/unitedchat/rooms/\(roomId)/video-call/reject",
-            body: ["user_id": userId]
+            body: body
         )
     }
 
-    static func endVideoCall(roomId: String, userId: String) async throws -> EmptyResponse {
+    /// Ends the call for everyone. Only the caller, the room owner or a
+    /// sub_admin may do this — everyone else hangs up with `leaveVideoCall`.
+    static func endVideoCall(roomId: String, sessionId: String, userId: String) async throws -> EmptyResponse {
         try await ApiClient.shared.request(
             "POST", "/unitedchat/rooms/\(roomId)/video-call/end",
-            body: ["user_id": userId]
+            body: ["user_id": userId, "session_id": sessionId]
         )
     }
 
-    static func leaveVideoCall(roomId: String, userId: String) async throws -> EmptyResponse {
+    /// Hangs up for this user only; the server ends the whole call once at
+    /// most one participant is still in it. (Not `leaveRoom` — that leaves
+    /// the CHAT room.)
+    static func leaveVideoCall(roomId: String, sessionId: String, userId: String) async throws -> EmptyResponse {
         try await ApiClient.shared.request(
             "POST", "/unitedchat/rooms/\(roomId)/video-call/leave",
-            body: ["user_id": userId]
+            body: ["user_id": userId, "session_id": sessionId]
         )
     }
 
@@ -79,9 +98,37 @@ enum UnitedChatService {
         try await ApiClient.shared.request("GET", "/unitedchat/rooms/\(roomId)/video-call/active")
     }
 
+    // Call upkeep while on the call screen — see VideoCallScreen.swift.
+
+    /// Send once the video engine reports the join; retry while `matched` is false.
+    static func markJoinedRtc(roomId: String, sessionId: String, userId: String) async throws -> JoinedRtcResponse {
+        try await ApiClient.shared.request(
+            "POST", "/unitedchat/rooms/\(roomId)/video-call/joined-rtc",
+            body: ["user_id": userId, "session_id": sessionId]
+        )
+    }
+
+    /// Send every 60 s during the call; failures can be ignored.
+    static func videoCallHeartbeat(roomId: String, sessionId: String, userId: String) async throws -> EmptyResponse {
+        try await ApiClient.shared.request(
+            "POST", "/unitedchat/rooms/\(roomId)/video-call/heartbeat",
+            body: ["user_id": userId, "session_id": sessionId]
+        )
+    }
+
+    /// RTC tokens last one hour; call this from the engine's token callbacks.
+    static func renewVideoCallToken(roomId: String, sessionId: String, userId: String) async throws -> RenewRtcTokenResponse {
+        try await ApiClient.shared.request(
+            "POST", "/unitedchat/rooms/\(roomId)/video-call/renew-token",
+            body: ["user_id": userId, "session_id": sessionId]
+        )
+    }
+
+    /// Chat translation for end users — works with the customer JWT, unlike
+    /// the `/translate` endpoints, which take an organization API key only.
     static func batchTranslateMessages(
         roomId: String, messageIds: [String], targetLangCd: String
-    ) async throws -> EmptyResponse {
+    ) async throws -> BatchTranslateResponse {
         struct Body: Codable { let message_ids: [String]; let target_lang: String }
         return try await ApiClient.shared.request(
             "POST",
@@ -140,10 +187,11 @@ enum UnitedChatService {
         try await ApiClient.shared.request("GET", "/unitedchat/rooms/\(roomId)/members")
     }
 
-    static func ban(roomId: String, adminId: String, userId: String) async throws -> EmptyResponse {
+    static func ban(roomId: String, bannedBy: String, userId: String) async throws -> EmptyResponse {
+        // Server requires { user_id, banned_by } in the request body.
         try await ApiClient.shared.request(
             "POST", "/unitedchat/rooms/\(roomId)/ban",
-            body: ["admin_id": adminId, "user_id": userId]
+            body: ["banned_by": bannedBy, "user_id": userId]
         )
     }
     static func unban(roomId: String, userId: String, unbannedBy: String) async throws -> EmptyResponse {

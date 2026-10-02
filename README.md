@@ -1,7 +1,7 @@
 # HyperBabel Demo Applications
 
-Production-ready sample applications for the **HyperBabel API Platform**, in
-six flavours so you can copy-paste from whichever stack you already use.
+Sample applications for the **HyperBabel API Platform**, in six flavours so
+you can copy-paste from whichever stack you already use.
 
 | Directory                                | Stack                                                      |
 | ---------------------------------------- | ---------------------------------------------------------- |
@@ -37,25 +37,36 @@ under **Customer Auth**.
 
 ## Supported Features
 
-The demos cover the full HyperBabel API surface a sandbox key can reach:
+The demos cover the end-user side of the HyperBabel API — the calls an app
+makes with the customer JWT described above:
 
 - **Real-time chat** — 1:1, group, and open rooms via the United Chat API,
   with live message / typing / read-receipt push over a single channel.
-- **Auto-translation** — incoming messages are translated to the viewer's
-  preferred language using the AI Translation API.
+- **Message translation** — chat messages are translated to the viewer's
+  preferred language with the end-user endpoint
+  `POST /unitedchat/rooms/:roomId/messages/batch-translate`.
 - **Rich messaging** — reply quotes, edit / delete, emoji reactions,
   message search, freeze toggle, per-room mute, ban / sub-admin / promote
   moderation.
 - **Image & file uploads** — 3-step presigned-URL flow against the
   Storage API.
-- **1:1 + group video calls** — start, accept, reject, end, leave; an
-  in-app overlay rings on inbound CALL_INVITE events.
-- **Live streaming** — host publishes their camera / mic, viewers join
-  as audience-only with a separate viewer token.
+- **Video calls** — 1:1 in every demo; group calls of up to 3 participants
+  (pick up to two members) in `react`, `react_native`, `flutter` and
+  `kotlin`, on plans that include group video. An in-app overlay rings on
+  inbound `CALL_INVITE` signals and closes when the caller hangs up; the call
+  screen keeps the session alive (`joined-rtc`, a 60 s heartbeat, RTC token
+  renewal) and follows the call's events (`call_ended`, declines, …) on the
+  room channel.
 - **Presence + push** — heartbeat to mark "online", FCM token
   registration so background pushes light up the right device.
-- **Settings** — usage stats, language detection playground, blocked-user
-  list, push-token inspector.
+- **Settings** — usage stats, blocked-user list, push-token inspector.
+
+**Needs your backend.** The AI Translation API (`/translate/*` — free-text
+translation, language detection) and live streaming (`/stream/*`)
+authenticate with your **organization API key** only, so an end-user app
+cannot call them directly. Where a demo shows these screens, they are
+reference code for your server (`app → your backend (holds hb_live_…) →
+HyperBabel`) and are marked as such in that demo's README.
 
 Webhook CRUD, billing, and other tenant-admin endpoints are intentionally
 **not** exposed by the demos — those live in the HyperBabel Console
@@ -83,8 +94,11 @@ that budget and derives the tier it declares from the same numbers:
 | 3 (4-way call) | 640 × 480 | 3 × 307,200 = 921,600 | HD |
 
 A fifth publisher would push the sum to 1,228,800 and move the whole call
-into the next, more expensive tier — which is why group calls are capped at
-four participants.
+into the next, more expensive tier — which is why `POST /video/sessions` caps
+a call at four participants. Room calls (`POST /unitedchat/rooms/:roomId/video-call`,
+what these demos place) stop at three — the caller plus two
+`target_user_ids` — and group calls need a plan that includes group video
+(`400 plan_upgrade_required` otherwise).
 
 ### Two sums get quoted for a group call — keep them straight
 
@@ -111,7 +125,7 @@ each `videoQuality` module, and it costs 1:1 calls their 720p:
 ### Leaving and rejoining
 
 The roster is re-evaluated on **every** join and **every** leave, in every
-demo. A four-way call that drops to two participants moves back up to
+demo. A three-way call that drops to two participants moves back up to
 1280 × 720, and a participant who rejoins pulls everyone back down to
 640 × 480 *before* their first frame is published. Nothing is pinned to the
 size the call started at, so a call cannot drift above the ceiling by people
@@ -171,9 +185,9 @@ billing surprise happens.
 | **What does not happen** | Your bill does not change. Billing follows `quality`, always. The session is created either way; nothing is blocked, and a malformed value is ignored rather than rejected. |
 
 **The mistake this catches is a unit mismatch, not dishonesty.** 720p is
-genuinely HD in a 1:1 call and genuinely *above* HD in a four-way one, because
+genuinely HD in a 1:1 call and genuinely *above* HD in a three-way one, because
 the tier is computed on the total each participant receives. Declaring `"hd"`
-while publishing 720p to three other people is an honest answer to the wrong
+while publishing 720p to two other people is an honest answer to the wrong
 question, and without this field nothing tells you so.
 
 **Read `quality_warning` and act on it.** Log it at minimum. When it appears,
@@ -195,7 +209,7 @@ owns both:
 | `kotlin` | `app/src/main/kotlin/com/hyperbabel/demo/video/VideoQuality.kt` |
 | `swift` | `HyperBabelDemo/Video/VideoQuality.swift` |
 
-Publishing 1080p in a four-way call is a perfectly reasonable product
+Publishing 1080p in a group call is a perfectly reasonable product
 decision — just declare `"2k"` for it, and your bill will match what you
 used. The failure mode this module exists to prevent is the silent one:
 raising the resolution and leaving the declaration at its `"hd"` default.
@@ -310,22 +324,21 @@ Console-side origin configuration is required for the demos to work.
 
 ---
 
-## Architecture & Code Quality
+## Architecture
 
-All six demos have been audited end-to-end against the HyperBabel API
-endpoint manifest. Every API call is verified to:
+Every demo's HTTP client:
 
-- attach the short-lived customer JWT as `Authorization: Bearer <customer_jwt>`,
-- refuse to start if an `hb_live_…` / `hb_test_…` organization key is
-  ever wired into the HTTP client (defensive guard at module init),
-- proactively refresh the access token before expiry and recover from
-  401 by calling `POST /customer/refresh`,
-- target an existing endpoint with the right HTTP verb and body shape,
-- decode the wire response (including `{ message, data: {…} }` envelopes
-  that the Storage API returns),
-- correctly disambiguate the wrapped `{ type: 'message' | 'typing' | … }`
-  envelope that real-time broadcasts ride on top of.
+- attaches the short-lived customer JWT as `Authorization: Bearer <customer_jwt>`,
+- refuses to start if an `hb_live_…` / `hb_test_…` organization key is
+  ever wired into it (defensive guard at module init),
+- refreshes the access token before it expires and recovers from a 401 by
+  calling `POST /customer/refresh`.
 
-`ChatScreen` UX (typing indicator, reactions, reply quote, edit / delete,
-image / file picker, freeze, mute, members modal, locale-aware time) is
-implemented to parity across all six demos.
+Responses are decoded as the API sends them — including the
+`{ message, data: {…} }` envelope of the Storage API and the
+`{ type, data, timestamp }` envelope real-time broadcasts ride on.
+
+The demos share one feature set, but each is written in its own stack's
+idiom, so screens and edge-case handling differ in detail. Treat them as
+starting points: add your own error handling, telemetry and end-to-end
+tests before you ship.

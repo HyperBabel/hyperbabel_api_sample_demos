@@ -23,10 +23,45 @@ The per-org Firebase project allow-list is configured in the
 | **1:1 Chat** | United Chat — Rooms, Messages, Batch-Translate |
 | **Group Chat** | United Chat — Rooms, Messages, Members |
 | **Open Chat** | United Chat — Rooms, Join, Leave |
-| **1:1 Video Call** | United Chat — Video Call (start, accept, reject, end) via HyperBabel Video |
-| **Live Stream** | Stream — Broadcast & Spectate |
-| **Auto-Translation** | Translation — Text, Batch, Detect, Languages |
-| **Real-time Engine** | HyperBabel Real-Time — Signaling and live presence |
+| **Video Call** (1:1, or up to 3 people in a group room) | United Chat — Video Call (start, accept, reject, leave, joined-rtc, heartbeat, renew-token) via HyperBabel Video |
+| **Live Stream** ⚠️ | Stream — Broadcast & Spectate — **needs your backend**, see note below |
+| **Auto-Translation** ⚠️ | Translation — Text, Batch, Detect, Languages — **needs your backend**, see note below |
+| **Real-time Engine** | HyperBabel Real-Time — room events, typing and incoming-call signals |
+
+### ⚠️ Live streaming and text translation need your backend
+
+The rows marked ⚠️ above do **not** run from this demo, and that is by
+design rather than a gap.
+
+Every `/stream/*` and `/translate/*` endpoint authenticates with your
+**organization API key** (`Authorization: Bearer hb_live_…`). A request
+carrying anything else is rejected before it reaches the handler:
+
+```
+POST /api/v1/stream/sessions
+→ 401 { "error": { "code": "invalid_api_key_format" } }
+```
+
+Creating a broadcast allocates paid capacity and translation is metered
+against your organization, so the caller has to be **you**, not a signed-in
+end user. This demo holds only a customer JWT — `api_client.dart` refuses to
+carry an org key on a device — so the live-stream screen's calls fail here on
+purpose, and the app does not call `/translate/*` at all.
+
+Run them as:
+
+```
+app  →  your backend (holds hb_live_…)  →  HyperBabel /stream/* and /translate/*
+```
+
+`lib/core/network/stream_repository.dart` and `translate_repository.dart`
+document the exact paths and payloads; implement them on your server and
+expose a thin endpoint the app can call. To translate chat messages from the
+app itself, use the end-user endpoint
+`POST /unitedchat/rooms/:roomId/messages/batch-translate`
+(`UnitedChatRepository.batchTranslateMessages`). Everything else in this
+demo — chat, video calls, storage uploads, presence, push, blocking — calls
+end-user endpoints that accept the customer JWT.
 
 ## Stack
 
@@ -147,10 +182,10 @@ flutter/
 │   │   │   ├── auth_repository.dart
 │   │   │   ├── chat_repository.dart
 │   │   │   ├── united_chat_repository.dart
-│   │   │   ├── translate_repository.dart
+│   │   │   ├── translate_repository.dart     # ⚠️ needs your backend — not called by the app
 │   │   │   ├── storage_repository.dart
 │   │   │   ├── push_repository.dart
-│   │   │   ├── stream_repository.dart
+│   │   │   ├── stream_repository.dart        # ⚠️ needs your backend
 │   │   │   ├── presence_repository.dart
 │   │   │   ├── users_repository.dart
 │   │   │   └── rtm_repository.dart
@@ -164,7 +199,7 @@ flutter/
 │   │   ├── auth/                             # Firebase sign-in + sign-up
 │   │   ├── chat/                             # Threaded messaging & translation
 │   │   ├── video_call/                       # Interactive video components
-│   │   ├── live_stream/                      # Broadcaster + viewer
+│   │   ├── live_stream/                      # Broadcaster + viewer (⚠️ needs your backend)
 │   │   ├── call/                             # Incoming call overlay
 │   │   ├── blocks/                           # Block management
 │   │   ├── settings/                         # Usage / push / language
@@ -197,9 +232,19 @@ final res = await dio.get('/unitedchat/rooms');
 
 ### 2. State management & real-time
 
-WebSocket subscriptions for presence and typing live in
-`hyperbabel_realtime_client.dart`. Subscribe to dedicated room channels
-when navigating to `ChatScreen`.
+`hyperbabel_realtime_client.dart` fetches its token from `POST /rtm/token`
+through the same `ApiClient` — customer JWT, `HB_API_URL`, transparent
+refresh — so no organization API key is involved. Room events (messages,
+edits, deletions, reactions, typing) arrive on the room's
+`realtime_channel`, passed through verbatim from the REST API. Incoming
+calls arrive on the user's private channel `user:{orgId}:{userId}` as the
+real-time message `signal` with `data.type == 'CALL_INVITE'` — see
+`features/call/presentation/incoming_call_listener.dart`. Call state changes
+(`call_started`, `call_ended`, `call_rejected`, …) arrive on the room channel
+as `video_call` system messages; the call screen and the ringing overlay
+follow them, and `video_call_screen.dart` shows the upkeep every call needs
+(`joined-rtc`, a 60 s `heartbeat`, `renew-token` before the 1-hour RTC token
+expires).
 
 ### 3. Avoiding layout overflows
 

@@ -10,7 +10,7 @@
  *   #/streams                  — live stream list
  *   #/stream/host              — host a new live stream
  *   #/stream/viewer/:sessionId — watch a live stream
- *   #/settings                 — usage / push tokens / playground / logout
+ *   #/settings                 — usage / push tokens / logout
  *   #/blocks                   — block list management
  *
  * Real-time call invites land via a global IncomingCall listener — see

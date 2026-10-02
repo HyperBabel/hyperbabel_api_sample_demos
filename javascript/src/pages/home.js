@@ -78,7 +78,8 @@ async function loadRooms(userId, navigate) {
   if (!list) return;
   try {
     const data = await unitedChat.listRooms(userId);
-    const rooms = data.rooms || data.member_rooms || [];
+    // `{ rooms, open_rooms }` — `open_rooms` (public rooms to join) is not used here.
+    const rooms = data.rooms || [];
     if (rooms.length === 0) {
       list.innerHTML = '<span class="muted">No rooms yet — create one above.</span>';
       return;
@@ -90,7 +91,7 @@ async function loadRooms(userId, navigate) {
       item.innerHTML = `
         <div>
           <div style="font-weight: 600;">${escapeHtml(r.room_name || r.id)}</div>
-          <div class="meta">${r.room_type} · ${r.member_count ?? '—'} members</div>
+          <div class="meta">${escapeHtml(r.channel_type)} · ${escapeHtml(r.member_count ?? '—')} members</div>
         </div>
         <button>Open →</button>
       `;

@@ -11,9 +11,12 @@
  * User actions:
  *  ✅ Accept  — calls acceptVideoCall() API → navigate to VideoCallPage
  *  ❌ Reject  — calls rejectVideoCall() API → dismiss popup
+ *  Both send the invite's `sessionId` — the server rejects them without it.
  *
- * Auto-dismiss: If no action is taken within RING_TIMEOUT_MS (30s),
- * the call is rejected automatically (treated as missed call).
+ * Auto-dismiss: If no action is taken within RING_TIMEOUT_MS (45 s — the same
+ * window the caller waits before giving up), the call is rejected
+ * automatically with reason 'missed'. If the caller hangs up first,
+ * IncomingCallListener closes this popup (room-channel `call_ended`).
  *
  * Ringtone: Synthesised via Web Audio API (no external audio file required).
  * Stops immediately when the user accepts, rejects, or the timeout expires.
@@ -27,12 +30,13 @@ import { useCall } from '../context/CallContext';
 import * as unitedChat from '../services/unitedChatService';
 import { startRingtone, stopRingtone } from '../utils/ringtone';
 
-const RING_TIMEOUT_MS = 30_000; // Auto-reject after 30 s
+const RING_SECONDS    = 45;                   // Same window the caller waits
+const RING_TIMEOUT_MS = RING_SECONDS * 1000;  // Auto-reject (as 'missed') after this
 
 export default function IncomingCallOverlay() {
   const navigate = useNavigate();
   const { incomingCall, setIncomingCall } = useCall();
-  const [countdown, setCountdown] = useState(30);
+  const [countdown, setCountdown] = useState(RING_SECONDS);
   const [accepting, setAccepting] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const timerRef     = useRef(null);
@@ -43,12 +47,12 @@ export default function IncomingCallOverlay() {
     if (!incomingCall) {
       clearTimeout(timerRef.current);
       clearInterval(countdownRef.current);
-      setCountdown(30);
+      setCountdown(RING_SECONDS);
       stopRingtone();
       return;
     }
 
-    setCountdown(30);
+    setCountdown(RING_SECONDS);
     setAccepting(false);
     setRejecting(false);
 
@@ -70,7 +74,7 @@ export default function IncomingCallOverlay() {
       clearInterval(countdownRef.current);
       stopRingtone();
     };
-  }, [incomingCall?.roomId]); // re-run only when a different call arrives
+  }, [incomingCall?.sessionId]); // re-run only when a different call arrives
 
   if (!incomingCall) return null;
 
@@ -85,8 +89,13 @@ export default function IncomingCallOverlay() {
 
     try {
       const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
-      await unitedChat.acceptVideoCall(incomingCall.roomId, user.user_id);
+      await unitedChat.acceptVideoCall(incomingCall.roomId, user.user_id, incomingCall.sessionId);
     } catch (err) {
+      if (err.status === 410) {
+        // The caller hung up before we answered — there is no call to join.
+        setIncomingCall(null);
+        return;
+      }
       console.warn('[IncomingCallOverlay] acceptVideoCall API failed (non-critical):', err.message);
     }
 
@@ -102,6 +111,8 @@ export default function IncomingCallOverlay() {
         session: incomingCall.channelName
           ? { id: incomingCall.sessionId, channel_name: incomingCall.channelName }
           : null,
+        // Room channel where call events (e.g. call_ended) arrive
+        realtimeChannel: incomingCall.roomSignalChannel || undefined,
         rtcToken: incomingCall.rtcToken || undefined,
         uid:      incomingCall.uid      || undefined,
       },
@@ -109,7 +120,7 @@ export default function IncomingCallOverlay() {
   };
 
   // ── Reject ────────────────────────────────────────────────────────────────
-  const handleReject = async (_isMissed = false) => {
+  const handleReject = async (isMissed = false) => {
     if (accepting) return; // Don't reject right after accepting
     setRejecting(true);
 
@@ -119,7 +130,12 @@ export default function IncomingCallOverlay() {
 
     try {
       const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
-      await unitedChat.rejectVideoCall(incomingCall.roomId, user.user_id);
+      await unitedChat.rejectVideoCall(
+        incomingCall.roomId,
+        user.user_id,
+        incomingCall.sessionId,
+        isMissed ? 'missed' : undefined,
+      );
     } catch (err) {
       console.warn('[IncomingCallOverlay] rejectVideoCall API failed (non-critical):', err.message);
     }
@@ -131,10 +147,10 @@ export default function IncomingCallOverlay() {
   const callTypeLabel = incomingCall.callType === 'group' ? 'Group Video Call' : '1:1 Video Call';
   const callerInitial = (incomingCall.callerName || incomingCall.callerId || '?')[0].toUpperCase();
 
-  // Countdown ring segment as SVG (progress from 30→0)
+  // Countdown ring segment as SVG (progress from RING_SECONDS→0)
   const radius  = 52;
   const circumference = 2 * Math.PI * radius;
-  const progress = (countdown / 30) * circumference;
+  const progress = (countdown / RING_SECONDS) * circumference;
 
   return (
     <>

@@ -27,19 +27,51 @@ the sibling `sample_demos/*` projects.
 | -------------------- | ---------------------------------------------------------- |
 | Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
 | Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
-| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped) + Real-Time push |
-| Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm` |
+| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped; replies use the top-level `reply_to` field) + Real-Time push |
+| Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm`, then sent with the `message_type` the confirm step returns |
 | Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
 | Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
 | Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
 | Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
-| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/leave` + HyperBabel Video |
-| Live stream (host)   | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
-| Live stream (viewer) | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
+| Video call (1:1 / group, up to 3 people) | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/accept`, `…/reject`, `…/leave`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token` (each with `session_id`) + `CALL_INVITE` on the user's private Real-Time channel + call events (`call_ended`, `call_rejected`, …) on the room channel + HyperBabel Video. Camera / microphone permissions are requested before joining. |
+| Live stream (host) ⚠️ | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) — **needs your backend**, see below |
+| Live stream (viewer) ⚠️ | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) — **needs your backend**, see below |
 | Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
 | Usage stats          | `GET /auth/usage`                                          |
-| Language detection   | `POST /translate/detect`                                   |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+
+### ⚠️ Live streaming and standalone translation need your backend
+
+The rows marked ⚠️ are the only features that do **not** run from this
+app, and that is by design rather than a gap.
+
+Every `/stream/…` endpoint — and every standalone Translation endpoint
+(`/translate/text`, `/translate/batch`, `/translate/detect`,
+`/translate/languages`) —
+authenticates with your **organization API key**
+(`Authorization: Bearer hb_live_…`). A request carrying anything else is
+rejected before it reaches the handler:
+
+```
+POST /api/v1/stream/sessions
+→ 401 { "error": { "code": "invalid_api_key_format" } }
+```
+
+This app holds only a customer JWT — `api/ApiClient.kt` refuses to send
+an org key from the device — so the stream calls fail here on purpose,
+and the app does not call `/translate/…` at all. Run them as:
+
+```
+app  →  your backend (holds hb_live_…)  →  HyperBabel /stream/… or /translate/…
+```
+
+`api/StreamService.kt` and `ui/screens/StreamScreen.kt` still document the
+exact live-stream call sequence and payloads; implement them on your
+server and expose a thin endpoint the app can call. To translate chat
+messages from the app itself, use
+`POST /unitedchat/rooms/:roomId/messages/batch-translate`
+(`UnitedChatService.batchTranslateMessages`), which accepts the customer
+JWT.
 
 ## Prerequisites
 
@@ -154,9 +186,8 @@ kotlin/
         │   ├── AuthService.kt        # /auth/usage
         │   ├── ChatService.kt        # reactions (room-scoped)
         │   ├── UnitedChatService.kt  # rooms / messages / moderation / video-call
-        │   ├── StreamService.kt      # live stream session lifecycle
+        │   ├── StreamService.kt      # live stream session lifecycle (needs your backend)
         │   ├── StorageService.kt     # 3-step presign upload
-        │   ├── TranslateService.kt   # AI Translation
         │   ├── PresenceService.kt    # online status heartbeat
         │   ├── PushService.kt        # token register / list
         │   ├── UsersService.kt       # global block list
@@ -197,9 +228,12 @@ kotlin/
 2. **HTTP services.** The modules in `api/` are Retrofit interfaces +
    kotlinx-serialization — copy whichever you need.
 3. **Real-Time push.** `realtime/HyperBabelRealtime.kt` shows how to
-   exchange a token via `POST /rtm/token` and subscribe to a room
-   channel. The underlying SDK is wrapped behind a thin facade so the
-   vendor name never leaks into app code.
+   exchange a token via `POST /rtm/token`, subscribe to a room channel,
+   and subscribe to the signed-in user's private channel
+   (`user:{orgId}:{userId}`), where incoming calls arrive as event
+   `signal` with `data.type == "CALL_INVITE"` (see `MainActivity.kt`).
+   The underlying SDK is wrapped behind a thin facade so the vendor
+   name never leaks into app code.
 4. **Video.** `video/HyperBabelVideo.kt` mirrors the same pattern for
    1:1 / group video calls.
 

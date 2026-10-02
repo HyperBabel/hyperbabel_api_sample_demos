@@ -1,12 +1,31 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
 
-/// Subset of the AI Translation API used by the demo's Settings playground.
+/// Subset of the HyperBabel AI Translation API (`/translate/*`).
+///
+/// ⚠️ EVERY CALL HERE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THIS APP, AND
+/// NOTHING IN THIS APP CALLS IT.
+///
+///   `/translate/*` authenticates with your ORGANIZATION API KEY only
+///   (`Authorization: Bearer hb_live_…`). The end-user session token this demo
+///   signs in with is rejected:
+///
+///       POST /api/v1/translate/detect
+///       -> 401 { "error": { "code": "invalid_api_key_format" } }
+///
+///   …and every 401 also costs a needless session-token refresh. The API
+///   client refuses to carry an org key on a device, so these calls fail here
+///   by design.
+///
+///   Ship it as:  app -> your backend (holds hb_live_…) -> HyperBabel /translate/*
+///   The paths and payloads below are accurate — implement them on your
+///   server. To translate chat messages from the app itself, use the
+///   end-user endpoint `UnitedChatRepository.batchTranslateMessages`.
 class TranslateRepository {
   final ApiClient _apiClient = ApiClient();
 
   /// Detect the language of an arbitrary string. Returns a map containing
-  /// `language` (BCP-47 code) and `confidence` (0..1).
+  /// `detected_language` and `confidence`.
   Future<Map<String, dynamic>> detectLanguage(String text) async {
     try {
       final response = await _apiClient.client.post(

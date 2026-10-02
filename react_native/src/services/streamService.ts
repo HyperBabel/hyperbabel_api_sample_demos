@@ -4,6 +4,24 @@
  * Manages live broadcast sessions. The host publishes video/audio;
  * viewers join with subscriber-only RTC tokens.
  *
+ * ⚠️ EVERY CALL IN THIS FILE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THE APP.
+ *
+ *   `/stream/*` authenticates with your ORGANIZATION API KEY
+ *   (`Authorization: Bearer hb_live_…`). Anything else is rejected up front:
+ *
+ *       POST /api/v1/stream/sessions
+ *       → 401 { "error": { "code": "invalid_api_key_format" } }
+ *
+ *   Creating a broadcast allocates paid capacity and is metered against your
+ *   organization, so the caller has to be YOU, not a signed-in end user. This
+ *   demo only ever holds a customer JWT (`api.ts` refuses to carry an org key
+ *   on a device), so these calls fail here by design.
+ *
+ *   Ship it as:  app  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*
+ *
+ *   The paths, payloads and call order below are accurate — implement them on
+ *   your server and expose a thin endpoint the app can call.
+ *
  * Base path: /stream
  */
 

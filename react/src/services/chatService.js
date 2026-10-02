@@ -1,16 +1,29 @@
 /**
- * HyperBabel API — Low-Level Chat Service
+ * HyperBabel API — Low-Level Chat Service (SERVER-SIDE)
  *
- * The Chat API provides raw channel + message CRUD operations with
- * full-text search, typing indicators, reactions, and thread replies.
+ * ⚠️ EVERY CALL IN THIS FILE RUNS ON YOUR BACKEND, NOT IN THE BROWSER.
  *
- * Use this when you manage your own rooms & members externally,
- * or when you only need core messaging primitives (CS chat, IoT log, etc.).
+ *   `/chat/*` is the server-to-server messaging surface. It authenticates with
+ *   your ORGANIZATION API KEY, and it rejects end-user (customer) JWTs on
+ *   reads as well as writes:
  *
- * For full room management with video call, roles, ban/mute — use the
- * United Chat API instead (`unitedChatService.js`).
+ *       → 403 { "error": { "code": "forbidden",
+ *                          "message": "End-user tokens cannot use the legacy
+ *                                      /chat endpoints; use /unitedchat instead." } }
  *
- * Both APIs share the same underlying message store.
+ *   This demo signs in as an end user and `api.js` refuses to carry an org key
+ *   in a browser bundle, so these calls fail here by design. The one page that
+ *   imports this file — `pages/LiveStreamPage.jsx` — is itself backend-mediated
+ *   (see its header), so the two belong together: your server owns the stream
+ *   session AND its chat channel.
+ *
+ * 🔴 BUILDING AN END-USER APP? USE `unitedChatService.js` INSTEAD.
+ *   United Chat is the surface a signed-in user may call directly: rooms,
+ *   members, roles, video call, reactions, threads. Every other chat screen in
+ *   this demo uses it. Both surfaces share the same underlying message store.
+ *
+ * Use `/chat` when your backend manages rooms and members externally, or when
+ * you only need core messaging primitives (CS chat, IoT log, stream chat).
  *
  * Base path: /chat
  */
@@ -88,26 +101,26 @@ export const editMessage = (channelId, messageId, userId, content) =>
 /**
  * Add an emoji reaction to a message (idempotent for same user+emoji).
  *
- * Emoji reactions are ROOM-SCOPED.
- *
- * Use `/unitedchat/rooms/:roomId/messages/:messageId/reactions`, not the
- * `/chat/...` variant. The `/chat` route is server-to-server only and rejects
- * end-user (Session-Token) JWTs — which is exactly what this demo signs in
- * with, so it would fail with 403.
+ * 🔴 On `/chat` a reaction is MESSAGE-scoped — the path carries no room id:
+ *        POST /chat/messages/:messageId/reactions
+ *    United Chat's equivalent IS room-scoped
+ *    (`/unitedchat/rooms/:roomId/messages/:messageId/reactions`), and mixing
+ *    the two shapes produces `/chat/rooms/…`, which is not a route at all and
+ *    404s. Reach for `unitedChatService.addReaction()` in end-user code.
  *
  * The response is the FULL reaction map for that message:
  *   { "reactions": { "👍": ["user_1", "user_2"], "❤️": ["user_3"] } }
  * Store it as-is; do not hand-roll an optimistic array.
  */
-export const addReaction = (roomId, messageId, userId, emoji) =>
-  api.post(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
+export const addReaction = (messageId, userId, emoji) =>
+  api.post(`${BASE}/messages/${messageId}/reactions`, { user_id: userId, emoji });
 
 /**
- * Remove a previously added emoji reaction. Same room-scoped path as
+ * Remove a previously added emoji reaction. Same message-scoped path as
  * addReaction; returns the updated reaction map.
  */
-export const removeReaction = (roomId, messageId, userId, emoji) =>
-  api.delete(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
+export const removeReaction = (messageId, userId, emoji) =>
+  api.delete(`${BASE}/messages/${messageId}/reactions`, { user_id: userId, emoji });
 
 // ── Read Status ──────────────────────────────────────────────────────────
 

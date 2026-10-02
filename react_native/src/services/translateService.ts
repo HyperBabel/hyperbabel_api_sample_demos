@@ -5,6 +5,21 @@
  * Use for standalone text translation, batch multi-language output,
  * language detection, or to query supported language codes.
  *
+ * ⚠️ EVERY CALL IN THIS FILE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THE APP.
+ *
+ *   `/translate/*` accepts only your ORGANIZATION API KEY
+ *   (`Authorization: Bearer hb_live_…`). This demo holds a customer JWT
+ *   (`api.ts` refuses to carry an org key on a device), so a call from here
+ *   answers 401 — and every 401 also burns a token refresh. No screen in this
+ *   demo calls these functions.
+ *
+ *   Ship it as:  app  →  your backend (holds hb_live_…)  →  HyperBabel /translate/*
+ *
+ *   The paths, payloads and response shapes below are accurate — implement
+ *   them on your server. To translate CHAT messages from the app, use
+ *   `batchTranslateMessages()` in unitedChatService (the `useTranslation`
+ *   hook), which accepts the end-user token.
+ *
  * Base path: /translate
  */
 
@@ -51,13 +66,13 @@ export const translateBatch = (
 /**
  * Detect the language of a given text string.
  *
- * @returns { language: string, confidence: number }
+ * @returns { detected_language: string, confidence: number }
  */
 export const detectLanguage = (text: string) =>
-  api.post<{ language: string; confidence: number }>(`${BASE}/detect`, { text });
+  api.post<{ detected_language: string; confidence: number }>(`${BASE}/detect`, { text });
 
 /**
- * Get the full list of supported language codes.
+ * Get the full list of supported languages.
  */
 export const getSupportedLanguages = () =>
-  api.get<string[]>(`${BASE}/languages`);
+  api.get<{ languages: { code: string; name: string }[]; count: number }>(`${BASE}/languages`);

@@ -3,6 +3,17 @@
  * tree; observes a singleton state holder that Real-Time pushes call
  * invites into. Renders an Accept / Reject prompt over whatever screen the
  * user is on.
+ *
+ * The invite is the `CALL_INVITE` payload from the user's private real-time
+ * channel (see MainActivity), flattened to strings: `roomId`, `sessionId`,
+ * `callerId`, `callerName`, `callType` ("1to1" | "group"),
+ * `roomSignalChannel`. Accept and Reject receive the whole invite because
+ * both calls need `sessionId`.
+ *
+ * While ringing, the overlay listens on the call's room channel
+ * (`roomSignalChannel`): `call_ended` for this session means the caller hung
+ * up, so it disappears. After 45 s unanswered it reports the call as missed
+ * (reject with reason "missed") and disappears.
  */
 package com.hyperbabel.demo.ui.components
 
@@ -24,12 +35,23 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.hyperbabel.demo.realtime.HyperBabelRealtime
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+/** An unanswered invite is reported as missed after this long. */
+private const val RING_TIMEOUT_MS = 45_000L
 
 /**
  * Tiny event bus the Real-Time listener publishes invites into. Compose
@@ -42,18 +64,54 @@ object IncomingCallBus {
 
     fun show(invite: Map<String, String>) { current.value = invite }
     fun clear() { current.value = null }
+
+    /** Clear only if [invite] is still the one showing (a newer invite may have replaced it). */
+    fun clearIf(invite: Map<String, String>) {
+        if (current.value === invite) current.value = null
+    }
 }
 
 @Composable
 fun IncomingCallOverlay(
-    onAccept: (roomId: String) -> Unit,
-    onReject: (roomId: String) -> Unit,
+    onAccept: (invite: Map<String, String>) -> Unit,
+    /** [reason] is null when the user declined, "missed" when nobody answered. */
+    onReject: (invite: Map<String, String>, reason: String?) -> Unit,
 ) {
-    val invite by IncomingCallBus.current
-    if (invite == null) return
-    val roomId    = invite!!["room_id"] ?: invite!!["roomId"] ?: ""
-    val caller    = invite!!["caller_name"] ?: invite!!["caller_id"] ?: "Unknown"
-    val callType  = invite!!["call_type"] ?: invite!!["callType"] ?: "1to1"
+    val invite = IncomingCallBus.current.value ?: return
+    val roomId    = invite["roomId"].orEmpty()
+    val caller    = invite["callerName"] ?: invite["callerId"] ?: "Unknown"
+    val callType  = invite["callType"] ?: "1to1"
+
+    val scope = rememberCoroutineScope()
+    val currentOnReject by rememberUpdatedState(onReject)
+
+    // While ringing: the caller hanging up (or the server cleaning up) ends the
+    // session, announced as `call_ended` on the call's room channel.
+    val realtimeReady by HyperBabelRealtime.ready.collectAsState()
+    DisposableEffect(invite, realtimeReady) {
+        val channel = invite["roomSignalChannel"]
+        val sessionId = invite["sessionId"]
+        if (!realtimeReady || channel.isNullOrEmpty() || sessionId.isNullOrEmpty()) {
+            return@DisposableEffect onDispose { }
+        }
+        val unsub = HyperBabelRealtime.subscribeRoom(channel) { name, raw ->
+            if (HyperBabelRealtime.callEventOf(name, raw, sessionId) == "call_ended") {
+                scope.launch { IncomingCallBus.clearIf(invite) }
+            }
+        }
+        // Removes only this listener — an open chat screen on the same room
+        // keeps receiving its events.
+        onDispose { unsub() }
+    }
+
+    // Nobody answered: tell the server it was missed and stop ringing.
+    LaunchedEffect(invite) {
+        delay(RING_TIMEOUT_MS)
+        if (IncomingCallBus.current.value === invite) {
+            IncomingCallBus.clear()
+            currentOnReject(invite, "missed")
+        }
+    }
 
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)),
@@ -79,11 +137,11 @@ fun IncomingCallOverlay(
                 style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(48.dp), modifier = Modifier.padding(top = 24.dp)) {
                 IconButton(
-                    onClick = { IncomingCallBus.clear(); onReject(roomId) },
+                    onClick = { IncomingCallBus.clear(); onReject(invite, null) },
                     modifier = Modifier.size(72.dp).background(Color.Red, CircleShape),
                 ) { Icon(Icons.Filled.CallEnd, contentDescription = "Reject", tint = Color.White) }
                 IconButton(
-                    onClick = { IncomingCallBus.clear(); onAccept(roomId) },
+                    onClick = { IncomingCallBus.clear(); onAccept(invite) },
                     modifier = Modifier
                         .size(72.dp)
                         .background(Color(0xFF10B981), CircleShape),

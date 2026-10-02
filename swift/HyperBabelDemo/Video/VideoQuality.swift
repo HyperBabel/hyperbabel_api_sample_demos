@@ -18,7 +18,9 @@
  *   remotes 3 (4-way call)        ->   640x480, each receives 3x307,200 = 921,600  OK
  *
  * A 5th publisher would push the sum to 1,228,800 and move the whole call to
- * the next (more expensive) tier — that is why group calls are capped at 4.
+ * the next (more expensive) tier — that is why POST /video/sessions caps a
+ * call at 4. Room calls (POST /unitedchat/rooms/:roomId/video-call, what this
+ * demo places) stop at 3: the caller plus two target_user_ids.
  *
  *  TWO SUMS GET QUOTED FOR A GROUP CALL — KEEP THEM STRAIGHT
  *
@@ -143,7 +145,8 @@ extension VideoQuality {
         let p = preset(forRemoteCount: remoteCount)
         return VideoEncoderConfig(
             size: CGSize(width: p.width, height: p.height),
-            frameRate: p.frameRate >= 30 ? .fps30 : .fps24,
+            // The SDK takes the frame rate as a plain integer (30 / 24 here).
+            frameRate: p.frameRate,
             // Standard bitrate lets the SDK pick the value that matches the
             // resolution and frame rate above.
             bitrate: videoBitrateStandard,

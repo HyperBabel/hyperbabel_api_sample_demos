@@ -159,6 +159,13 @@ class HyperBabelVideoClient {
     await engine.switchCamera();
   }
 
+  /// Hand the engine a fresh token. RTC tokens expire after an hour — call
+  /// this from the "token will expire" / "request token" engine events with
+  /// the token from `POST …/video-call/renew-token`, or the call drops.
+  Future<void> renewToken(String token) async {
+    await engine.renewToken(token);
+  }
+
   /// Leave the channel without releasing the engine — useful when going
   /// from one session straight into another.
   Future<void> leaveRoom() async {
@@ -166,13 +173,15 @@ class HyperBabelVideoClient {
     _remoteUids.clear();
   }
 
-  /// Tear down the engine completely. Call on screen dispose.
+  /// Tear down the engine completely. Call on screen dispose. Safe to call
+  /// twice, even concurrently: the second call returns at once.
   Future<void> dispose() async {
-    if (!_isInit) return;
-    await _engine?.leaveChannel();
-    await _engine?.release();
-    _engine = null;
+    final e = _engine;
+    if (!_isInit || e == null) return;
     _isInit = false;
+    _engine = null;
     _remoteUids.clear();
+    await e.leaveChannel();
+    await e.release();
   }
 }

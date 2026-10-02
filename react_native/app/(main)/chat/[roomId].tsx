@@ -53,6 +53,7 @@ import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import * as unitedChat   from '@/services/unitedChatService';
 import * as chatService  from '@/services/chatService';
 import { uploadFile }    from '@/services/storageService';
+import { callEventLabel } from '@/utils/formatters';
 import type { Message, Room, RoomMember } from '@/services/unitedChatService';
 
 // ── Media bubbles ───────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ import type { Message, Room, RoomMember } from '@/services/unitedChatService';
 /**
  * Inline video player. expo-video's `useVideoPlayer` keeps a single native
  * player per component instance; nativeControls handle play/pause UX so we
- * don''' + "'" + '''t reinvent transport.
+ * don't reinvent transport.
  */
 function VideoBubble({ url }: { url: string }) {
   const player = useVideoPlayer(url ? { uri: url } : null, (p: any) => {
@@ -80,7 +81,7 @@ function VideoBubble({ url }: { url: string }) {
 }
 
 /**
- * Inline audio player. expo-audio''' + "'" + '''s `useAudioPlayer` exposes `.playing` as
+ * Inline audio player. expo-audio's `useAudioPlayer` exposes `.playing` as
  * a reactive property — touching it inside render subscribes the component
  * to playback state changes.
  */
@@ -294,7 +295,9 @@ export default function ChatRoomScreen() {
   const [showCallSelector, setShowCallSelector] = useState(false);
   const [callTargets,    setCallTargets] = useState<string[]>([]);
   const [memberSearch,   setMemberSearch] = useState('');
-  const MAX_CALL_TARGETS = 4;
+  // The API allows at most 3 people in a room call — the caller plus 2
+  // (more is rejected with 400 `limit_exceeded`).
+  const MAX_CALL_TARGETS = 2;
   // Plus menu (location / contact / file)
   const [showPlusMenu,    setShowPlusMenu]    = useState(false);
   const [showLocationModal, setShowLocationModal] = useState(false);
@@ -320,6 +323,14 @@ export default function ChatRoomScreen() {
   // Current user's role in the room
   const myRole = room?.members?.find((m: RoomMember) => m.user_id === user?.userId)?.role ?? 'member';
 
+  // The pinned message. The room carries only its id (there is no
+  // get-message-by-id route), so resolve it against the loaded history: the
+  // banner appears once that message is loaded, including after scrolling up.
+  // Deleting the message also clears the pin on the server.
+  const pinnedMessage = room?.pinned_message_id
+    ? messages.find((m) => m.id === room.pinned_message_id && !m.deleted_at) ?? null
+    : null;
+
   // ── Load data ─────────────────────────────────────────────────────────────
 
   const load = useCallback(async () => {
@@ -333,7 +344,7 @@ export default function ChatRoomScreen() {
     setMessages(msgs);
     setNextCursor(m.next_cursor ?? null);
     // Trigger translation in background
-    translateMessages(msgs.map((x) => x.message_id));
+    translateMessages(msgs.map((x) => x.id));
   }, [roomId]);
 
   useEffect(() => {
@@ -349,13 +360,17 @@ export default function ChatRoomScreen() {
   // ── Real-time subscription ────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!channelService || !roomId || !user) return;
+    // IMPORTANT: subscribe with the room's `realtime_channel` from the REST
+    // API, never a name rebuilt from the room id. A reconstructed name points
+    // at a channel nobody publishes on and the failure is silent.
+    const realtimeChannel = room?.realtime_channel;
+    if (!channelService || !realtimeChannel || !user) return;
 
     // The HyperBabel Real-Time backend wraps every per-room broadcast as
     //   { type: 'message' | 'typing' | …, data: <payload>, timestamp: … }
     // and publishes it under event-name 'message'. Other event names
     // ('message.deleted', 'message.updated', …) carry an un-wrapped payload.
-    const unsubRoom = channelService.subscribeToRoom(roomId, ({ message, type }) => {
+    const unsubRoom = channelService.subscribeToRoom(realtimeChannel, ({ message, type }) => {
       const envelope = (message ?? {}) as Record<string, any>;
 
       if (type === 'message' && envelope?.type === 'typing') {
@@ -372,7 +387,7 @@ export default function ChatRoomScreen() {
         const id = (payload?.message_id ?? payload?.id) as string | undefined;
         if (!id) return;
         setMessages((prev) =>
-          prev.map((m) => m.message_id === id ? { ...m, deleted_at: new Date().toISOString() } : m),
+          prev.map((m) => m.id === id ? { ...m, deleted_at: new Date().toISOString() } : m),
         );
         return;
       }
@@ -383,25 +398,61 @@ export default function ChatRoomScreen() {
         const content = payload?.content as string | undefined;
         if (!id || !content) return;
         setMessages((prev) =>
-          prev.map((m) => m.message_id === id ? { ...m, content, edited_at: new Date().toISOString() } as Message : m),
+          prev.map((m) => m.id === id
+            ? { ...m, content, edited_at: (payload?.edited_at as string | undefined) ?? new Date().toISOString() }
+            : m),
         );
         return;
       }
 
-      // Real chat message — Workers wraps as { type: 'message', data: <Message> }.
-      // Older backends publish the message object directly.
+      // Emoji reaction — the server broadcasts a DELTA
+      //   { message_id, emoji, user_id, action: 'add' | 'remove' }
+      // not the whole map, so apply it to the local map. Reacting yourself
+      // already replaced the map with the server's copy from the REST call;
+      // this branch is what makes OTHER people's reactions show up live.
+      if (type === 'reaction' || (type === 'message' && envelope?.type === 'reaction')) {
+        const payload = (envelope?.data ?? envelope) as Record<string, any>;
+        const id     = payload?.message_id as string | undefined;
+        const emoji  = payload?.emoji as string | undefined;
+        const uid    = payload?.user_id as string | undefined;
+        if (!id || !emoji || !uid) return;
+        const removing = payload?.action === 'remove';
+        setMessages((prev) => prev.map((m) => {
+          if (m.id !== id) return m;
+          const map = { ...(m.reactions ?? {}) };
+          const ids = map[emoji] ?? [];
+          if (removing) {
+            const next = ids.filter((x) => x !== uid);
+            if (next.length) map[emoji] = next; else delete map[emoji];
+          } else if (!ids.includes(uid)) {
+            map[emoji] = [...ids, uid];
+          } else {
+            return m;
+          }
+          return { ...m, reactions: map };
+        }));
+        return;
+      }
+
+      // Real chat message — the server wraps it as { type: 'message', data: <Message> }.
+      // Older backends publish the message object directly. Either way the
+      // message's key is `id` (there is no `message_id` on a message).
       const msg = (
         type === 'message' && envelope?.type === 'message' && envelope?.data
           ? envelope.data
-          : envelope?.message_id
+          : envelope?.id
             ? envelope
             : null
       ) as Message | null;
-      if (!msg || !msg.message_id || !msg.created_at) return;
+      if (!msg || !msg.id || !msg.created_at) return;
+      // Live-call captions share this channel, but the message list API never
+      // returns them — appending them here would show lines that vanish on
+      // the next reload.
+      if (msg.message_type === 'caption') return;
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         const next = [...prev, msg];
-        translateMessages([msg.message_id]);
+        translateMessages([msg.id]);
         return next;
       });
       unitedChat.markAsRead(roomId, user.userId).catch(() => {});
@@ -409,7 +460,7 @@ export default function ChatRoomScreen() {
     });
 
     return () => { unsubRoom(); if (typingTimerRef.current) clearTimeout(typingTimerRef.current); };
-  }, [channelService, roomId, user]);
+  }, [channelService, room?.realtime_channel, user]);
 
   // Audio recorder timer cleanup on screen unmount — guards against the
   // unlikely case the screen is torn down mid-recording (e.g. logout).
@@ -430,7 +481,7 @@ export default function ChatRoomScreen() {
       const older = [...(data.messages ?? [])].reverse();
       setMessages((prev) => [...older, ...prev]);
       setNextCursor(data.next_cursor ?? null);
-      translateMessages(older.map((x) => x.message_id));
+      translateMessages(older.map((x) => x.id));
     } finally {
       setLoadingMore(false);
     }
@@ -445,13 +496,15 @@ export default function ChatRoomScreen() {
     setReplyTo(null);
     setSending(true);
     try {
-      const msg = await unitedChat.sendMessage(roomId, {
+      // The response is wrapped — `{ message: { … } }`. The real-time echo of
+      // the same message may land first; the `id` check below de-duplicates.
+      const { message: msg } = await unitedChat.sendMessage(roomId, {
         sender_id: user.userId,
         content:   text,
-        ...(replyTo ? { reply_to: replyTo.message_id } : {}),
+        ...(replyTo ? { reply_to: replyTo.id } : {}),
       });
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
       setTimeout(() => flatRef.current?.scrollToEnd({ animated: true }), 60);
@@ -481,9 +534,9 @@ export default function ChatRoomScreen() {
       { text: 'Cancel', style: 'cancel' },
       { text: 'Delete', style: 'destructive', onPress: async () => {
         if (!user || !roomId) return;
-        await unitedChat.deleteMessage(roomId, msg.message_id, user.userId);
+        await unitedChat.deleteMessage(roomId, msg.id, user.userId);
         setMessages((prev) =>
-          prev.map((m) => m.message_id === msg.message_id ? { ...m, deleted_at: new Date().toISOString() } : m),
+          prev.map((m) => m.id === msg.id ? { ...m, deleted_at: new Date().toISOString() } : m),
         );
       }},
     ]);
@@ -498,11 +551,11 @@ export default function ChatRoomScreen() {
       // guessing an optimistic shape. That also keeps counts correct when
       // several people react at once.
       const { reactions } = await chatService.addReaction(
-        roomId, reactTarget.message_id, user.userId, emoji,
+        roomId, reactTarget.id, user.userId, emoji,
       );
       haptic.light();
       setMessages((prev) => prev.map((m) =>
-        m.message_id === reactTarget.message_id ? { ...m, reactions } : m,
+        m.id === reactTarget.id ? { ...m, reactions } : m,
       ));
     } catch (err: any) {
       // Never swallow this. A silent catch here hides auth/scope failures and
@@ -604,8 +657,8 @@ export default function ChatRoomScreen() {
 
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
-        // cf_workers_api confirm response field is `url` (a signed CDN GET).
-        // Older hb_api builds called it `cdn_url`; fall back for compat.
+        // The confirm response field is `url` (a signed CDN GET).
+        // Older API versions called it `cdn_url`; fall back for compat.
         content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
         message_type: 'image',
         metadata:     { url: confirmed.url, filename },
@@ -746,7 +799,7 @@ export default function ChatRoomScreen() {
   };
 
   // Unified modal-close handler. Cleanly stops an in-flight recording so the
-  // recorder + interval don''' + "'" + '''t leak when the user dismisses by swipe / tap-X /
+  // recorder + interval don't leak when the user dismisses by swipe / tap-X /
   // back button.
   const closeAudioModal = async () => {
     if (audioPhase === 'recording') {
@@ -814,40 +867,38 @@ export default function ChatRoomScreen() {
 
   // ── Video call ────────────────────────────────────────────────────────────
 
-  const handleStartCall = async () => {
+  // The call screen (app/video-call/[roomId].tsx) is the ONLY place a call is
+  // started — it needs the start response (session + the caller's token) to
+  // join. This screen just decides who to ring and passes the ids along as a
+  // comma-separated `targets` route param.
+  const handleStartCall = () => {
     if (!user || !roomId || !room) return;
-    // 1:1 rooms only have one peer — start immediately. Group/open rooms with
-    // more than one other member open a selector so the caller picks who to
-    // ring (max 4 simultaneous callees).
-    const peers = (room.members ?? []).filter((m) => m.user_id !== user.userId);
-    if (room.room_type === '1to1' || peers.length <= 1) {
-      try {
-        await unitedChat.startVideoCall(roomId, user.userId);
-        router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
-      } catch (err: any) {
-        Alert.alert('Error', err.message ?? 'Failed to start call.');
-      }
+    // 1:1 rooms ring the other member — no targets needed.
+    if (room.channel_type === '1to1') {
+      router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
       return;
     }
-    // Open the picker for group / open rooms.
+    // Group calls REQUIRE explicit targets. With a single other member there
+    // is nothing to pick; otherwise open a selector so the caller picks who
+    // to ring (up to MAX_CALL_TARGETS).
+    const peers = (room.members ?? []).filter((m) => m.user_id !== user.userId);
+    if (peers.length === 1) {
+      router.push({ pathname: '/video-call/[roomId]', params: { roomId, targets: peers[0].user_id } });
+      return;
+    }
     setCallTargets([]);
     setMemberSearch('');
     setShowCallSelector(true);
   };
 
-  const confirmGroupCall = async () => {
+  const confirmGroupCall = () => {
     if (!user || !roomId) return;
     if (callTargets.length === 0) {
-      Alert.alert('Pick at least one member', 'Select up to 4 members to invite.');
+      Alert.alert('Pick at least one member', `Select up to ${MAX_CALL_TARGETS} members to invite.`);
       return;
     }
     setShowCallSelector(false);
-    try {
-      await unitedChat.startVideoCall(roomId, user.userId, callTargets);
-      router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
-    } catch (err: any) {
-      Alert.alert('Error', err.message ?? 'Failed to start call.');
-    }
+    router.push({ pathname: '/video-call/[roomId]', params: { roomId, targets: callTargets.join(',') } });
   };
 
   const toggleCallTarget = (userId: string) => {
@@ -916,14 +967,19 @@ export default function ChatRoomScreen() {
         </View>
 
         {/* Pin banner */}
-        {room?.pinned_message && (
+        {pinnedMessage && (
           <PinBanner
-            message={room.pinned_message}
-            showUnpin={myRole === 'owner' || myRole === 'sub_admin'}
+            message={pinnedMessage}
+            // Any member may unpin in a 1:1 room; elsewhere owner / sub_admin only.
+            showUnpin={room?.channel_type === '1to1' || myRole === 'owner' || myRole === 'sub_admin'}
             onUnpin={async () => {
               if (!user) return;
-              await unitedChat.unpinMessage(roomId, user.userId);
-              setRoom((r) => r ? { ...r, pinned_message: undefined } : r);
+              try {
+                await unitedChat.unpinMessage(roomId, user.userId);
+                setRoom((r) => r ? { ...r, pinned_message_id: null } : r);
+              } catch (err: any) {
+                Alert.alert('Unpin failed', err?.message ?? 'Please try again.');
+              }
             }}
           />
         )}
@@ -932,13 +988,16 @@ export default function ChatRoomScreen() {
         <FlatList
           ref={flatRef}
           data={messages}
-          keyExtractor={(m) => m.message_id}
+          keyExtractor={(m) => m.id}
           renderItem={({ item }) => (
-            item.message_type === 'system' ? (
-              item.content ? (
+            // System lines and call events render as a centred one-line notice.
+            // Call events (`video_call`) have EMPTY content — the text comes
+            // from `metadata.event`.
+            item.message_type === 'system' || item.message_type === 'video_call' ? (
+              item.message_type === 'video_call' || item.content ? (
                 <View style={{ alignItems: 'center', marginVertical: spacing[2] }}>
                   <Text style={{ backgroundColor: colors.cardElevated, paddingHorizontal: spacing[3], paddingVertical: 4, borderRadius: 12, ...textPresets.caption, color: colors.textMuted }}>
-                    {item.content}
+                    {item.message_type === 'video_call' ? callEventLabel(item.metadata) : item.content}
                   </Text>
                 </View>
               ) : null
@@ -946,7 +1005,7 @@ export default function ChatRoomScreen() {
             <MessageBubble
               msg={item}
               isSelf={item.sender_id === user?.userId}
-              translated={translatedMap[item.message_id]}
+              translated={translatedMap[item.id]}
               onDelete={() => handleDelete(item)}
               onReply={() => setReplyTo(item)}
               onOpenThread={() => setThreadMsg(item)}
@@ -1065,6 +1124,7 @@ export default function ChatRoomScreen() {
         parentMessage={threadMsg}
         currentUserId={user?.userId ?? ''}
         roomId={roomId ?? ''}
+        roomMessages={messages}
         onClose={() => setThreadMsg(null)}
       />
 

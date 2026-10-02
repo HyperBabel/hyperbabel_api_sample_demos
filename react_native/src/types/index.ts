@@ -5,7 +5,10 @@
  * Import from here instead of individual service files.
  */
 
-export type { Room, RoomType, RoomMember, Message, MessageType, MemberRole, ActiveVideoCall, Reaction } from '@/services/unitedChatService';
+export type {
+  Room, RoomType, RoomMember, Message, MessageType, MemberRole,
+  VideoCallSession, VideoCallParticipant, StartVideoCallResponse, ActiveVideoCallResponse,
+} from '@/services/unitedChatService';
 export type { StreamSession } from '@/services/streamService';
 export type { PresenceEntry, PresenceStatus } from '@/services/presenceService';
 export type { PushPlatform } from '@/services/pushService';
@@ -22,6 +25,8 @@ export interface VideoCallParams {
   roomId:      string;
   sessionId?:  string;
   isIncoming?: string;
+  /** Comma-separated user ids to ring (group rooms). */
+  targets?:    string;
 }
 
 export interface LiveStreamParams {

@@ -30,6 +30,9 @@ export function StreamChat({ chatRoomId }: StreamChatProps) {
   const { channelService } = useRealtime();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input,    setInput]    = useState('');
+  // The room's real-time channel, as returned by the REST API. It CANNOT be
+  // derived from the room id — always read it from the room resource.
+  const [realtimeChannel, setRealtimeChannel] = useState<string | null>(null);
   const listRef = useRef<FlatList>(null);
 
   // Load recent messages
@@ -39,28 +42,40 @@ export function StreamChat({ chatRoomId }: StreamChatProps) {
       .catch(() => {});
   }, [chatRoomId]);
 
+  // Resolve the room's real-time channel name
+  useEffect(() => {
+    setRealtimeChannel(null);
+    unitedChat.getRoom(chatRoomId)
+      .then((room) => setRealtimeChannel(room?.realtime_channel ?? null))
+      .catch(() => {});
+  }, [chatRoomId]);
+
   // Real-time subscription
   useEffect(() => {
-    if (!channelService) return;
-    const unsub = channelService.subscribeToRoom(chatRoomId, ({ message }) => {
-      const msg = message as Message;
+    if (!channelService || !realtimeChannel) return;
+    const unsub = channelService.subscribeToRoom(realtimeChannel, ({ message, type }) => {
+      // Chat messages arrive wrapped as { type: 'message', data: <Message> }.
+      // Typing, reactions and other room events share the channel — skip them.
+      const envelope = message as { type?: string; data?: Message } | null;
+      if (type !== 'message' || envelope?.type !== 'message' || !envelope.data?.id) return;
+      const msg = envelope.data;
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
     });
     return () => unsub();
-  }, [channelService, chatRoomId]);
+  }, [channelService, realtimeChannel]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || !user) return;
     setInput('');
     try {
-      const msg = await unitedChat.sendMessage(chatRoomId, { sender_id: user.userId, content: text });
+      const { message: msg } = await unitedChat.sendMessage(chatRoomId, { sender_id: user.userId, content: text });
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
     } catch { /* ignore */ }
@@ -71,7 +86,7 @@ export function StreamChat({ chatRoomId }: StreamChatProps) {
       <FlatList
         ref={listRef}
         data={messages}
-        keyExtractor={(m) => m.message_id}
+        keyExtractor={(m) => m.id}
         renderItem={({ item }) => (
           <View style={styles.msgRow}>
             <Text style={styles.sender} numberOfLines={1}>{item.sender_name ?? item.sender_id}</Text>

@@ -90,6 +90,17 @@ class HyperBabelVideo(private val appContext: Context) {
         if (remoteUids.remove(uid)) applyEncoder()
     }
 
+    /** Remote participants currently in the channel (after the latest join / leave). */
+    val remoteCount: Int get() = remoteUids.size
+
+    /**
+     * Hand a renewed RTC token to the engine. Tokens last 1 hour; call this
+     * from the token-expiry callbacks with a token from POST …/renew-token.
+     */
+    fun renewToken(token: String) {
+        engine?.renewToken(token)
+    }
+
     /**
      * The billing tier to declare when creating a session, derived from the
      * same presets this client publishes with.

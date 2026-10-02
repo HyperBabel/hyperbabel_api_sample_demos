@@ -1,6 +1,29 @@
 /**
  * HyperBabel React Demo — Live Stream Page
  *
+ * ⚠️ THIS PAGE NEEDS A BACKEND — IT DOES NOT RUN FROM THE BROWSER ALONE.
+ *
+ *   Every `/stream/*` endpoint authenticates with your ORGANIZATION API KEY
+ *   (`Authorization: Bearer hb_live_…`). A request carrying anything else is
+ *   rejected before it reaches the handler:
+ *
+ *       POST /api/v1/stream/sessions
+ *       → 401 { "error": { "code": "invalid_api_key_format" } }
+ *
+ *   That is deliberate. Creating a broadcast allocates paid capacity and is
+ *   metered against your organization, so the caller has to be YOU, not a
+ *   signed-in end user. This demo only ever holds a customer JWT — `api.js`
+ *   refuses to put an org key in a browser bundle — so the calls below fail
+ *   here by design.
+ *
+ *   To run live streaming for real, put these calls in your own server and
+ *   expose a thin endpoint your app can call:
+ *
+ *       browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*
+ *
+ *   Keep reading this file for the call sequence and payloads — that part is
+ *   accurate and is what your backend should implement.
+ *
  * Actual real-time audio/video broadcast using HyperBabel's Stream API
  * and RTC infrastructure.
  *
@@ -332,6 +355,28 @@ export default function LiveStreamPage() {
   return (
     <>
       <Header />
+
+      {/*
+        Say it on screen, not just in the source. Without this the page looks
+        broken: the calls 401 and the UI simply never leaves "Connecting…".
+      */}
+      <div
+        style={{
+          margin: '12px 16px', padding: '12px 14px', borderRadius: '8px',
+          border: '1px solid var(--hb-warning, #b45309)',
+          background: 'rgba(180, 83, 9, 0.08)', fontSize: '0.85rem', lineHeight: 1.5,
+        }}
+      >
+        <strong>⚠️ Backend required — this page cannot work from the browser.</strong>
+        <div style={{ marginTop: '4px' }}>
+          The <code>/stream/*</code> endpoints authenticate with your{' '}
+          <strong>organization API key</strong>, which must never ship in a browser bundle.
+          This demo holds only an end-user token, so the calls return{' '}
+          <code>401 invalid_api_key_format</code>. Move them to your own server and let the
+          browser call that: <code>browser → your backend → HyperBabel /stream/*</code>.
+          The chat, video call and messaging pages in this demo are end-user surfaces and do run as-is.
+        </div>
+      </div>
 
       {/* ── Camera/mic permission error screens (host only) ── */}
       {isHost && permStatus === PERM.UNAVAILABLE && (

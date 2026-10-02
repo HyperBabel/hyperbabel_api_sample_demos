@@ -16,7 +16,7 @@
  *      exchange.
  *
  * The app never sees the integrator's org API key — the HyperBabel
- * Worker resolves the org from the Firebase project ID claim after
+ * API resolves the org from the Firebase project ID claim after
  * verifying the signature against Google JWKS.
  *
  * Prerequisites:

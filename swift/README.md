@@ -33,14 +33,30 @@ the sibling `sample_demos/*` projects.
 | Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
 | Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
 | Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
-| Incoming-call overlay | Subscribes the user's private channel and POSTs `/video-call/accept` or `/reject` |
-| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/leave` + HyperBabel Video |
-| Live stream (host)   | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
-| Live stream (viewer) | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
+| Incoming-call overlay | Subscribes to the user's private channel `user:{orgId}:{userId}` (event `signal`, `type: "CALL_INVITE"`) and POSTs `/video-call/accept` or `/reject` with the invite's `sessionId`; while ringing it closes on the room's `call_ended` event and after 45 s rejects with `reason: "missed"` |
+| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token`, `…/leave` (all with `session_id`) + HyperBabel Video; room `video_call` events close the call screen |
+| Live stream (host) ⚠️ needs your backend | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
+| Live stream (viewer) ⚠️ needs your backend | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
 | Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
 | Usage stats          | `GET /auth/usage`                                          |
-| Language detection   | `POST /translate/detect`                                   |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+
+### ⚠️ Needs your backend
+
+Two API families accept **only your organization API key**, which must never
+ship in an app. Calls to them from this demo's customer JWT are rejected with
+401 by design:
+
+- **Live streaming** (`/stream` endpoints). The Stream screen and
+  `API/StreamService.swift` show the exact paths, payloads and call order, but
+  creating, listing and joining broadcasts fails from the app. Implement those
+  calls on your server (app → your backend holding the org key → HyperBabel)
+  and point the app at your endpoint.
+- **Text translation / language detection** (`/translate` endpoints).
+  `API/TranslateService.swift` is reference code for your server; the app
+  never calls it. To translate chat messages from the app, use
+  `POST /unitedchat/rooms/:roomId/messages/batch-translate`
+  (`UnitedChatService.batchTranslateMessages`), which accepts the customer JWT.
 
 ## Prerequisites
 
@@ -98,9 +114,15 @@ the sibling `sample_demos/*` projects.
    5. **Drag `firebase/GoogleService-Info.plist`** into Xcode (uncheck
       "Copy items if needed" so the file stays in `firebase/`; tick the
       app target so it's bundled). See `firebase/README.md`.
-   6. **Set Info.plist usage descriptions** for camera + microphone:
+   6. **Set Info.plist usage descriptions** for camera + microphone
+      (target → Info, or `INFOPLIST_KEY_…` build settings):
       - `NSCameraUsageDescription` — "Used for video calls."
       - `NSMicrophoneUsageDescription` — "Used for voice and video calls."
+
+      **Required.** iOS terminates the app the first time the camera or
+      microphone starts if either key is missing. The call and go-live
+      screens check for both and show a message instead of starting
+      capture.
    7. **Build and run** on a simulator or device. Sign in (or sign up)
       with Firebase, and the demo will exchange the ID token for a
       customer JWT and route you into the room list.
@@ -122,8 +144,7 @@ with secrets.
 ## Configuration
 
 The default `ApiClient.defaultApiUrl` points at the production gateway.
-If you operate a private HyperBabel deployment (e.g. via `wrangler dev`
-from the platform source), assign a different URL in `Session` at
+To target a different HyperBabel API base URL, assign it in `Session` at
 launch:
 
 ```swift
@@ -159,9 +180,9 @@ swift/
     │   ├── AuthService.swift          # /auth/usage
     │   ├── ChatService.swift          # reactions (room-scoped)
     │   ├── UnitedChatService.swift    # rooms / messages / moderation / video-call lifecycle
-    │   ├── StreamService.swift        # live stream session lifecycle
+    │   ├── StreamService.swift        # live stream session lifecycle (needs your backend)
     │   ├── StorageService.swift       # 3-step presign upload
-    │   ├── TranslateService.swift     # AI Translation
+    │   ├── TranslateService.swift     # AI Translation reference (needs your backend)
     │   ├── PresenceService.swift      # online status heartbeat
     │   ├── PushService.swift          # token register / list
     │   ├── UsersService.swift         # global block list
@@ -184,7 +205,7 @@ swift/
         ├── StreamScreen.swift
         ├── IncomingCallOverlay.swift  # Global Accept / Reject prompt
         ├── BlocksScreen.swift
-        └── SettingsScreen.swift       # usage / push tokens / language detection / logout
+        └── SettingsScreen.swift       # usage / push tokens / logout
 ```
 
 ## Integrating into your own app
@@ -198,8 +219,9 @@ swift/
    Codable calls against the public HyperBabel API — copy whichever
    you need.
 3. **Real-Time push.** `Realtime/HyperBabelRealtime.swift` shows how
-   to exchange a token via `POST /rtm/token` and subscribe to a room
-   channel. The underlying SDK is wrapped behind a thin facade so the
+   to exchange a token via `POST /rtm/token`, subscribe to a room
+   channel, and subscribe to the user's private channel for incoming-call
+   invites. The underlying SDK is wrapped behind a thin facade so the
    vendor name never leaks into app code.
 4. **Video.** `Video/HyperBabelVideo.swift` mirrors the same pattern
    for 1:1 / group video calls.

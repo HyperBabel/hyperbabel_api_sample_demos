@@ -5,6 +5,23 @@ import '../video/video_quality.dart';
 /// Repository for the HyperBabel Live Stream API. Hosts open a session,
 /// publish video / audio, and end it; viewers exchange a viewer token to
 /// join the same channel as a subscriber.
+///
+/// ⚠️ EVERY CALL HERE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THIS APP.
+///
+///   `/stream/*` authenticates with your ORGANIZATION API KEY
+///   (`Authorization: Bearer hb_live_…`). Anything else is rejected up front:
+///
+///       POST /api/v1/stream/sessions
+///       -> 401 { "error": { "code": "invalid_api_key_format" } }
+///
+///   Creating a broadcast allocates paid capacity and is metered against your
+///   organization, so the caller has to be YOU, not a signed-in end user. This
+///   demo only ever holds a customer JWT (the API client refuses to carry an org
+///   key), so these calls fail here by design.
+///
+///   Ship it as:  app -> your backend (holds hb_live_…) -> HyperBabel /stream/*
+///   The paths, payloads and call order below are accurate — implement them
+///   on your server and expose a thin endpoint the app can call.
 class StreamRepository {
   final ApiClient _apiClient = ApiClient();
 
@@ -30,7 +47,7 @@ class StreamRepository {
     try {
       final response = await _apiClient.client.post(
         '/stream/sessions',
-        // Wire shape per cf_workers_api/src/routes/stream.ts createStreamSchema:
+        // Wire shape per the HyperBabel Stream API (POST /stream/sessions):
         // flat { title, host_user_id, host_display_name?, quality? }.
         // `title` and `host_user_id` are both required.
         data: {

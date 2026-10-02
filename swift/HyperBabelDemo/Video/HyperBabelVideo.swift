@@ -21,6 +21,7 @@ typealias VideoEngine        = AgoraRtcEngineKit
 typealias VideoEngineDelegate = AgoraRtcEngineDelegate
 typealias VideoChannelOptions = AgoraRtcChannelMediaOptions
 typealias VideoCanvas         = AgoraRtcVideoCanvas
+typealias VideoUserOfflineReason = AgoraUserOfflineReason
 
 @MainActor
 final class HyperBabelVideo: NSObject {
@@ -44,8 +45,12 @@ final class HyperBabelVideo: NSObject {
     private var remoteUids = Set<UInt>()
 
     func initialize(appId: String, delegate: VideoEngineDelegate?) {
-        if engine != nil { return }
         eventDelegate = delegate
+        if let engine {
+            // Already created — route this caller's events to its delegate.
+            engine.delegate = delegate
+            return
+        }
         engine = VideoEngine.sharedEngine(withAppId: appId, delegate: delegate)
         engine?.enableVideo()
         engine?.enableAudio()
@@ -74,11 +79,10 @@ final class HyperBabelVideo: NSObject {
     /// Call from your engine delegate's `didJoinedOfUid`. Keeps the publishing
     /// resolution in step with the call size.
     ///
-    /// This screen skeleton is 1:1, so the roster never grows past one and the
-    /// preset stays at 1280x720. Wire these two calls up as soon as you add
-    /// group calls — without them a 3- or 4-way call keeps publishing 1280x720
-    /// and every participant's received total lands above the HD tier you
-    /// declared when the session was created.
+    /// VideoCallScreen calls this pair from its delegate. Keep them wired in
+    /// any call surface you build — without them a 3- or 4-way call keeps
+    /// publishing 1280x720 and every participant's received total lands above
+    /// the HD tier you declared when the session was created.
     func trackRemoteJoined(uid: UInt) {
         if remoteUids.insert(uid).inserted { applyEncoder() }
     }
@@ -151,6 +155,15 @@ final class HyperBabelVideo: NSObject {
         engine?.setupRemoteVideo(canvas)
     }
 
+    /// Hand a renewed RTC token to the engine (from the token-expiry callbacks).
+    func renewToken(_ token: String) {
+        guard let engine else { return }
+        let rc = engine.renewToken(token)
+        if rc != 0 {
+            print("[HyperBabelVideo] renewToken failed (code \(rc))")
+        }
+    }
+
     func leaveCall() {
         engine?.stopPreview()
         engine?.leaveChannel(nil)
@@ -201,6 +214,9 @@ final class HyperBabelVideo {
     func joinCall(channelName: String, role: String = "publisher", uid: Int,
                   sessionId: String? = nil, externalUserId: String? = nil) async throws {}
     func joinWithToken(channelName: String, rtcToken: String, uid: Int, role: String) async throws {}
+    func renewToken(_ token: String) {}
+    func trackRemoteJoined(uid: UInt) {}
+    func trackRemoteLeft(uid: UInt) {}
     func leaveCall() {}
     func release() {}
 }
@@ -217,3 +233,14 @@ struct VideoCanvasView: View {
 }
 
 #endif
+
+extension HyperBabelVideo {
+    /// Info.plist keys that must be present before the camera or microphone
+    /// starts — iOS terminates the app on first capture without them.
+    /// Returns the ones that are missing (empty when the app is set up).
+    static func missingUsageDescriptions() -> [String] {
+        ["NSCameraUsageDescription", "NSMicrophoneUsageDescription"].filter {
+            (Bundle.main.object(forInfoDictionaryKey: $0) as? String)?.isEmpty ?? true
+        }
+    }
+}

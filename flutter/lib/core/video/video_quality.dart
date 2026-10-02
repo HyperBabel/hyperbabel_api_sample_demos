@@ -61,7 +61,9 @@ class VideoPreset {
 /// ```
 ///
 /// A 5th publisher would push the sum to 1,228,800 and move the whole call to
-/// the next (more expensive) tier — that is why group calls are capped at 4.
+/// the next (more expensive) tier — that is why POST /video/sessions caps a
+/// call at 4. Room calls (POST /unitedchat/rooms/:roomId/video-call, what this
+/// demo places) stop at 3: the caller plus two target_user_ids.
 ///
 ///  TWO SUMS GET QUOTED FOR A GROUP CALL — KEEP THEM STRAIGHT
 ///

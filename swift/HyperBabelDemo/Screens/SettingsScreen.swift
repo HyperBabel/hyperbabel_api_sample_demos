@@ -1,8 +1,11 @@
 /*
  * Settings — Profile / Privacy(Blocked Users) / API Usage / Push Tokens /
- * Language Detection playground / Logout.
+ * Logout.
  *
  * Webhooks are explicitly excluded — manage them in the HyperBabel Console.
+ * There is no language-detection playground: the `/translate` endpoints take
+ * an organization API key, which an end-user app must never hold (see
+ * API/TranslateService.swift).
  */
 import SwiftUI
 
@@ -14,9 +17,6 @@ struct SettingsScreen: View {
     @State private var usage: UsageStats?
     @State private var tokens: [PushToken] = []
     @State private var loading = true
-    @State private var detectInput: String = ""
-    @State private var detectResult: String = ""
-    @State private var detecting = false
 
     var body: some View {
         ScrollView {
@@ -71,21 +71,6 @@ struct SettingsScreen: View {
                     }
                 }
 
-                section("Language Detection")
-                Text("Type any text and tap Detect to see what language the AI Translation engine identifies it as.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    TextField("Type to detect…", text: $detectInput)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled(true)
-                    Button(detecting ? "…" : "Detect") {
-                        Task { await detect() }
-                    }.disabled(detecting)
-                }
-                if !detectResult.isEmpty {
-                    Text(detectResult).padding(8).background(Color.secondary.opacity(0.1)).cornerRadius(8)
-                }
-
                 Button(role: .destructive, action: {
                     session.signOut()
                     onBack()
@@ -121,24 +106,12 @@ struct SettingsScreen: View {
 
     private func load() async {
         loading = true
-        async let usageTask: () = (try? AuthService.getUsage()).map { usage = $0 } as Void? ?? ()
-        async let tokensTask: () = (try? PushService.getTokens(userId: session.userId)).map { tokens = $0.tokens ?? [] } as Void? ?? ()
-        _ = await (usageTask, tokensTask)
+        let userId = session.userId
+        // Fetch both in parallel; assign state back here on the main actor.
+        async let usageResult = try? AuthService.getUsage()
+        async let tokensResult = try? PushService.getTokens(userId: userId)
+        usage = await usageResult
+        tokens = await tokensResult?.tokens ?? []
         loading = false
-    }
-
-    private func detect() async {
-        let text = detectInput.trimmingCharacters(in: .whitespaces)
-        guard !text.isEmpty else { return }
-        detecting = true
-        detectResult = ""
-        do {
-            let res = try await TranslateService.detect(text: text)
-            let confidenceStr = res.confidence.map { String(format: "%.2f", $0) } ?? "?"
-            detectResult = "\(res.detectedLanguage) (\(confidenceStr))"
-        } catch {
-            detectResult = "Error: \(error.localizedDescription)"
-        }
-        detecting = false
     }
 }

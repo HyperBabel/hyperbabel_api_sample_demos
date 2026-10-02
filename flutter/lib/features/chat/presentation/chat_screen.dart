@@ -127,14 +127,23 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _attachRealtime() async {
     if (_rtSub != null) return;
     try {
+      // The channel name comes from the API and is used verbatim — it cannot
+      // be rebuilt from the room id (see HyperBabelRealtimeClient's doc).
+      final room = await _repo.getRoom(widget.roomId);
+      final realtimeChannel = room['realtime_channel'] as String?;
+      if (realtimeChannel == null || realtimeChannel.isEmpty) return;
+
       final rt = HyperBabelRealtimeClient();
       await rt.connect();
-      _rtSub = await rt.subscribeRoom(widget.roomId, (event) {
-        // The Workers backend wraps every per-room broadcast as
-        //   { type: 'message' | 'typing' | …, data: <payload>, timestamp: … }
-        // and publishes it under event-name 'message'. Other event names
-        // ('message.deleted', 'message.updated', 'reaction', …) carry an
-        // un-wrapped payload directly.
+      _rtSub = await rt.subscribeRoom(realtimeChannel, (event) {
+        // The HyperBabel API publishes room events as an envelope
+        //   { type, timestamp, data: <payload> }
+        // under the event name that matches `type`: 'message' (new message),
+        // 'message.deleted' (data: { message_id, deleted_by }),
+        // 'message.updated' (data: { message_id, content, edited_at }),
+        // 'reaction' (data: { message_id, emoji, user_id, action }).
+        // Typing is the exception: event name 'message' with a flat
+        // { type: 'typing', userId, userName } payload and no `data`.
         final raw = event.data;
         final envelope = raw is Map ? Map<String, dynamic>.from(raw) : null;
         switch (event.name) {
@@ -165,6 +174,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   void _handleIncomingMessage(Map payload) {
     final msg = Map<String, dynamic>.from(payload);
+    // Live captions from a call ride this channel too, but the message list
+    // API never returns them — appending them would show lines that vanish
+    // on the next reload.
+    if (msg['message_type'] == 'caption') return;
     final id = (msg['id'] ?? msg['message_id']) as String?;
     if (id == null) return;
     if (_messages.any((m) => (m['id'] ?? m['message_id']) == id)) return;
@@ -172,8 +185,19 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
   }
 
+  /// Append a message we just sent unless the room broadcast already added
+  /// it — the sender receives its own message twice (the POST response and
+  /// the broadcast), in either order.
+  void _appendSent(Map<String, dynamic> msg) {
+    final id = msg['id'] as String?;
+    if (id != null && _messages.any((m) => (m['id'] ?? m['message_id']) == id)) {
+      return;
+    }
+    _messages.add(msg);
+  }
+
   void _handleIncomingTyping(Map<String, dynamic> envelope) {
-    // Workers payload: { type: 'typing', userId, userName }.
+    // Typing payload: { type: 'typing', userId, userName }.
     final from = (envelope['userId'] ?? envelope['user_id']) as String?;
     if (from == null || from == _userId) return;
     final name =
@@ -186,8 +210,15 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// The `data` object of a room-event envelope (see [_attachRealtime]).
+  static Map<String, dynamic> _eventData(Map<String, dynamic> envelope) =>
+      envelope['data'] is Map
+          ? Map<String, dynamic>.from(envelope['data'] as Map)
+          : const <String, dynamic>{};
+
   void _handleMessageDeleted(Map<String, dynamic> envelope) {
-    final id = (envelope['id'] ?? envelope['message_id']) as String?;
+    // The id sits inside `data`, not at the top of the envelope.
+    final id = _eventData(envelope)['message_id'] as String?;
     if (id == null) return;
     setState(() {
       final idx = _messages.indexWhere(
@@ -202,8 +233,9 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _handleMessageUpdated(Map<String, dynamic> envelope) {
-    final id = (envelope['id'] ?? envelope['message_id']) as String?;
-    final content = envelope['content'] as String?;
+    final data = _eventData(envelope);
+    final id = data['message_id'] as String?;
+    final content = data['content'] as String?;
     if (id == null || content == null) return;
     setState(() {
       final idx = _messages.indexWhere(
@@ -212,17 +244,22 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages[idx] = {
           ..._messages[idx],
           'content': content,
-          'updated_at': DateTime.now().toIso8601String(),
+          'edited_at': data['edited_at'] ?? DateTime.now().toIso8601String(),
         };
       }
     });
   }
 
   void _handleIncomingReaction(Map<String, dynamic> envelope) {
-    final messageId = (envelope['message_id'] ?? envelope['id']) as String?;
-    final emoji = envelope['emoji'] as String?;
-    final userId = (envelope['user_id'] ?? envelope['userId']) as String?;
-    final removed = envelope['removed'] == true;
+    // The room broadcast wraps the payload as { type, data, timestamp }.
+    final payload = (envelope['data'] is Map)
+        ? Map<String, dynamic>.from(envelope['data'] as Map)
+        : envelope;
+    final messageId = (payload['message_id'] ?? payload['id']) as String?;
+    final emoji = payload['emoji'] as String?;
+    final userId = (payload['user_id'] ?? payload['userId']) as String?;
+    // The broadcast carries `action: 'add' | 'remove'`.
+    final removed = payload['action'] == 'remove';
     if (messageId == null || emoji == null || userId == null) return;
     setState(() {
       final idx = _messages.indexWhere(
@@ -233,9 +270,24 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// Apply a reaction add / remove to a message map, mutating the
-  /// `reactions` list in-place. The list shape mirrors the server's:
-  ///   `[{ "emoji": "👍", "users": ["u1", "u2"], "count": 2 }, …]`
+  /// Read a message's `reactions` field in the API's shape: a MAP of emoji to
+  /// the user ids that reacted with it — `{ "👍": ["u1", "u2"] }`.
+  ///
+  /// It is NOT a list of `{ emoji, users, count }` objects. Casting it to a
+  /// List throws at runtime, which crashed the message list as soon as any
+  /// message carried a reaction.
+  static Map<String, List<String>> _readReactions(dynamic raw) {
+    if (raw is! Map) return <String, List<String>>{};
+    final out = <String, List<String>>{};
+    raw.forEach((k, v) {
+      out['$k'] = ((v as List?) ?? const []).map((e) => '$e').toList();
+    });
+    return out;
+  }
+
+  /// Apply a reaction add / remove to a message map. The broadcast is a DELTA
+  /// (one emoji, one user), so merge it into the local map instead of
+  /// replacing the map wholesale.
   Map<String, dynamic> _applyReactionDelta(
     Map<String, dynamic> msg,
     String emoji,
@@ -243,28 +295,21 @@ class _ChatScreenState extends State<ChatScreen> {
     bool removed = false,
   }) {
     final next = Map<String, dynamic>.from(msg);
-    final reactions = (next['reactions'] as List?)?.cast<Map>() ?? [];
-    final list = reactions.map((r) => Map<String, dynamic>.from(r)).toList();
-    final idx = list.indexWhere((r) => r['emoji'] == emoji);
+    final map = _readReactions(next['reactions']);
+    final users = List<String>.from(map[emoji] ?? const <String>[]);
     if (removed) {
-      if (idx < 0) return next;
-      final users = ((list[idx]['users'] as List?) ?? []).cast<String>().toList()
-        ..remove(userId);
+      users.remove(userId);
       if (users.isEmpty) {
-        list.removeAt(idx);
+        map.remove(emoji);
       } else {
-        list[idx] = {...list[idx], 'users': users, 'count': users.length};
+        map[emoji] = users;
       }
     } else {
-      if (idx < 0) {
-        list.add({'emoji': emoji, 'users': [userId], 'count': 1});
-      } else {
-        final users = ((list[idx]['users'] as List?) ?? []).cast<String>().toList();
-        if (!users.contains(userId)) users.add(userId);
-        list[idx] = {...list[idx], 'users': users, 'count': users.length};
-      }
+      if (users.contains(userId)) return next;
+      users.add(userId);
+      map[emoji] = users;
     }
-    next['reactions'] = list;
+    next['reactions'] = map;
     return next;
   }
 
@@ -288,7 +333,7 @@ class _ChatScreenState extends State<ChatScreen> {
             );
       _msgController.clear();
       setState(() {
-        _messages.add(saved);
+        _appendSent(saved);
         _replyTo = null;
       });
       _scrollToBottom();
@@ -371,7 +416,7 @@ class _ChatScreenState extends State<ChatScreen> {
           'mime_type': mime,
         },
       );
-      setState(() => _messages.add(saved));
+      setState(() => _appendSent(saved));
       _scrollToBottom();
     } catch (e) {
       _toast('Image upload failed: $e');
@@ -483,7 +528,7 @@ class _ChatScreenState extends State<ChatScreen> {
           'size': picked.size,
         },
       );
-      setState(() => _messages.add(saved));
+      setState(() => _appendSent(saved));
       _scrollToBottom();
     } catch (e) {
       _toast('File upload failed: $e');
@@ -511,15 +556,84 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// A call holds at most 3 people, so a group call rings up to 2 others.
+  static const _maxCallTargets = 2;
+
   Future<void> _startVideoCall() async {
     if (_userId == null) return;
     try {
-      await _repo.startVideoCall(widget.roomId, _userId!);
+      // 1:1 room: the server rings the other member — send no targets.
+      // Group room: `target_user_ids` is required, so ask whom to call.
+      final room = await _repo.getRoom(widget.roomId);
       if (!mounted) return;
+      final type = room['channel_type'] as String?;
+      List<String>? targets;
+      if (type == 'group') {
+        final others = ((room['members'] as List?) ?? const [])
+            .whereType<Map>()
+            .where((m) => m['user_id'] != null && m['user_id'] != _userId)
+            .toList();
+        if (others.isEmpty) {
+          _toast('Nobody else is in this room yet.');
+          return;
+        }
+        targets = await _pickCallTargets(others);
+        if (targets == null || targets.isEmpty) return;
+      } else if (type != '1to1') {
+        _toast('Video calls are available in 1:1 and group rooms only.');
+        return;
+      }
+      await _repo.startVideoCall(widget.roomId, _userId!,
+          targetUserIds: targets);
+      if (!mounted) return;
+      // The call screen reads the new session (id, call type, who started
+      // it) from GET …/video-call/active.
       context.go('/video/${widget.roomId}');
     } catch (e) {
       _toast(e.toString());
     }
+  }
+
+  /// Let the caller pick up to [_maxCallTargets] members to ring.
+  Future<List<String>?> _pickCallTargets(List<Map> others) {
+    final picked = <String>{};
+    return showDialog<List<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Call whom? (up to 2)'),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final m in others)
+                  CheckboxListTile(
+                    value: picked.contains(m['user_id']),
+                    title: Text('${m['user_name'] ?? m['user_id']}'),
+                    onChanged: (on) => setLocal(() {
+                      final id = '${m['user_id']}';
+                      if (on != true) {
+                        picked.remove(id);
+                      } else if (picked.length < _maxCallTargets) {
+                        picked.add(id);
+                      }
+                    }),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed:
+                  picked.isEmpty ? null : () => Navigator.pop(ctx, picked.toList()),
+              child: const Text('Call'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _toggleFreeze() async {
@@ -735,9 +849,10 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget _buildBubble(Map<String, dynamic> msg) {
     final senderId = (msg['sender_id'] ?? '') as String;
     final isLocal = senderId == _userId;
-    final isSystem = senderId == 'system' || msg['message_type'] == 'system';
-    final isDeleted = msg['deleted_at'] != null;
     final type = (msg['message_type'] ?? 'text') as String;
+    final isSystem =
+        senderId == 'system' || type == 'system' || type == 'video_call';
+    final isDeleted = msg['deleted_at'] != null;
     final content = (msg['content'] ?? '') as String;
 
     if (isSystem) {
@@ -749,20 +864,16 @@ class _ChatScreenState extends State<ChatScreen> {
             color: Colors.white10,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(content,
+          child: Text(type == 'video_call' ? _callNotice(msg) : content,
               style: const TextStyle(color: Colors.white70, fontSize: 12),
               textAlign: TextAlign.center),
         ),
       );
     }
 
-    final reactions = ((msg['reactions'] as List?) ?? const [])
-        .cast<Map>()
-        .map((r) => Map<String, dynamic>.from(r))
-        .toList();
-    final replyToId = ((msg['metadata'] is Map)
-        ? (msg['metadata'] as Map)['reply_to']
-        : null) as String?;
+    final reactions = _readReactions(msg['reactions']);
+    // `reply_to` is a top-level message field holding the quoted message's id.
+    final replyToId = msg['reply_to'] as String?;
     final replyParent = replyToId == null
         ? null
         : _messages.firstWhere(
@@ -876,16 +987,19 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _buildReactionChips(List<Map<String, dynamic>> reactions) {
+  Widget _buildReactionChips(Map<String, List<String>> reactions) {
+    // Stable order — a Map has none of its own, and re-ordering the chips on
+    // every rebuild is visually noisy.
+    final entries = reactions.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: Wrap(
         spacing: 4,
         runSpacing: 4,
-        children: reactions.map((r) {
-          final emoji = (r['emoji'] ?? '?') as String;
-          final count = (r['count'] as num?)?.toInt() ??
-              ((r['users'] as List?)?.length ?? 0);
+        children: entries.map((e) {
+          final emoji = e.key;
+          final count = e.value.length;
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
             decoration: BoxDecoration(
@@ -900,11 +1014,23 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  bool _isEdited(Map<String, dynamic> msg) {
-    final updated = msg['updated_at'] as String?;
-    final created = msg['created_at'] as String?;
-    if (updated == null || created == null) return false;
-    return updated != created;
+  /// Messages carry `edited_at` (null until the first edit); there is no
+  /// `updated_at` field.
+  bool _isEdited(Map<String, dynamic> msg) => msg['edited_at'] != null;
+
+  /// One-line notice for a call event. Call events are `video_call` system
+  /// messages with an EMPTY `content`; `metadata.event` says what happened.
+  static String _callNotice(Map<String, dynamic> msg) {
+    final meta = msg['metadata'];
+    return switch (meta is Map ? meta['event'] : null) {
+      'call_started' => 'Video call started',
+      'call_accepted' => 'Call answered',
+      'call_ended' => 'Video call ended',
+      'call_rejected' => 'Call declined',
+      'call_missed' => 'Missed call',
+      'call_busy' => 'Busy',
+      _ => 'Video call',
+    };
   }
 
   Widget _buildFileCard(Map<String, dynamic> msg) {

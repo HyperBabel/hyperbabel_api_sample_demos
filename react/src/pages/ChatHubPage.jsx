@@ -6,7 +6,7 @@
  *
  * - United Chat API      : Room management, message CRUD, video call lifecycle
  * - HyperBabel Real-Time : Instant message push, typing indicators, call events
- * - Translation API      : Auto-translate messages into the reader's language
+ * - Auto-translation     : United Chat batch-translate, into the reader's language
  * - Storage API          : File upload (3-step presign flow)
  * - Presence API         : Online/offline status heartbeat
  *
@@ -14,6 +14,12 @@
  *   When a user sends a message via the REST API, HyperBabel broadcasts
  *   a 'message' event on the room's real-time channel. All channel
  *   subscribers receive the message immediately — no polling required.
+ *   The connection itself is app-wide (opened by IncomingCallListener at
+ *   sign-in, closed at sign-out); this page only adds room subscriptions.
+ *
+ * Room objects from GET /unitedchat/rooms and GET /unitedchat/rooms/{roomId}
+ * carry the room type in `channel_type` ('1to1' | 'group' | 'open').
+ * `room_type` is only the request field of POST /unitedchat/rooms.
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -55,6 +61,9 @@ export default function ChatHubPage() {
   const [newRoom, setNewRoom] = useState({ room_type: 'group', room_name: '', members: '' });
   const [searchQuery, setSearchQuery] = useState('');
   const [rtConnected, setRtConnected] = useState(false);
+  // Real-time channel service once the connection is ready (null until then,
+  // or when real-time is unavailable). Room subscriptions wait for it.
+  const [rtService, setRtService] = useState(null);
   const [editingRoomName, setEditingRoomName] = useState(false);
   const [customRoomName, setCustomRoomName] = useState('');
   // ── Pin state ──
@@ -95,7 +104,10 @@ export default function ChatHubPage() {
   const [showGroupCallModal, setShowGroupCallModal] = useState(false);
   const [groupCallTargets, setGroupCallTargets] = useState([]);  // selected user_ids
   const [callMemberSearch, setCallMemberSearch] = useState('');
-  const MAX_CALL_TARGETS = 4;
+  // Room video calls allow at most 3 participants including the caller — the
+  // server answers 400 `limit_exceeded` for more than 2 targets (and plans
+  // without group video allow only 1:1).
+  const MAX_CALL_TARGETS = 2;
   const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
   const settingsRef = useRef(null);
   const [activeCallSession, setActiveCallSession] = useState(null); // Active video call session (null when no call is in progress)
@@ -109,7 +121,7 @@ export default function ChatHubPage() {
   const [copiedInvite, setCopiedInvite] = useState(false);
   // If user has no DB row yet, default to BOTH enabled (fail-open) so typing works out-of-the-box
   const myTypingPrefs = typingPrefs[user?.user_id] ?? { send: true, recv: true };
-  // ref: prevents stale closure in subscribeToTyping callback (myTypingPrefs changes after prefs load)
+  // ref: prevents a stale closure in the room callback (myTypingPrefs changes after prefs load)
   const myTypingPrefsRef = useRef(myTypingPrefs);
   useEffect(() => { myTypingPrefsRef.current = myTypingPrefs; }, [myTypingPrefs.send, myTypingPrefs.recv]);
   // Static English label dictionary for the room-settings panel.
@@ -127,7 +139,7 @@ export default function ChatHubPage() {
   const [counterpartOnline, setCounterpartOnline] = useState(false);
   // ── Pin handlers ─────────────────────────────────────────────────
   const myRole = members.find(m => m.user_id === user.user_id)?.role || 'member';
-  const canPin = myRole === 'owner' || myRole === 'sub_admin' || (activeRoom?.room_type === '1to1');
+  const canPin = myRole === 'owner' || myRole === 'sub_admin' || (activeRoom?.channel_type === '1to1');
   const isAdmin = myRole === 'owner' || myRole === 'sub_admin';
   const pinnedMsg = activeRoom?.pinned_message_id ? messages.find(m => m.id === activeRoom.pinned_message_id) : null;
 
@@ -284,10 +296,20 @@ export default function ChatHubPage() {
     } catch (err) { console.error('Unpin failed:', err); }
   };
 
-  // Refs to hold cleanup functions for real-time subscriptions
-  const unsubRoomRef = useRef(null);
-  const unsubTypingRef = useRef(null);
-  const unsubPrivateRef = useRef(null);
+  // Latest room-event handler — the subscription calls it through this ref so
+  // it never runs a stale closure, and never has to re-subscribe for it.
+  const roomEventRef = useRef(() => {});
+  // Orders "call in progress" banner updates (a late refresh must not
+  // resurrect a call that has since ended).
+  const activeCallSeqRef = useRef(0);
+  // Polling fallback handle. Lives in a ref so the init effect's cleanup can
+  // clear it — the interval is created inside a promise .catch, whose return
+  // value React never sees.
+  const pollRef = useRef(null);
+  // ref: the fallback interval is created once, inside an effect with an empty
+  // dependency array, so reading `activeRoom` directly would capture its value
+  // from the first render (null) forever.
+  const activeRoomRef = useRef(activeRoom);
   const typingTimeoutRef = useRef(null);
   const readStatusRefreshTimer = useRef(null);
 
@@ -327,42 +349,65 @@ export default function ChatHubPage() {
     }, 30000);
     presenceService.heartbeat(user.user_id, 'web').catch(() => {});
 
-    // Initialise the HyperBabel Real-Time connection
-    // Token is issued by the HyperBabel /rtm/token endpoint
+    // Get the HyperBabel Real-Time connection (token issued by /rtm/token).
+    // IncomingCallListener normally opened it at sign-in — init() then just
+    // returns it. Incoming calls are handled there too, app-wide, so this page
+    // does not subscribe to the private channel.
     realtimeService
       .init(user.user_id, user.display_name, user.preferred_lang_cd)
-      .then(async (channelService) => {
+      .then((channelService) => {
         setRtConnected(true);
-
-        // Subscribe to private events (incoming call invitations, etc.)
-        unsubPrivateRef.current?.();
-        unsubPrivateRef.current = channelService.subscribeToPrivate(
-          user.user_id,
-          handlePrivateEvent
-        );
-
-        // Store channelService in a ref for room subscriptions
-        window.__hbRt = channelService;
+        // Room subscriptions (effect below) start as soon as this is set.
+        setRtService(channelService);
       })
       .catch((err) => {
         console.warn('Real-time connection unavailable, falling back to polling:', err.message);
-        // Graceful degradation — fall back to 5-second polling
-        const poll = setInterval(() => {
-          if (activeRoom) loadMessages(activeRoom.id);
+        // Graceful degradation — fall back to 5-second polling.
+        //
+        // Two things this has to get right, and both were wrong before:
+        //   1. The handle goes in a ref. Returning a cleanup from inside .catch
+        //      does nothing — React only honours the value the EFFECT returns —
+        //      so the interval used to outlive the component.
+        //   2. The open room is read from a ref. This effect has an empty
+        //      dependency array, so `activeRoom` here is the first render's
+        //      value (null) for the lifetime of the interval, and the poll
+        //      never fetched anything.
+        clearInterval(pollRef.current);
+        pollRef.current = setInterval(() => {
+          const room = activeRoomRef.current;
+          if (room) loadMessages(room.id);
         }, 5000);
-        return () => clearInterval(poll);
       });
 
     return () => {
       clearInterval(heartbeat);
-      unsubRoomRef.current?.();
-      unsubTypingRef.current?.();
-      unsubPrivateRef.current?.();
-      realtimeService.disconnect();
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+      // Do NOT disconnect here: the connection is shared app-wide and the
+      // incoming-call listener needs it on every page. AuthContext.logout()
+      // closes it.
     };
   }, []);
 
-  // ── Subscribe to the active room when it changes ──
+  // Mirror the open room into a ref for the polling fallback (see pollRef).
+  useEffect(() => { activeRoomRef.current = activeRoom; }, [activeRoom]);
+
+  // ── Live updates for the open room ──
+  // Subscribes once BOTH the real-time connection and the room are ready —
+  // on a fresh load of /chat/:roomId the room usually arrives first. Re-runs
+  // only when the room or the connection changes; the cleanup removes exactly
+  // this listener (so StrictMode's double run never leaves two behind).
+  // IMPORTANT: pass `realtime_channel` through VERBATIM. Rebuilding the name
+  // from the room id subscribes to a channel nobody publishes on, and the
+  // failure is silent — the room simply never updates.
+  useEffect(() => {
+    const subscribedRoomId = activeRoom?.id;
+    const channel = activeRoom?.realtime_channel;
+    if (!rtService || !subscribedRoomId || !channel) return undefined;
+    return rtService.subscribeToRoom(channel, (event) => roomEventRef.current(subscribedRoomId, event));
+  }, [rtService, activeRoom?.id, activeRoom?.realtime_channel]);
+
+  // ── Load the room when the URL changes (the effect above then subscribes) ──
   useEffect(() => {
     if (roomId) loadRoom(roomId);
   }, [roomId]);
@@ -390,6 +435,17 @@ export default function ChatHubPage() {
     } catch (err) {
       console.error('Failed to load messages:', err);
     }
+  };
+
+  // Merge a batch-translate response into the message list.
+  // Response: { translations: { [messageId]: translatedText }, limited?: true }
+  // — messages that needed no translation are simply absent from the map.
+  const applyTranslations = (res) => {
+    const map = res?.translations;
+    if (!map || typeof map !== 'object' || Object.keys(map).length === 0) return;
+    setMessages((prev) =>
+      prev.map((m) => (map[m.id] ? { ...m, translated_content: map[m.id] } : m))
+    );
   };
 
   const loadRoom = async (id) => {
@@ -427,8 +483,9 @@ export default function ChatHubPage() {
       // Fetch typing prefs for this room
       unitedChat.getTypingPrefs(id)
         .then(res => {
+          // Response: { prefs: [{ user_id, send_enabled, recv_enabled, updated_at }] }
           const map = {};
-          (res.data?.prefs || []).forEach(p => {
+          (res.prefs || []).forEach(p => {
             map[p.user_id] = { send: p.send_enabled, recv: p.recv_enabled };
           });
           setTypingPrefs(map);
@@ -439,12 +496,13 @@ export default function ChatHubPage() {
       presenceService.updateStatus(user.user_id, 'online').catch(() => {});
 
       // For 1:1 rooms: check if the counterpart is currently online
-      if (room.room_type === '1to1') {
+      if (room.channel_type === '1to1') {
         const otherId = (room.members || []).find(m => m.user_id !== user.user_id)?.user_id;
         if (otherId) {
           presenceService.getPresence([otherId])
             .then(res => {
-              const p = (res.data?.presence || []).find(x => x.user_id === otherId);
+              // Response: { presence: [{ user_id, status, last_seen, device }], offline_threshold_seconds }
+              const p = (res.presence || []).find(x => x.user_id === otherId);
               setCounterpartOnline(p?.status === 'online' || p?.status === 'away');
             })
             .catch(() => setCounterpartOnline(false));
@@ -453,133 +511,6 @@ export default function ChatHubPage() {
         }
       } else {
         setCounterpartOnline(true); // group rooms: backend handles presence check per-publish
-      }
-
-      // Unsubscribe from previous room channels
-      unsubRoomRef.current?.();
-      unsubTypingRef.current?.();
-
-      // Subscribe to the new room's real-time channel
-      if (window.__hbRt) {
-        // New messages arrive instantly via HyperBabel Real-Time
-        unsubRoomRef.current = window.__hbRt.subscribeToRoom(id, (event) => {
-          const { message, type } = event;
-
-          // read_receipt: HyperBabel Real-Time event type = 'read_receipt', payload = { type, data:{ user_id, read_at } }
-          if (type === 'read_receipt') {
-            const rs = message?.data;   // publishMessageEvent wraps as { type, data:{...} }
-            if (rs?.user_id && rs.user_id !== user.user_id) {
-              setReadStatuses(prev => ({
-                ...prev,
-                [rs.user_id]: { last_read_message_id: rs.last_read_message_id ?? null, read_at: rs.read_at ?? new Date().toISOString() },
-              }));
-            }
-            return;
-          }
-
-          // Typing event: backend sends via publishToChannel with eventName 'message'
-          // and payload { type: 'typing', userId, userName }
-          if (type === 'message' && message?.type === 'typing') {
-            const { userId: typingUserId, userName } = message;
-            if (typingUserId && typingUserId !== user.user_id && myTypingPrefsRef.current.recv) {
-              setTypingText(`${userName || typingUserId} is typing...`);
-              clearTimeout(typingTimeoutRef.current);
-              typingTimeoutRef.current = setTimeout(() => setTypingText(''), 3000);
-            }
-            return;
-          }
-
-          // call_started / call_ended: update the active call banner in real time
-          if (type === 'call_started' || (type === 'message' && message?.type === 'call_started')) {
-            const payload = message?.data || message;
-            if (payload?.session) setActiveCallSession(payload.session);
-            return;
-          }
-          if (type === 'call_ended' || (type === 'message' && message?.type === 'call_ended')) {
-            setActiveCallSession(null);
-            return;
-          }
-
-          // message.updated / message.deleted: apply edit/delete in real time
-          if (type === 'message.updated' || (type === 'message' && message?.type === 'message.updated')) {
-            const payload = message?.data || message;
-            if (payload?.message_id) {
-              setMessages(prev => prev.map(m =>
-                m.id === payload.message_id ? { ...m, content: payload.content, edited_at: payload.edited_at } : m
-              ));
-            }
-            return;
-          }
-          if (type === 'message.deleted' || (type === 'message' && message?.type === 'message.deleted')) {
-            const payload = message?.data || message;
-            if (payload?.message_id) {
-              setMessages(prev => prev.map(m =>
-                m.id === payload.message_id ? { ...m, deleted_at: new Date().toISOString() } : m
-              ));
-              if (activeRoom?.pinned_message_id === payload.message_id) {
-                setActiveRoom(prev => ({ ...prev, pinned_message_id: null }));
-              }
-            }
-            return;
-          }
-
-          // Regular chat message: HyperBabel Real-Time event type = 'message', payload is the message object
-          const chatMsg = (type === 'message' && message?.data) ? message.data   // publishMessageEvent path: { type:'message', data:{...} }
-                        : (message?.id ? message : null);                         // legacy direct path
-          if (!chatMsg?.id || !chatMsg?.created_at) return;
-
-          setMessages((prev) => {
-            if (prev.some((m) => m.id === chatMsg.id)) return prev;
-            // For reply messages: auto-generate snapshot from local messages if available.
-            // This ensures the quote box renders immediately even before the next API fetch.
-            if (chatMsg.reply_to) {
-              const origMsg = prev.find(m => m.id === chatMsg.reply_to);
-              if (origMsg) {
-                setReplySnapshots(p => ({
-                  ...p,
-                  [origMsg.id]: {
-                    id: origMsg.id,
-                    sender_id: origMsg.sender_id,
-                    sender_name: origMsg.sender_name || origMsg.sender_id,
-                    content: origMsg.content,
-                    message_type: origMsg.message_type,
-                    metadata: origMsg.metadata,
-                    deleted_at: origMsg.deleted_at || null,
-                    translated_content: origMsg.translated_content,
-                  }
-                }));
-              }
-            }
-            return [...prev, chatMsg];
-          });
-
-          // Auto mark-as-read when receiving a message from another user while in the room
-          if (chatMsg.sender_id !== user.user_id) {
-            unitedChat.markAsRead(id, user.user_id).catch(() => {});
-          }
-
-          // Auto-translate incoming messages
-          if (chatMsg.sender_id !== user.user_id && user.preferred_lang_cd) {
-            unitedChat
-              .batchTranslateMessages(id, [chatMsg.id], user.preferred_lang_cd)
-              .then((translated) => {
-                if (Array.isArray(translated) && translated.length > 0) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === translated[0].id
-                        ? { ...m, translated_content: translated[0].translated_content }
-                        : m
-                    )
-                  );
-                }
-              })
-              .catch(() => {});
-          }
-        });
-
-        // subscribeToTyping removed: backend publishes typing to main room channel,
-        // so it is now handled inside the subscribeToRoom callback above.
-        unsubTypingRef.current = () => {};
       }
 
       // Batch-translate existing messages on load
@@ -591,42 +522,174 @@ export default function ChatHubPage() {
         if (othersIds.length > 0) {
           unitedChat
             .batchTranslateMessages(id, othersIds, user.preferred_lang_cd)
-            .then((translated) => {
-              if (!Array.isArray(translated)) return;
-              setMessages((prev) =>
-                prev.map((msg) => {
-                  const t = translated.find((tr) => tr.id === msg.id);
-                  return t ? { ...msg, translated_content: t.translated_content } : msg;
-                })
-              );
-            })
+            .then(applyTranslations)
             .catch(() => {});
         }
       }
-      // After room load: check for an active video call session (one-time)
-      if (id) {
-        try {
-          const activeCR = await unitedChat.getActiveVideoCall(id);
-          const sess = activeCR?.session || activeCR;
-          setActiveCallSession(sess?.id && sess.status === 'active' ? sess : null);
-        } catch {
-          setActiveCallSession(null);
-        }
-      }
+      // After room load: check for an active video call session (one-time;
+      // real-time call events keep it current afterwards)
+      if (id) await refreshActiveCall(id);
     } catch (err) {
       console.error('Failed to load room:', err);
     }
   };
 
-  /**
-   * Handle private channel events (e.g., incoming video call invitation).
-   */
-  const handlePrivateEvent = ({ event, data }) => {
-    if (event === 'video_call.started') {
-      // Optionally notify the user of an incoming call here
-      console.info('Incoming call in room:', data.room_id);
+  // The "video call in progress" banner shows an ANSWERED call (status 'active').
+  // GET …/video-call/active answers { active: false, session: null } when there is none.
+  const refreshActiveCall = async (id) => {
+    const seq = ++activeCallSeqRef.current;
+    let sess = null;
+    try {
+      const res = await unitedChat.getActiveVideoCall(id);
+      sess = res?.session?.id && res.session.status === 'active' ? res.session : null;
+    } catch { /* treat as no call */ }
+    // Skip if a newer update (e.g. call_ended) arrived while this was in flight.
+    if (seq === activeCallSeqRef.current) setActiveCallSession(sess);
+  };
+
+  // ── Real-time events for the open room ─────────────────────────────────
+  // `id` is the room the subscription was made for (see the effect above).
+  const handleRoomEvent = (id, event) => {
+    const { message, type } = event;
+
+    // read_receipt: HyperBabel Real-Time event type = 'read_receipt', payload = { type, data:{ user_id, read_at } }
+    if (type === 'read_receipt') {
+      const rs = message?.data;   // publishMessageEvent wraps as { type, data:{...} }
+      if (rs?.user_id && rs.user_id !== user.user_id) {
+        setReadStatuses(prev => ({
+          ...prev,
+          [rs.user_id]: { last_read_message_id: rs.last_read_message_id ?? null, read_at: rs.read_at ?? new Date().toISOString() },
+        }));
+      }
+      return;
+    }
+
+    // Typing event: backend sends via publishToChannel with eventName 'message'
+    // and payload { type: 'typing', userId, userName }
+    if (type === 'message' && message?.type === 'typing') {
+      const { userId: typingUserId, userName } = message;
+      if (typingUserId && typingUserId !== user.user_id && myTypingPrefsRef.current.recv) {
+        setTypingText(`${userName || typingUserId} is typing...`);
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = setTimeout(() => setTypingText(''), 3000);
+      }
+      return;
+    }
+
+    // message.updated / message.deleted: apply edit/delete in real time
+    if (type === 'message.updated' || (type === 'message' && message?.type === 'message.updated')) {
+      const payload = message?.data || message;
+      if (payload?.message_id) {
+        setMessages(prev => prev.map(m =>
+          m.id === payload.message_id ? { ...m, content: payload.content, edited_at: payload.edited_at } : m
+        ));
+      }
+      return;
+    }
+    if (type === 'message.deleted' || (type === 'message' && message?.type === 'message.deleted')) {
+      const payload = message?.data || message;
+      if (payload?.message_id) {
+        setMessages(prev => prev.map(m =>
+          m.id === payload.message_id ? { ...m, deleted_at: new Date().toISOString() } : m
+        ));
+        if (activeRoom?.pinned_message_id === payload.message_id) {
+          setActiveRoom(prev => ({ ...prev, pinned_message_id: null }));
+        }
+      }
+      return;
+    }
+
+    // Emoji reaction. The broadcast is a DELTA —
+    //   { message_id, emoji, user_id, action: 'add' | 'remove' }
+    // — not the full map, so merge it into the message's own map.
+    // Reactions are stored as { emoji: [userId, ...] }; the count is the
+    // array length, there is no separate count field.
+    if (type === 'reaction' || (type === 'message' && message?.type === 'reaction')) {
+      const payload = message?.data || message;
+      const { message_id: mid, emoji, user_id: uid, action } = payload || {};
+      if (!mid || !emoji || !uid) return;
+      setMessages(prev => prev.map(m => {
+        if (m.id !== mid) return m;
+        const map = { ...(m.reactions || {}) };
+        const ids = Array.isArray(map[emoji]) ? map[emoji] : [];
+        if (action === 'remove') {
+          const next = ids.filter(id => id !== uid);
+          if (next.length === ids.length) return m;
+          if (next.length) map[emoji] = next; else delete map[emoji];
+        } else {
+          if (ids.includes(uid)) return m;
+          map[emoji] = [...ids, uid];
+        }
+        return { ...m, reactions: map };
+      }));
+      return;
+    }
+
+    // Regular chat message: HyperBabel Real-Time event type = 'message', payload is the message object
+    const chatMsg = (type === 'message' && message?.data) ? message.data   // publishMessageEvent path: { type:'message', data:{...} }
+                  : (message?.id ? message : null);                         // legacy direct path
+    if (!chatMsg?.id || !chatMsg?.created_at) return;
+
+    // Live-caption lines ride the room channel too, but the message history
+    // (GET …/messages) never returns them — appending them here would make
+    // them appear live and vanish on reload.
+    if (chatMsg.message_type === 'caption') return;
+
+    // Call events are `video_call` system messages with
+    // metadata = { event: 'call_started' | 'call_accepted' | 'call_ended' | …, session_id }.
+    // Keep the "video call in progress" banner in step, then fall through so the
+    // event also shows in the list (ChatMessageList renders a one-line notice).
+    if (chatMsg.message_type === 'video_call') {
+      const callEvent = chatMsg.metadata?.event;
+      if (callEvent === 'call_ended') {
+        activeCallSeqRef.current += 1;
+        setActiveCallSession(null);
+      } else if (callEvent === 'call_accepted') {
+        refreshActiveCall(id);
+      }
+    }
+
+    setMessages((prev) => {
+      if (prev.some((m) => m.id === chatMsg.id)) return prev;
+      // For reply messages: auto-generate snapshot from local messages if available.
+      // This ensures the quote box renders immediately even before the next API fetch.
+      if (chatMsg.reply_to) {
+        const origMsg = prev.find(m => m.id === chatMsg.reply_to);
+        if (origMsg) {
+          setReplySnapshots(p => ({
+            ...p,
+            [origMsg.id]: {
+              id: origMsg.id,
+              sender_id: origMsg.sender_id,
+              sender_name: origMsg.sender_name || origMsg.sender_id,
+              content: origMsg.content,
+              message_type: origMsg.message_type,
+              metadata: origMsg.metadata,
+              deleted_at: origMsg.deleted_at || null,
+              translated_content: origMsg.translated_content,
+            }
+          }));
+        }
+      }
+      return [...prev, chatMsg];
+    });
+
+    // Auto mark-as-read when receiving a message from another user while in the room
+    if (chatMsg.sender_id !== user.user_id) {
+      unitedChat.markAsRead(id, user.user_id).catch(() => {});
+    }
+
+    // Auto-translate incoming text messages
+    if (chatMsg.sender_id !== user.user_id && chatMsg.message_type === 'text' && user.preferred_lang_cd) {
+      unitedChat
+        .batchTranslateMessages(id, [chatMsg.id], user.preferred_lang_cd)
+        .then(applyTranslations)
+        .catch(() => {});
     }
   };
+
+  // The subscription always calls the latest handler (fresh state, no re-subscribe).
+  useEffect(() => { roomEventRef.current = handleRoomEvent; });
 
   // ── Message Actions ────────────────────────────────────────────────────
 
@@ -697,12 +760,12 @@ export default function ChatHubPage() {
 
   const handleTyping = async (_isTypingNow) => {
     if (!activeRoom) return;
-    const isSelfChat = activeRoom.room_type === '1to1' && (activeRoom.members?.length ?? 0) === 1;
+    const isSelfChat = activeRoom.channel_type === '1to1' && (activeRoom.members?.length ?? 0) === 1;
     if (isSelfChat) return;                        // self-chat room — no counterpart, publish unnecessary
     // For 1:1 rooms: skip publish if counterpart is offline (reduces API cost)
-    if (activeRoom.room_type === '1to1' && !counterpartOnline) return;
-    const isSmallGroup = activeRoom.room_type === 'group' && (activeRoom.members?.length ?? 0) <= 4;
-    if (activeRoom.room_type !== '1to1' && !isSmallGroup) return;
+    if (activeRoom.channel_type === '1to1' && !counterpartOnline) return;
+    const isSmallGroup = activeRoom.channel_type === 'group' && (activeRoom.members?.length ?? 0) <= 4;
+    if (activeRoom.channel_type !== '1to1' && !isSmallGroup) return;
     if (!myTypingPrefs.send) return; // send_enabled off
     try {
       await unitedChat.sendTypingIndicator(
@@ -830,7 +893,7 @@ export default function ChatHubPage() {
     if (!activeRoom) return;
 
     // For group rooms: check if a call is already in progress
-    if (activeRoom.room_type === 'group') {
+    if (activeRoom.channel_type === 'group') {
       try {
         const existing = await unitedChat.getActiveVideoCall(activeRoom.id);
         const activeSession = existing?.session || existing;
@@ -853,8 +916,9 @@ export default function ChatHubPage() {
             navigate(`/video-call/${activeRoom.id}`, {
               state: {
                 session: activeSession,
-                roomType: activeRoom.room_type,
+                roomType: activeRoom.channel_type,
                 roomName: activeRoom.room_name || activeRoom.display_name,
+                realtimeChannel: activeRoom.realtime_channel,
                 rejoin: true,
               },
             });
@@ -879,8 +943,10 @@ export default function ChatHubPage() {
       navigate(`/video-call/${activeRoom.id}`, {
         state: {
           session: result.session || result,
-          roomType: activeRoom.room_type,
+          roomType: activeRoom.channel_type,
           roomName: activeRoom.room_name || activeRoom.display_name,
+          // Room channel where call events (declined, ended, …) arrive
+          realtimeChannel: activeRoom.realtime_channel,
           rejoin: false,
         },
       });
@@ -904,6 +970,7 @@ export default function ChatHubPage() {
           session: result.session || result,
           roomType: 'group',
           roomName: activeRoom.room_name || activeRoom.display_name,
+          realtimeChannel: activeRoom.realtime_channel,
           rejoin: false,
         },
       });
@@ -951,17 +1018,22 @@ export default function ChatHubPage() {
   // C1: Load bans for open rooms
   const loadBans = async (roomId) => {
     try {
+      // Response: { bans: [...] } — includes lifted bans; the list below shows `is_active` ones.
       const res = await unitedChat.getBans(roomId);
-      setBans(res.data?.bans || []);
+      setBans(res.bans || []);
     } catch { /* non-critical */ }
   };
 
   const getRoomTypeIcon = (type) =>
     ({ '1to1': '👤', group: '👥', open: '🌐' }[type] || '💬');
 
-  // Self-chat: a 1:1 room where the only member is the creator themselves
+  // Self-chat: a 1:1 room where the only member is the creator themselves.
+  // GET /rooms/{roomId} returns a `members` array; rows from GET /rooms do not —
+  // they carry `member_count` instead, as a STRING (a 64-bit count), so convert it.
+  const memberCountOf = (room) =>
+    Array.isArray(room?.members) ? room.members.length : Number(room?.member_count ?? 0);
   const isSelfChatRoom = (room) =>
-    room?.room_type === '1to1' && (room?.members?.length ?? 0) <= 1;
+    room?.channel_type === '1to1' && memberCountOf(room) <= 1;
 
   // Display name for a room (returns 'Me' / language-localised equivalent for self-chat)
   const getRoomDisplayName = (room) => {
@@ -985,10 +1057,12 @@ export default function ChatHubPage() {
   // Create a self-chat room (1:1 room with no additional members)
   const handleCreateSelfChat = async () => {
     try {
+      // A 1:1 room needs exactly one member; naming yourself makes it a
+      // self-chat (the server answers 400 when `members` is missing).
       const result = await unitedChat.createRoom({
         room_type: '1to1',
         creator_id: user.user_id,
-        // Omitting 'members' signals the server to treat this as a self-chat room
+        members: [user.user_id],
       });
       const newId = result.room?.id || result.id;
       if (newId) {
@@ -1053,7 +1127,7 @@ export default function ChatHubPage() {
                   onClick={() => navigate(`/chat/${room.id}`)}
                 >
                   <div className="avatar" style={isSelfChatRoom(room) ? { background: 'linear-gradient(135deg, #a78bfa, #7c3aed)' } : {}}
-                  >{isSelfChatRoom(room) ? '🙋' : getRoomTypeIcon(room.room_type)}</div>
+                  >{isSelfChatRoom(room) ? '🙋' : getRoomTypeIcon(room.channel_type)}</div>
                   <div className="chat-room-info">
                     <div className="chat-room-name">
                       {getRoomDisplayName(room)}
@@ -1063,6 +1137,8 @@ export default function ChatHubPage() {
                     </div>
                     <div className="chat-room-preview">
                       {(() => {
+                        // Call events are system messages with empty content.
+                        if (room.last_message?.message_type === 'video_call') return '📹 Video call';
                         const raw = room.last_message?.content;
                         const text = raw && typeof raw === 'object'
                           ? (raw[isKo ? 'ko' : 'en'] || raw['en'] || Object.values(raw)[0])
@@ -1075,7 +1151,7 @@ export default function ChatHubPage() {
                   </div>
                   <div className="chat-room-meta">
                     <span className="badge badge-primary" style={{ fontSize: '0.6rem', ...(isSelfChatRoom(room) ? { background: '#ede9fe', color: '#7c3aed' } : {}) }}>
-                      {isSelfChatRoom(room) ? 'me' : room.room_type}
+                      {isSelfChatRoom(room) ? 'me' : room.channel_type}
                     </span>
                     {room.unread_count > 0 && (
                       <span className="unread-badge">{room.unread_count}</span>
@@ -1306,7 +1382,7 @@ export default function ChatHubPage() {
               <div className="chat-header" style={{ position: 'relative', zIndex: 10 }}>
                 <div className="chat-header-info">
                   <div className="avatar" style={isSelfChatRoom(activeRoom) ? { background: 'linear-gradient(135deg, #a78bfa, #7c3aed)' } : {}}>
-                    {isSelfChatRoom(activeRoom) ? '🙋' : getRoomTypeIcon(activeRoom.room_type)}
+                    {isSelfChatRoom(activeRoom) ? '🙋' : getRoomTypeIcon(activeRoom.channel_type)}
                   </div>
                   <div>
                     {/* Room name */}
@@ -1329,7 +1405,7 @@ export default function ChatHubPage() {
                           ? <><span>📝</span><span>{'Me — My Notes'}</span></>
                           : <>
                               {getRoomDisplayName(activeRoom)}
-                              {(activeRoom.room_type === '1to1' || activeRoom.room_type === 'group') && (
+                              {(activeRoom.channel_type === '1to1' || activeRoom.channel_type === 'group') && (
                                 <button
                                   onClick={() => { setCustomRoomName(activeRoom.room_name || activeRoom.display_name || ''); setEditingRoomName(true); }}
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', opacity: 0.5 }}
@@ -1343,22 +1419,22 @@ export default function ChatHubPage() {
                     <div className="chat-header-status">
                       {isSelfChatRoom(activeRoom)
                         ? ('Your private space — notes & saved data')
-                        : activeRoom.room_type === 'open'
+                        : activeRoom.channel_type === 'open'
                           ? `🌐 Open · ${members.length} members${(activeRoom.description_translated || activeRoom.description) ? ` · ${(activeRoom.description_translated || activeRoom.description).slice(0, 60)}${(activeRoom.description_translated || activeRoom.description).length > 60 ? '…' : ''}` : ''}`
-                          : `${members.length} members • ${activeRoom.room_type} room`
+                          : `${members.length} members • ${activeRoom.channel_type} room`
                       }
                     </div>
                   </div>
                 </div>
                 <div className="chat-header-actions">
                   {/* Self-chat (Me room): video call and settings are not applicable */}
-                  {!isSelfChatRoom(activeRoom) && (activeRoom.room_type === '1to1' || activeRoom.room_type === 'group') && (
+                  {!isSelfChatRoom(activeRoom) && (activeRoom.channel_type === '1to1' || activeRoom.channel_type === 'group') && (
                     <button className="btn btn-secondary btn-sm" onClick={handleStartVideoCall}>
-                      📹 {activeRoom.room_type === '1to1' ? 'Video Call' : 'Group Call'}
+                      📹 {activeRoom.channel_type === '1to1' ? 'Video Call' : 'Group Call'}
                     </button>
                   )}
                   {/* 👥 Open Room Member Management — owner / sub_admin only */}
-                  {activeRoom.room_type === 'open' && isAdmin && (
+                  {activeRoom.channel_type === 'open' && isAdmin && (
                     <button
                       className="btn btn-secondary btn-sm"
                       onClick={() => { loadBans(activeRoom.id); setShowMembersModal(true); }}
@@ -1368,8 +1444,8 @@ export default function ChatHubPage() {
                     </button>
                   )}
                   {/* ⋮ Room Settings — 1:1 and group ≤4 */}
-                  {(activeRoom.room_type === '1to1' ||
-                    (activeRoom.room_type === 'group' && (activeRoom.members?.length ?? 0) <= 4)) && (
+                  {(activeRoom.channel_type === '1to1' ||
+                    (activeRoom.channel_type === 'group' && (activeRoom.members?.length ?? 0) <= 4)) && (
                     <div style={{ position: 'relative' }} ref={settingsRef}>
                       <button
                         className="btn btn-secondary btn-sm"
@@ -1404,7 +1480,7 @@ export default function ChatHubPage() {
               </div>
 
               {/* Active Call Banner — shows when a video call is in progress (invited: rejoin / not invited: locked) */}
-              {activeCallSession && activeRoom?.room_type !== 'open' && (() => {
+              {activeCallSession && activeRoom?.channel_type !== 'open' && (() => {
                 const amInvited = (activeCallSession.participants || []).some(
                   (p) => p.user_id === user.user_id
                 );
@@ -1416,8 +1492,9 @@ export default function ChatHubPage() {
                     onClick={amInvited ? () => navigate(`/video-call/${activeRoom.id}`, {
                       state: {
                         session: activeCallSession,
-                        roomType: activeRoom.room_type,
+                        roomType: activeRoom.channel_type,
                         roomName: getRoomDisplayName(activeRoom),
+                        realtimeChannel: activeRoom.realtime_channel,
                         rejoin: true,
                       },
                     }) : undefined}
@@ -1490,7 +1567,7 @@ export default function ChatHubPage() {
                   setTimeout(() => setCopyToastMsgId(null), 2000);
                 }}
                 readStatuses={readStatuses}
-                roomType={activeRoom.room_type}
+                roomType={activeRoom.channel_type}
                 isSelfChat={isSelfChatRoom(activeRoom)}
                 members={members}
                 onRetry={handleRetry}
@@ -1671,7 +1748,7 @@ export default function ChatHubPage() {
       )}
 
       {/* ══════════ GROUP VIDEO CALL MODAL ══════════ */}
-      {showGroupCallModal && activeRoom?.room_type === 'group' && (
+      {showGroupCallModal && activeRoom?.channel_type === 'group' && (
         <div className="modal-overlay" onClick={() => setShowGroupCallModal(false)}>
           <div className="modal animate-slide" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
             <h3 className="modal-title">📹 {'Group Video Call'}</h3>
@@ -2269,8 +2346,10 @@ export default function ChatHubPage() {
                       onClick={async () => {
                         const { type, userId } = pendingMemberAction;
                         setPendingMemberAction(null);
+                        // Every moderation call is (roomId, actingUserId, targetUserId):
+                        // the acting id goes out as banned_by / unbanned_by / owner_id.
                         if (type === 'ban')    { await unitedChat.banUser(activeRoom.id, user.user_id, userId); await loadBans(activeRoom.id); }
-                        if (type === 'unban')  { await unitedChat.unbanUser(activeRoom.id, userId); await loadBans(activeRoom.id); }
+                        if (type === 'unban')  { await unitedChat.unbanUser(activeRoom.id, user.user_id, userId); await loadBans(activeRoom.id); }
                         if (type === 'promote') { await unitedChat.promoteToSubAdmin(activeRoom.id, user.user_id, userId); window.location.reload(); }
                         if (type === 'demote') { await unitedChat.demoteSubAdmin(activeRoom.id, user.user_id, userId); window.location.reload(); }
                       }}

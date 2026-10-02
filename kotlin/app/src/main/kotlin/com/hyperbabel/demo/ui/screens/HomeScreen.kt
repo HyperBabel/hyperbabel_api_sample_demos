@@ -69,7 +69,7 @@ fun HomeScreen(
         try {
             val resp = ApiClient.unitedChat.listRooms(Session.userId)
             rooms.clear()
-            rooms.addAll(resp.rooms.ifEmpty { resp.memberRooms })
+            rooms.addAll(resp.rooms)
         } catch (t: Throwable) {
             error = t.message ?: "Failed to load rooms"
         } finally {

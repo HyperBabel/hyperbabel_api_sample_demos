@@ -122,6 +122,13 @@ struct StreamScreen: View {
     }
 
     private func goLive() async {
+        // Broadcasting starts the camera and microphone — without the usage
+        // descriptions iOS terminates the app at that point.
+        let missing = HyperBabelVideo.missingUsageDescriptions()
+        guard missing.isEmpty else {
+            self.error = "Add \(missing.joined(separator: " and ")) to the app's Info.plist first."
+            return
+        }
         do {
             let resp = try await StreamService.create(
                 hostUserId: session.userId,

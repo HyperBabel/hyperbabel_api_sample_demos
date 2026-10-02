@@ -1,41 +1,40 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/auth/auth_controller.dart';
+import '../../../core/network/api_client.dart';
 import '../../../core/network/auth_repository.dart';
 import '../../../core/network/push_repository.dart';
-import '../../../core/network/translate_repository.dart';
 import '../../../core/realtime/hyperbabel_realtime_client.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/glass_container.dart';
 
 /// Settings — surfaces every account-level read endpoint the demo cares about
-/// plus a small Language Detection playground. Webhooks are explicitly
-/// excluded; manage those in the HyperBabel Console.
-class SettingsScreen extends StatefulWidget {
+/// plus the language preference. Webhooks are explicitly excluded; manage
+/// those in the HyperBabel Console.
+///
+/// There is no language-detection playground: `/translate/*` authenticates
+/// with your organization API key only, so it belongs on your backend — never
+/// in an app that signs in end users.
+class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final AuthRepository _auth = AuthRepository();
   final PushRepository _push = PushRepository();
-  final TranslateRepository _translate = TranslateRepository();
 
   String? _userId;
   String? _apiUrl;
-  String _langCode = 'en';
 
   Map<String, dynamic>? _usage;
   List<Map<String, dynamic>> _tokens = [];
   bool _loading = true;
-
-  // Language playground state.
-  final TextEditingController _detectInput = TextEditingController();
-  String? _detectResult;
-  bool _detecting = false;
 
   static const _languages = [
     ('en', 'English'),
@@ -53,12 +52,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _bootstrap();
   }
 
-  @override
-  void dispose() {
-    _detectInput.dispose();
-    super.dispose();
-  }
-
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
     final userId = prefs.getString('hb_user_id');
@@ -67,8 +60,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
     _userId = userId;
-    _apiUrl = prefs.getString('hb_api_url') ?? 'https://api.hyperbabel.com/api/v1';
-    _langCode = prefs.getString('hb_lang_code') ?? 'en';
+    // The base URL every request actually uses (`HB_API_URL`, or the default).
+    _apiUrl = ApiClient().client.options.baseUrl;
     await _load();
   }
 
@@ -85,37 +78,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
-  Future<void> _setLanguage(String code) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('hb_lang_code', code);
-    setState(() => _langCode = code);
-  }
-
-  Future<void> _detect() async {
-    final text = _detectInput.text.trim();
-    if (text.isEmpty) return;
-    setState(() {
-      _detecting = true;
-      _detectResult = null;
-    });
-    try {
-      final res = await _translate.detectLanguage(text);
-      final lang = res['language'] ?? '?';
-      final conf = (res['confidence'] as num?) ?? 0;
-      setState(() => _detectResult = '$lang  (${(conf * 100).round()}% confidence)');
-    } catch (e) {
-      setState(() => _detectResult = 'Error: $e');
-    } finally {
-      setState(() => _detecting = false);
-    }
-  }
+  /// The language preference lives in the auth controller (stored with the
+  /// signed-in user), not in a key of this screen's own.
+  Future<void> _setLanguage(String code) =>
+      ref.read(authControllerProvider.notifier).updateLang(code);
 
   Future<void> _logout() async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Logout?'),
-        content: const Text('You can sign back in with your API key any time.'),
+        content: const Text('You can sign back in any time.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           FilledButton(
@@ -127,15 +100,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (ok != true) return;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('hb_user_id');
     await HyperBabelRealtimeClient().disconnect();
+    // Clears the session tokens and the signed-in user. The auth state change
+    // is what routes back to /login and stops the incoming-call listener.
+    await ref.read(authControllerProvider.notifier).logout();
     if (!mounted) return;
     context.go('/login');
   }
 
   @override
   Widget build(BuildContext context) {
+    final langCode = ref.watch(authControllerProvider).user?.langCode ?? 'en';
     return Scaffold(
       appBar: AppBar(
         leading: IconButton(
@@ -165,7 +140,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   spacing: 8,
                   runSpacing: 8,
                   children: _languages.map((l) {
-                    final active = l.$1 == _langCode;
+                    final active = l.$1 == langCode;
                     return ChoiceChip(
                       label: Text(l.$2),
                       selected: active,
@@ -194,50 +169,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ? const Text('No push tokens registered for this user yet.',
                           style: TextStyle(color: Colors.white54))
                       : Column(children: _tokens.map(_tokenRow).toList()),
-                ),
-                _section('Language Detection'),
-                GlassContainer(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'Type any text and tap Detect to see what language the AI Translation engine identifies it as.',
-                        style: TextStyle(color: Colors.white54, fontSize: 12),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _detectInput,
-                              decoration: const InputDecoration(
-                                hintText: 'Type something to detect…',
-                              ),
-                              onSubmitted: (_) => _detect(),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          FilledButton(
-                            onPressed: _detecting ? null : _detect,
-                            child: Text(_detecting ? '…' : 'Detect'),
-                          ),
-                        ],
-                      ),
-                      if (_detectResult != null) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white10,
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(_detectResult!,
-                              style: const TextStyle(color: Colors.white)),
-                        ),
-                      ],
-                    ],
-                  ),
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
@@ -310,24 +241,36 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// GET /auth/usage returns ONE flat object: this month's counters
+  /// (`messages_sent`, `hd_video_mins`, …) next to the plan's limits
+  /// (`monthly_messages`, …; -1 means unlimited). Video and stream minutes are
+  /// metered per resolution tier, so the HD and Full HD buckets are added up.
+  /// Large counters arrive as JSON strings, hence [_num].
   List<Widget> _usageRows(Map<String, dynamic> usage) {
-    final period =
-        '${usage['period_start'] ?? '—'} → ${usage['period_end'] ?? '—'}';
-    final entries = <(String, dynamic, dynamic)>[
-      ('Chat Messages', usage['chat_messages_sent'], usage['plan_limits']?['chat_messages']),
-      ('Video Minutes', usage['video_minutes'], usage['plan_limits']?['video_minutes']),
-      ('Stream Minutes', usage['stream_minutes'], usage['plan_limits']?['stream_minutes']),
-      ('Translations', usage['translations'], usage['plan_limits']?['translations']),
+    final entries = <(String, num?, num?)>[
+      ('Chat Messages', _num(usage['messages_sent']), _num(usage['monthly_messages'])),
+      ('Video Minutes', _sum(usage['hd_video_mins'], usage['fhd_video_mins']), null),
+      ('Stream Minutes', _sum(usage['hd_stream_mins'], usage['fhd_stream_mins']), null),
+      ('Translate Chars', _num(usage['translate_chars']), _num(usage['monthly_translate_chars'])),
     ];
     return [
       Padding(
         padding: const EdgeInsets.only(bottom: 8),
-        child: Text('Period: $period',
+        child: Text(
+            'Plan: ${usage['plan_name'] ?? '—'}  ·  '
+            'Period ends: ${usage['current_period_end'] ?? '—'}',
             style: const TextStyle(color: Colors.white60, fontSize: 11)),
       ),
       ...entries.map((e) => _row(e.$1,
-          '${e.$2 ?? '—'}${e.$3 != null ? '  /  ${e.$3}' : ''}')),
+          '${e.$2 ?? '—'}${e.$3 == null ? '' : '  /  ${e.$3! < 0 ? 'unlimited' : e.$3}'}')),
     ];
+  }
+
+  static num? _num(dynamic v) => v is num ? v : num.tryParse('${v ?? ''}');
+
+  static num? _sum(dynamic a, dynamic b) {
+    final x = _num(a), y = _num(b);
+    return (x == null && y == null) ? null : (x ?? 0) + (y ?? 0);
   }
 
   Widget _tokenRow(Map<String, dynamic> t) {

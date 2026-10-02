@@ -55,10 +55,22 @@ export async function connect(user) {
   return _client;
 }
 
-export function subscribeRoom(roomId, onMessage) {
-  if (!_client || !_orgId) throw new Error('Real-Time client not connected');
-  const channelName = `hb:${_orgId}:room:${roomId}`;
-  const channel = _client.channels.get(channelName);
+/**
+ * Subscribe to a room's real-time events.
+ *
+ * @param {string} realtimeChannel The room's `realtime_channel` value from the
+ *   REST API, passed through VERBATIM. It CANNOT be rebuilt from a room id —
+ *   the server derives the name from values this client does not have, so a
+ *   reconstructed name subscribes to a channel nobody publishes on and the
+ *   failure is silent.
+ *
+ * Typing indicators arrive on this same channel as a `{ type: 'typing' }`
+ * payload; there is no separate typing channel.
+ */
+export function subscribeRoom(realtimeChannel, onMessage) {
+  if (!_client) throw new Error('Real-Time client not connected');
+  if (!realtimeChannel) throw new Error('realtimeChannel is required');
+  const channel = _client.channels.get(realtimeChannel);
   const listener = (msg) => {
     if (msg.data) onMessage({ message: msg.data, type: msg.name });
   };
@@ -66,9 +78,14 @@ export function subscribeRoom(roomId, onMessage) {
   return () => channel.unsubscribe(listener);
 }
 
+/**
+ * Subscribe to the current user's per-user inbox (call invites, gifts, …).
+ * Channel: `user:{orgId}:{userId}` — must match the server exactly. `_orgId`
+ * is the `org_id` from the token endpoint, used as-is (no transformation).
+ */
 export function subscribePrivate(userId, onEvent) {
   if (!_client || !_orgId) throw new Error('Real-Time client not connected');
-  const channelName = `hb:${_orgId}:private:${userId}`;
+  const channelName = `user:${_orgId}:${userId}`;
   const channel = _client.channels.get(channelName);
   const listener = (msg) => onEvent({ event: msg.name, data: msg.data });
   channel.subscribe(listener);

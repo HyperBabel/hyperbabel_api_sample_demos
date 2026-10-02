@@ -158,8 +158,10 @@ object ApiClient {
             .build()
     }
 
+    // No Translation (`/translate/*`) service here on purpose: those endpoints
+    // accept only an organization API key, which never ships in an app. Chat
+    // messages are translated with `unitedChat.batchTranslateMessages`.
     val unitedChat: UnitedChatService by lazy { retrofit.create(UnitedChatService::class.java) }
-    val translate:  TranslateService  by lazy { retrofit.create(TranslateService::class.java) }
     val presence:   PresenceService   by lazy { retrofit.create(PresenceService::class.java) }
     val rtm:        RtmService        by lazy { retrofit.create(RtmService::class.java) }
     val chat:       ChatService       by lazy { retrofit.create(ChatService::class.java) }

@@ -17,6 +17,9 @@
  *   'file'     → download card with file name and size
  *   'location' → rich map card with pin icon, coordinates, and "Open in Maps" link
  *   'contact'  → contact card with colour-hashed avatar, name, phone, email
+ *   'system'   → centered one-line notice (join / leave, …)
+ *   'video_call' → centered one-line call notice built from metadata.event
+ *                  (these messages have empty content)
  *   default    → plain text (with translation if available)
  *
  * Hover action bar (all non-system messages):
@@ -28,6 +31,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { formatMessageTime, formatDateSeparator, initLocale } from '../utils/timeUtils';
+
+// Call events are stored as `video_call` system messages with EMPTY content;
+// what happened is in metadata.event. Events without a label (e.g.
+// 'call_accepted') are not shown.
+const CALL_EVENT_NOTICE = {
+  call_started:  '📹 Video call started',
+  call_ended:    '📹 Video call ended',
+  call_rejected: '📵 Call declined',
+  call_missed:   '📵 Missed call',
+  call_busy:     '📵 Busy',
+};
+
+/** One-line notice for a `video_call` message, or null to show nothing. */
+const callEventNotice = (msg) => {
+  const event = msg.metadata?.event;
+  const label = CALL_EVENT_NOTICE[event];
+  if (!label) return null;
+  const secs = Number(msg.metadata?.duration_seconds) || 0;
+  if (event === 'call_ended' && secs > 0) {
+    return `${label} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  }
+  return label;
+};
 
 /**
  * @param {object}   props
@@ -466,9 +492,11 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
                 </div>
               )}
 
-              {/* ── System message (centered, no avatar) ── */}
+              {/* ── System message / call event (centered, no avatar) ── */}
               {msg.message_type === 'system' ? (
                 msg.content ? <div className="message-system">{msg.content}</div> : null
+              ) : msg.message_type === 'video_call' ? (
+                callEventNotice(msg) ? <div className="message-system">{callEventNotice(msg)}</div> : null
               ) : (
                 /* ── Regular message ── */
                 <div

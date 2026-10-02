@@ -8,16 +8,26 @@
  * to publish and subscribe through HyperBabel's real-time infrastructure —
  * no third-party credentials are needed in application code.
  *
- * Channel naming convention (managed by HyperBabel):
- *  - Room messages  : hb:{orgId}:room:{roomId}
- *  - Typing events  : hb:{orgId}:room:{roomId}:typing
- *  - Private user   : hb:{orgId}:private:{userId}
- *  - Presence       : hb:{orgId}:presence:{roomId}
+ * Channel naming — READ THIS BEFORE CHANGING ANYTHING HERE
+ *
+ *  - Room messages: pass the room's `realtime_channel` string EXACTLY as the
+ *    REST API returns it. NEVER rebuild it from a room id — the server derives
+ *    the name from values the client cannot guess, so a reconstructed name
+ *    silently subscribes to a channel nobody publishes on.
+ *
+ *  - Per-user inbox (call signals): `user:{orgId}:{userId}`, where
+ *    `orgId` is the `org_id` returned by POST /rtm/token, used as-is.
+ *    Call signals use the event NAME 'signal'; the payload's `type` says
+ *    which one it is (an invite is `{ type: 'CALL_INVITE', … }`).
+ *
+ *  - There is NO separate typing channel and NO presence channel. Typing
+ *    arrives on the room channel as a `{ type: 'typing' }` payload, and
+ *    presence is a REST endpoint, not a real-time channel.
  *
  * Usage:
  *   import realtimeService from '@/services/realtimeService';
  *   const channelService = await realtimeService.init(userId, userName, langCode);
- *   const unsub = channelService.subscribeToRoom(roomId, ({ message }) => render(message));
+ *   const unsub = channelService.subscribeToRoom(room.realtime_channel, ({ message }) => render(message));
  *   // cleanup:
  *   unsub();
  *   realtimeService.disconnect();
@@ -132,24 +142,26 @@ export const getConnectionState = (): string =>
 // ── Channel Service Interface ─────────────────────────────────────────────
 
 export interface RealtimeChannelService {
-  subscribeToRoom:     (roomId: string, onMessage: (evt: { message: unknown; type: string }) => void) => () => void;
-  subscribeToTyping:   (roomId: string, onTyping: (data: { user_id: string; is_typing: boolean }) => void) => () => void;
-  subscribeToPrivate:  (userId: string, onEvent: (evt: { event: string; data: unknown }) => void) => () => void;
-  subscribeToPresence: (roomId: string, onPresence: (msg: unknown) => void) => () => void;
-  getState:            () => string;
+  subscribeToRoom:    (realtimeChannel: string, onMessage: (evt: { message: unknown; type: string }) => void) => () => void;
+  subscribeToPrivate: (userId: string, onEvent: (evt: { event: string; data: unknown }) => void) => () => void;
+  getState:           () => string;
 }
 
 const createChannelService = (): RealtimeChannelService => ({
   /**
-   * Subscribe to new messages in a room.
-   * Also receives 'read_receipt', 'reaction', and other named events
-   * published by HyperBabel when room state changes.
+   * Subscribe to a room's real-time events.
+   *
+   * Also receives 'read_receipt', 'reaction' and other named events published
+   * by HyperBabel when room state changes. Typing indicators arrive here too,
+   * as a `{ type: 'typing' }` payload — there is no separate typing channel.
+   *
+   * @param realtimeChannel The room's `realtime_channel` value from the REST
+   *   API, passed through VERBATIM.
    */
-  subscribeToRoom: (roomId, onMessage) => {
-    if (!_client || !_orgId) return () => {};
+  subscribeToRoom: (realtimeChannel, onMessage) => {
+    if (!_client || !realtimeChannel) return () => {};
 
-    const channelName = `hb:${_orgId!}:room:${roomId}`;
-    const channel     = _client.channels.get(channelName);
+    const channel = _client.channels.get(realtimeChannel);
 
     const listener = (msg: Realtime.Message) => {
       if (msg.data) onMessage({ message: msg.data, type: msg.name ?? '' });
@@ -160,30 +172,16 @@ const createChannelService = (): RealtimeChannelService => ({
   },
 
   /**
-   * Subscribe to typing indicator events in a room.
-   */
-  subscribeToTyping: (roomId, onTyping) => {
-    if (!_client || !_orgId) return () => {};
-
-    const channelName = `hb:${_orgId!}:room:${roomId}:typing`;
-    const channel     = _client.channels.get(channelName);
-
-    const listener = (msg: Realtime.Message) => {
-      if (msg.data) onTyping(msg.data as { user_id: string; is_typing: boolean });
-    };
-
-    channel.subscribe('typing', listener);
-    return () => channel.unsubscribe('typing', listener);
-  },
-
-  /**
-   * Subscribe to private events for the current user (call invitations, etc.).
-   * Channel: hb:{orgId}:private:{userId}
+   * Subscribe to the current user's per-user inbox (call signals).
+   * Channel: user:{orgId}:{userId} — must match the server exactly; `_orgId`
+   * is the `org_id` from POST /rtm/token, used as-is (no transformation).
+   * `event` is the real-time event name ('signal' for call signals) — match
+   * the kind of signal on `data.type`, not on the event name.
    */
   subscribeToPrivate: (userId, onEvent) => {
     if (!_client || !_orgId) return () => {};
 
-    const channelName = `hb:${_orgId!}:private:${userId}`;
+    const channelName = `user:${_orgId!}:${userId}`;
     const channel     = _client.channels.get(channelName);
 
     const listener = (msg: Realtime.Message) => {
@@ -192,21 +190,6 @@ const createChannelService = (): RealtimeChannelService => ({
 
     channel.subscribe(listener);
     return () => channel.unsubscribe(listener);
-  },
-
-  /**
-   * Subscribe to presence updates (online/offline) for a room.
-   */
-  subscribeToPresence: (roomId, onPresence) => {
-    if (!_client || !_orgId) return () => {};
-
-    const channelName = `hb:${_orgId!}:presence:${roomId}`;
-    const channel     = _client.channels.get(channelName);
-
-
-    const listener = (presenceMsg: Realtime.PresenceMessage) => onPresence(presenceMsg);
-    channel.presence.subscribe(listener);
-    return () => channel.presence.unsubscribe(listener);
   },
 
   getState: () => _client?.connection?.state ?? 'disconnected',

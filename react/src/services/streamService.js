@@ -63,7 +63,8 @@ export const endSession = (sessionId) =>
 
 /**
  * List active (live) stream sessions for this organisation.
- * Used by the Dashboard to show a live broadcast discovery list.
+ * Like every `/stream/*` endpoint it needs the organization API key, so call
+ * it from your backend — the Dashboard does not poll it from the browser.
  *
  * @param {{ status?: string, limit?: number }} [params]
  * @returns {Promise<{ sessions: array }>}

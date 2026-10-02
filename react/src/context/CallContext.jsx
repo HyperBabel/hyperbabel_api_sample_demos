@@ -8,8 +8,10 @@
  *     Used by IncomingCallListener to auto-busy-reject while already in a call.
  *
  *  2. incomingCall (object|null) — the pending invitation received from
- *     another user. Structure:
- *       { roomId, callerId, callerName, callerAvatar, callType }
+ *     another user (built from the CALL_INVITE signal). Structure:
+ *       { roomId, sessionId, channelName, roomSignalChannel,
+ *         callerId, callerName, callerAvatar, callType, rtcToken, uid }
+ *     `sessionId` is required by accept / reject / end / leave.
  *     Non-null triggers the IncomingCallOverlay to render.
  *
  * Architecture diagram:
@@ -53,7 +55,8 @@ export const CallContext = createContext(null);
 export function CallProvider({ children }) {
   const [isInCall,     setIsInCall]     = useState(false);
   const [incomingCall, setIncomingCall] = useState(null);
-  // incomingCall shape: { roomId, callerId, callerName, callerAvatar, callType }
+  // incomingCall shape: { roomId, sessionId, channelName, roomSignalChannel,
+  //                       callerId, callerName, callerAvatar, callType, rtcToken, uid }
 
   return (
     <CallContext.Provider value={{ isInCall, setIsInCall, incomingCall, setIncomingCall }}>

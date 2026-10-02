@@ -27,20 +27,40 @@ sibling `sample_demos/*` projects.
 | -------------------- | ---------------------------------------------------------- |
 | Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
 | Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
-| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped) + Real-Time push |
+| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped; replies use the top-level `reply_to` field) + Real-Time push |
+| Message translation  | `POST /unitedchat/rooms/:roomId/messages/batch-translate`  |
 | Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm` |
 | Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
 | Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
 | Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
 | Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
-| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/leave` + HyperBabel Video |
+| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/accept`, `…/reject`, `…/active`, `…/joined-rtc`, `…/heartbeat`, `…/renew-token`, `…/leave` + HyperBabel Video |
+| Incoming call        | Real-Time event `signal` with `type: "CALL_INVITE"` on the user's private channel |
+| Call events          | `video_call` system messages on the room channel (`metadata.event`: `call_started` / `call_accepted` / `call_ended` / `call_rejected` / `call_missed` / `call_busy`) |
 | In-call live captions | `wss /stt-relay` (Speech Translation — live STT + translation subtitles) |
-| Live stream (host)   | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
-| Live stream (viewer) | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
+| Live stream (host) — **needs your backend** | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
+| Live stream (viewer) — **needs your backend** | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
 | Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
 | Usage stats          | `GET /auth/usage`                                          |
-| Language detection   | `POST /translate/detect`                                   |
+| Language detection — **needs your backend** | `POST /translate/detect`                    |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+
+### Features that need your backend
+
+`/stream/*` (live streaming, host **and** viewer) and `/translate/*`
+(text translation, language detection) accept **only your organization
+API key**. This demo signs users in with a customer JWT and never holds
+that key, so those calls are refused here (`401
+invalid_api_key_format`) — the Streams screens show the resulting
+"Invalid API key format" error, and the Settings screen explains it
+instead of calling `/translate/detect`.
+
+To ship them, route the call through your own server:
+browser → your backend (holds `hb_live_…`) → HyperBabel. The paths and
+payloads in `src/api/stream.js` and `src/api/translate.js` are accurate —
+implement them on your server and expose a thin endpoint to the browser.
+Chat-message translation does **not** need this: it uses the room-scoped
+batch-translate endpoint, which accepts the customer JWT.
 
 ## Prerequisites
 
@@ -119,11 +139,11 @@ There is no API-key env var — the demo only accepts customer JWTs
 minted via Firebase Direct Exchange. Setting `VITE_HB_API_KEY` to an
 `hb_live_…` / `hb_test_…` value makes the HTTP client throw at startup.
 
-If you operate a private HyperBabel deployment (e.g. via `wrangler dev`
-from the platform source), point the demo at it:
+To send the demo's API calls somewhere else — for example a server you
+run locally in front of the HyperBabel API — point it there:
 
 ```env
-VITE_HB_API_URL=http://localhost:8787/api/v1
+VITE_HB_API_URL=http://localhost:3000/api/v1
 ```
 
 ### CORS & Allowed Origins
@@ -151,11 +171,11 @@ javascript/
     │   ├── client.js              # Customer JWT HTTP client (B1)
     │   ├── firebaseAuth.js        # Firebase → /customer/auth/firebase-exchange
     │   ├── auth.js                # /auth/usage
-    │   ├── chat.js                # /chat/* (reactions, search)
-    │   ├── unitedChat.js          # rooms / messages / moderation / video-call
-    │   ├── stream.js              # live stream session lifecycle
+    │   ├── chat.js                # room-scoped emoji reactions
+    │   ├── unitedChat.js          # rooms / messages / translation / moderation / video-call
+    │   ├── stream.js              # live stream session lifecycle (needs your backend)
     │   ├── storage.js             # 3-step presign upload (envelope-aware)
-    │   ├── translate.js           # AI Translation (text / detect / languages)
+    │   ├── translate.js           # AI Translation text / detect / languages (needs your backend)
     │   ├── presence.js            # online status heartbeat + bulk lookup
     │   ├── push.js                # token register / list / unregister
     │   ├── users.js               # global block list
@@ -164,17 +184,19 @@ javascript/
     │   └── hyperbabelRealtime.js  # Real-Time client (vendor SDK aliased)
     ├── video/
     │   └── hyperbabelVideo.js     # Video client (vendor SDK aliased)
+    ├── incomingCall.js            # global CALL_INVITE listener + Accept / Reject overlay
+    ├── callEvents.js              # call events on the room channel
     └── pages/
         ├── login.js               # Firebase Email/Password + Anonymous
         ├── signup.js              # Firebase createUser → exchange
         ├── home.js                # room list + create
-        ├── chat.js                # ChatScreen UX (typing / reactions / reply / edit / delete / image / file / freeze / mute / members)
-        ├── videoCall.js           # 1:1 video call surface
-        ├── streams.js             # live stream discovery
-        ├── streamHost.js          # host broadcasts as publisher
-        ├── streamViewer.js        # viewer subscribes as audience
+        ├── chat.js                # ChatScreen UX (typing / reactions / reply / translate / edit / delete / image / file / freeze / mute / members)
+        ├── videoCall.js           # 1:1 video call surface (joined-rtc / heartbeat / token renewal / leave)
+        ├── streams.js             # live stream discovery (needs your backend)
+        ├── streamHost.js          # host broadcasts as publisher (needs your backend)
+        ├── streamViewer.js        # viewer subscribes as audience (needs your backend)
         ├── blocks.js              # global block list management
-        └── settings.js            # API usage + push tokens + language detection + logout
+        └── settings.js            # API usage + push tokens + logout
 ```
 
 ## Integrating into your own app
@@ -192,6 +214,17 @@ javascript/
 4. **Video.** `src/video/hyperbabelVideo.js` mirrors the same pattern
    for 1:1 / group video calls. Tokens come from
    `POST /rtm/rtc/token`; the SDK handles the media streams.
+   `src/pages/videoCall.js` shows the session upkeep a call needs:
+   `…/joined-rtc` once joined, `…/heartbeat` every minute, and
+   `…/renew-token` before the one-hour RTC token expires. Every call
+   action (`accept`, `reject`, `end`, `leave`, …) sends the call's
+   `session_id`.
+5. **Call events.** Call state changes arrive on the room's channel as
+   `video_call` system messages (`src/callEvents.js`). The call page
+   closes on `call_ended`; the caller of a 1:1 call stops on a decline,
+   missed call or busy signal, and gives up when nobody joins within
+   45 s (restarted once someone accepts, so a late answer still connects). The incoming-call overlay closes when the caller hangs up and
+   reports a missed call after 45 s of ringing.
 
 ## License
 

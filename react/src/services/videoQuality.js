@@ -15,10 +15,14 @@
  *   remotes 0 (live-stream host)  ->  1280x720, each viewer receives   921,600  OK
  *   remotes 1 (1:1 call)          ->  1280x720, the peer receives      921,600  OK
  *   remotes 2 (3-way call)        ->   640x480, each receives 2x307,200 = 614,400  OK
- *   remotes 3 (4-way call)        ->   640x480, each receives 3x307,200 = 921,600  OK
+ *   remotes 3 (4-way, standalone) ->   640x480, each receives 3x307,200 = 921,600  OK
  *
- * A 5th publisher would push the sum to 1,228,800 and move the whole call to
- * the next (more expensive) tier — that is why group calls are capped at 4.
+ * The SERVER sets the call size limits: a chat-room call
+ * (POST /unitedchat/rooms/:roomId/video-call — the only kind this demo starts)
+ * allows at most 3 participants including the caller, i.e. 2 targets; the
+ * standalone POST /video/sessions API allows up to 4. A 5th publisher would
+ * push the sum to 1,228,800 and move the whole call to the next (more
+ * expensive) tier.
  *
  *  TWO SUMS GET QUOTED FOR A GROUP CALL — KEEP THEM STRAIGHT
  *
@@ -27,8 +31,9 @@
  *
  *  The presets above hold the RECEIVED sum at or under the ceiling for every
  *  supported call size, which is exactly the rule the HyperBabel Console applies
- *  in its own video surfaces. For a 4-way call that is 3 x 307,200 = 921,600
- *  received (at the ceiling) while the call as a whole publishes 1,228,800.
+ *  in its own video surfaces. For a 3-way call that is 2 x 307,200 = 614,400
+ *  received while the call as a whole publishes 921,600 (a 4-way standalone
+ *  session: 921,600 received, at the ceiling, and 1,228,800 published).
  *
  *  If your own policy is the stricter "nothing the call publishes may add up to
  *  more than HD", use this ladder instead — it costs 1:1 calls their 720p:
@@ -41,7 +46,7 @@
  *  LEAVING AND REJOINING
  *
  *  The roster is re-evaluated on every join and every leave, so a call that
- *  drops from four participants to two moves back up to 1280x720, and the
+ *  drops from three participants to two moves back up to 1280x720, and the
  *  participant who rejoins pulls everyone back down to 640x480 before their
  *  first frame is published. Nothing is pinned to the size the call started at.
  *
@@ -115,7 +120,7 @@ export function declaredQuality() {
  * resolution by the number of streams each participant receives and tell you,
  * in the creation response (`quality_warning`), when the total lands in a
  * higher tier than the one you declared. That is the mistake worth catching:
- * an honest 720p declaration is correct 1:1 and wrong at four people.
+ * an honest 720p declaration is correct 1:1 and wrong at three people.
  *
  * ⚠️ Send the resolution for THIS session at THIS size — not the camera
  * maximum. The presets above shrink as the call grows, so the value differs

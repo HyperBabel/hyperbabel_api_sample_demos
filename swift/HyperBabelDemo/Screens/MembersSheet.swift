@@ -119,7 +119,7 @@ struct MembersSheet: View {
     }
     private func ban(_ m: UnitedChatService.RoomMember) async {
         do {
-            _ = try await UnitedChatService.ban(roomId: roomId, adminId: session.userId, userId: m.userId)
+            _ = try await UnitedChatService.ban(roomId: roomId, bannedBy: session.userId, userId: m.userId)
             members.removeAll { $0.userId == m.userId }
         } catch { /* best-effort */ }
     }

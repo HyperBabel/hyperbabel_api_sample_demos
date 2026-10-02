@@ -1,7 +1,7 @@
 /**
  * Chat page — full HyperBabel chat surface with:
  *   - Real-time message + typing + reaction events
- *   - Edit / delete on own messages, Reply / React on any
+ *   - Edit / delete on own messages, Reply / React / Translate on any
  *   - Image and arbitrary-file upload via the 3-step presign flow
  *   - Members modal with promote / demote / ban + room mute toggle
  *   - Freeze toggle for owner / sub_admin
@@ -13,6 +13,7 @@ import * as chatApi from '../api/chat.js';
 import { uploadFile } from '../api/storage.js';
 import * as realtime from '../realtime/hyperbabelRealtime.js';
 import { formatMessageTime } from '../utils/timeUtils.js';
+import { callEventLabel } from '../callEvents.js';
 
 export async function renderChat(roomId, navigate) {
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
@@ -20,6 +21,7 @@ export async function renderChat(roomId, navigate) {
 
   const state = {
     messages: [],
+    replySnapshots: {}, // quoted originals from GET …/messages, keyed by id
     members: [],
     role: 'member',
     typingFrom: null,
@@ -94,6 +96,17 @@ export async function renderChat(roomId, navigate) {
     const isOwn = m.sender_id === user.user_id;
     const isDeleted = !!m.deleted_at;
     const type = m.message_type || 'text';
+
+    // Call state changes are system messages with empty content — show them
+    // as one centred line, not as an empty bubble.
+    if (type === 'video_call') {
+      const note = document.createElement('div');
+      note.className = 'muted';
+      note.style.cssText = 'text-align: center; font-size: 11px; margin: 6px 0;';
+      note.textContent = `📹 ${callEventLabel(m.metadata || {})}` +
+        (m.created_at ? ` · ${formatMessageTime(m.created_at)}` : '');
+      return note;
+    }
     const content = typeof m.content === 'object'
       ? (m.content[user.preferred_lang_cd] || m.content.en || Object.values(m.content)[0])
       : m.content;
@@ -102,13 +115,18 @@ export async function renderChat(roomId, navigate) {
     wrap.className = `msg ${isOwn ? 'own' : 'other'}`;
     wrap.style.position = 'relative';
 
-    // Reply quote (if this message references another).
-    const replyToId = m.metadata?.reply_to;
-    const replyParent = replyToId ? state.messages.find((x) => x.id === replyToId) : null;
+    // Reply quote (if this message references another). The original may be
+    // older than the loaded page — then it comes from `reply_snapshots`.
+    const replyToId = m.reply_to;
+    const replyParent = replyToId
+      ? state.messages.find((x) => x.id === replyToId) || state.replySnapshots[replyToId]
+      : null;
     let html = '';
     if (!isOwn) html += `<div class="sender">${escapeHtml(m.sender_name || m.sender_id)}</div>`;
     if (replyParent) {
-      const preview = (replyParent.content || '[media]').toString().slice(0, 80);
+      const preview = replyParent.deleted_at
+        ? 'Deleted message'
+        : (replyParent.content || '[media]').toString().slice(0, 80);
       html += `<div class="translation" style="border-left: 2px solid #ffffff70; padding-left: 6px; font-size: 11px;">↩ ${escapeHtml(replyParent.sender_name || replyParent.sender_id)}: ${escapeHtml(preview)}</div>`;
     }
     if (isDeleted) {
@@ -125,6 +143,7 @@ export async function renderChat(roomId, navigate) {
       </div>`;
     } else {
       html += `<div>${escapeHtml(content || '')}</div>`;
+      if (m.translation) html += `<div class="translation">🌐 ${escapeHtml(m.translation)}</div>`;
     }
 
     // Reactions are a map: { "👍": ["user_1", "user_2"] }
@@ -137,7 +156,8 @@ export async function renderChat(roomId, navigate) {
         }).join('') + '</div>';
     }
 
-    const editedTag = m.updated_at && m.created_at && m.updated_at !== m.created_at ? '<span style="opacity: 0.6; font-style: italic;"> · edited</span>' : '';
+    // `edited_at` stays null until the first edit.
+    const editedTag = m.edited_at ? '<span style="opacity: 0.6; font-style: italic;"> · edited</span>' : '';
     if (m.created_at) {
       html += `<div class="translation" style="font-size: 10px;">${escapeHtml(formatMessageTime(m.created_at))}${editedTag}</div>`;
     }
@@ -206,6 +226,9 @@ export async function renderChat(roomId, navigate) {
       { label: '↩ Reply', fn: () => { state.replyTo = msg; refreshReplyBanner(); } },
       { label: '😊 React', fn: () => showReactionPicker(msg) },
     ];
+    if (!isOwn && (msg.message_type || 'text') === 'text' && !msg.deleted_at) {
+      choices.push({ label: '🌐 Translate', fn: () => translateMessageFlow(msg) });
+    }
     if (isOwn) {
       choices.push({ label: '✏️ Edit', fn: () => editMessageFlow(msg) });
       choices.push({ label: '🗑 Delete', fn: () => deleteMessageFlow(msg) });
@@ -235,16 +258,38 @@ export async function renderChat(roomId, navigate) {
       .catch((err) => alert(err.message));
   }
 
+  // Translation for signed-in users goes through the room-scoped batch
+  // endpoint — `/translate/*` needs your org API key and cannot be called here.
+  async function translateMessageFlow(msg) {
+    const target = user.preferred_lang_cd || 'en';
+    try {
+      const res = await unitedChat.batchTranslateMessages(roomId, [msg.id], target);
+      const text = res?.translations?.[msg.id];
+      if (text) {
+        msg.translation = text;
+        renderMessages();
+      } else if (res?.limited) {
+        alert('Daily translation limit reached — try again tomorrow.');
+      } else {
+        alert(`No translation available — the message may already be in "${target}".`);
+      }
+    } catch (err) { alert(err.message); }
+  }
+
   async function editMessageFlow(msg) {
     const next = prompt('Edit message:', msg.content);
     if (next == null) return;
     const trimmed = next.trim();
     if (!trimmed) return;
     try {
-      await unitedChat.editMessage(roomId, msg.id, user.user_id, trimmed);
+      const res = await unitedChat.editMessage(roomId, msg.id, user.user_id, trimmed);
       const idx = state.messages.findIndex((m) => m.id === msg.id);
       if (idx >= 0) {
-        state.messages[idx] = { ...state.messages[idx], content: trimmed, updated_at: new Date().toISOString() };
+        state.messages[idx] = {
+          ...state.messages[idx],
+          content: trimmed,
+          edited_at: res?.message?.edited_at || new Date().toISOString(),
+        };
         renderMessages();
       }
     } catch (err) { alert(err.message); }
@@ -342,8 +387,21 @@ export async function renderChat(roomId, navigate) {
   fileInput.onchange = () => uploadAndSend(fileInput.files?.[0], 'file').then(() => (fileInput.value = ''));
 
   document.getElementById('start-call').onclick = async () => {
+    // The call screen is 1:1. In a 1:1 room the server rings the other member;
+    // in a group room it needs `target_user_ids`, so name one member to call.
+    const others = state.members.filter((m) => m.user_id !== user.user_id);
+    let target = others[0];
+    if (others.length > 1) {
+      const pick = prompt(
+        'Call whom?\n' +
+        others.map((m, i) => `  ${i + 1}. ${m.user_name || m.user_id}`).join('\n') +
+        '\n\nEnter the number:',
+      );
+      target = others[parseInt(pick, 10) - 1];
+      if (!target) return;
+    }
     try {
-      await unitedChat.startVideoCall(roomId, user.user_id, []);
+      await unitedChat.startVideoCall(roomId, user.user_id, target ? [target.user_id] : []);
       navigate(`#/video/${roomId}`);
     } catch (err) {
       alert(`Failed to start call: ${err.message}`);
@@ -425,7 +483,7 @@ export async function renderChat(roomId, navigate) {
               } else if (action === 'promote') {
                 await unitedChat.addSubAdmin(roomId, user.user_id, m.user_id);
               } else if (action === 'demote') {
-                await unitedChat.removeSubAdmin(roomId, m.user_id);
+                await unitedChat.removeSubAdmin(roomId, m.user_id, user.user_id);
               }
               overlay.remove();
               showMembersModal();
@@ -452,6 +510,7 @@ export async function renderChat(roomId, navigate) {
   try {
     const data = await unitedChat.getMessages(roomId, { limit: 50, user_id: user.user_id });
     state.messages = (data.messages || []).slice().reverse();
+    state.replySnapshots = data.reply_snapshots || {};
     renderMessages();
     unitedChat.markRead(roomId, user.user_id).catch(() => {});
   } catch (err) {
@@ -467,15 +526,23 @@ export async function renderChat(roomId, navigate) {
     .catch(() => {});
 
   // Real-time subscription.
+  //
+  // The channel name comes from the API (`room.realtime_channel`) and is used
+  // VERBATIM. Rebuilding it from `roomId` would point at a channel nobody
+  // publishes on, and that failure is silent — the room just never updates.
   let unsubscribe = () => {};
   try {
+    const roomRes = await unitedChat.getRoom(roomId, user.user_id);
+    const realtimeChannel = roomRes?.room?.realtime_channel;
+    if (!realtimeChannel) throw new Error('Room has no realtime_channel');
+
     await realtime.connect(user);
-    unsubscribe = realtime.subscribeRoom(roomId, ({ message, type }) => {
-      // The HyperBabel Real-Time backend wraps every per-room broadcast as
-      //   { type: 'message' | 'typing' | …, data: <payload>, timestamp: … }
-      // and publishes it under event-name 'message'. Other event names
-      // ('message.deleted', 'message.updated', 'reaction') carry an
-      // un-wrapped payload directly.
+    unsubscribe = realtime.subscribeRoom(realtimeChannel, ({ message, type }) => {
+      // HyperBabel wraps every per-room broadcast as
+      //   { type: 'message' | 'message.deleted' | 'message.updated' | 'reaction', data: <payload>, timestamp: … }
+      // under an event name equal to `type`. Typing arrives under event-name
+      // 'message' as { type: 'typing', userId, userName }. The handlers below
+      // also accept an un-wrapped payload.
       const envelope = message ?? {};
 
       if (type === 'message' && envelope.type === 'typing') {
@@ -513,20 +580,20 @@ export async function renderChat(roomId, navigate) {
           state.messages[idx] = {
             ...state.messages[idx],
             content: payload.content,
-            updated_at: new Date().toISOString(),
+            edited_at: payload.edited_at || new Date().toISOString(),
           };
           renderMessages();
         }
         return;
       }
 
-      if (type === 'reaction') {
-        mergeReactionDelta(envelope);
+      if (type === 'reaction' || (type === 'message' && envelope.type === 'reaction')) {
+        mergeReactionDelta(envelope, state, renderMessages);
         return;
       }
 
-      // Real chat message — Workers wraps as { type: 'message', data: <Message> }.
-      // Older backends publish the message object directly.
+      // Real chat message — the server wraps it as { type: 'message', data: <Message> };
+      // a bare message object is accepted too.
       const chatMsg =
         type === 'message' && envelope.type === 'message' && envelope.data
           ? envelope.data
@@ -534,6 +601,9 @@ export async function renderChat(roomId, navigate) {
             ? envelope
             : null;
       if (!chatMsg?.id) return;
+      // Live-caption lines share this channel, but the message list API never
+      // returns them — skip them here too, or they vanish on the next reload.
+      if (chatMsg.message_type === 'caption') return;
       if (state.messages.some((m) => m.id === chatMsg.id)) return;
       state.messages.push(chatMsg);
       renderMessages();
@@ -544,11 +614,42 @@ export async function renderChat(roomId, navigate) {
   window.addEventListener('hashchange', () => unsubscribe(), { once: true });
 }
 
-function mergeReactionDelta(payload) {
-  // Stub: server-side reaction events aren't always echoed, and the UI
-  // already optimistically renders the local user's reaction. Keeping the
-  // hook here makes the Real-Time integration symmetric with the other demos.
-  void payload;
+/**
+ * Apply a broadcast reaction change to the local message list.
+ *
+ * The broadcast is a DELTA — `{ message_id, emoji, user_id, action }` — not
+ * the whole map, so merge it in rather than replacing `msg.reactions`.
+ * Reacting yourself already stored the server's full map from the REST call;
+ * this is what makes OTHER people's reactions appear without a reload.
+ *
+ * Returns a render function's worth of work only when something changed, so a
+ * duplicate broadcast does not repaint the list.
+ */
+function mergeReactionDelta(payload, state, renderMessages) {
+  const body = payload && typeof payload.data === 'object' && payload.data
+    ? payload.data
+    : payload || {};
+  const messageId = body.message_id || body.id;
+  const emoji = body.emoji;
+  const userId = body.user_id || body.userId;
+  if (!messageId || !emoji || !userId) return;
+
+  const msg = state.messages.find((m) => m.id === messageId);
+  if (!msg) return;
+
+  const map = { ...(msg.reactions || {}) };
+  const ids = Array.isArray(map[emoji]) ? map[emoji] : [];
+  if (body.action === 'remove') {
+    const next = ids.filter((id) => id !== userId);
+    if (next.length === ids.length) return;
+    if (next.length) map[emoji] = next;
+    else delete map[emoji];
+  } else {
+    if (ids.includes(userId)) return;
+    map[emoji] = [...ids, userId];
+  }
+  msg.reactions = map;
+  renderMessages();
 }
 
 function escapeHtml(s) {

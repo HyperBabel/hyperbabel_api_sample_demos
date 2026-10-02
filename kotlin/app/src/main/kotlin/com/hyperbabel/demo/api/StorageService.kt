@@ -3,9 +3,15 @@
  *
  * The actual binary PUT to the presigned URL must NOT carry a Bearer token,
  * so the helper below builds a one-shot OkHttp client for that step.
+ *
+ * The confirm response says which `message_type` to send the file as
+ * ("image" | "video" | "audio" | "file"); the server derives it from the
+ * file name's extension, so pass a real file name.
  */
 package com.hyperbabel.demo.api
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -43,7 +49,7 @@ object StorageUpload {
             channelId?.let { put("channelId", it) }
             folder?.let { put("folder", it) }
         }
-        // cf_workers_api wraps the presign payload as `{ message, data: { upload_url, key, … } }`.
+        // The HyperBabel API wraps the presign payload as `{ message, data: { upload_url, key, … } }`.
         // Unwrap so callers don't need to know.
         val presignEnv = ApiClient.storage.presign(presignBody)
         val presign = presignEnv["data"]?.jsonObject ?: presignEnv
@@ -52,18 +58,23 @@ object StorageUpload {
         val key = presign["key"]?.jsonPrimitive?.content
             ?: throw IllegalStateException("Server did not return a storage key")
 
-        // Step 2 — bare PUT, no Authorization header.
-        val client = OkHttpClient.Builder().build()
-        val req = Request.Builder()
-            .url(uploadUrl)
-            .put(file.asRequestBody(mimeType.toMediaType()))
-            .build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) {
-                throw IllegalStateException("Upload failed (${resp.code})")
+        // Step 2 — bare PUT, no Authorization header. execute() blocks the
+        // calling thread, so it runs on the IO dispatcher (on the main thread
+        // Android throws NetworkOnMainThreadException).
+        withContext(Dispatchers.IO) {
+            val client = OkHttpClient.Builder().build()
+            val req = Request.Builder()
+                .url(uploadUrl)
+                .put(file.asRequestBody(mimeType.toMediaType()))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    throw IllegalStateException("Upload failed (${resp.code})")
+                }
             }
         }
-        // Confirm response is also wrapped as `{ message, data: { url, key, … } }`.
+        // Confirm response is also wrapped as
+        // `{ message, data: { url, key, original_name, size_bytes, mime_type, message_type } }`.
         val confirmEnv = ApiClient.storage.confirm(buildJsonObject {
             put("key", key)
             put("originalName", filename)

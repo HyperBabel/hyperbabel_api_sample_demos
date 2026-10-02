@@ -39,6 +39,7 @@ import { Skeleton, RoomItemSkeleton } from '@/components/ui/Skeleton';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import * as unitedChat from '@/services/unitedChatService';
 import type { Room, RoomType } from '@/services/unitedChatService';
+import { callEventLabel } from '@/utils/formatters';
 
 dayjs.extend(relativeTime);
 
@@ -47,7 +48,7 @@ dayjs.extend(relativeTime);
 function RoomItem({ room, onPress }: { room: Room; onPress: () => void }) {
   const lastMsg = room.last_message;
   const memberCount = room.members?.length ?? 0;
-  const displayName = room.room_name ?? (room.members?.[0]?.user_name ?? room.room_id);
+  const displayName = room.room_name ?? (room.members?.[0]?.user_name ?? room.id);
 
   return (
     <TouchableOpacity style={styles.roomItem} onPress={onPress} activeOpacity={0.75}>
@@ -62,7 +63,9 @@ function RoomItem({ room, onPress }: { room: Room; onPress: () => void }) {
         <View style={styles.roomItemRow}>
           <Text style={styles.roomItemLast} numberOfLines={1}>
             {lastMsg
-              ? (lastMsg.message_type === 'text' ? lastMsg.content : `[${lastMsg.message_type}]`)
+              ? (lastMsg.message_type === 'text' ? lastMsg.content
+                : lastMsg.message_type === 'video_call' ? callEventLabel(lastMsg.metadata)
+                : `[${lastMsg.message_type}]`)
               : 'No messages yet'}
           </Text>
           <View style={styles.roomItemBadges}>
@@ -85,7 +88,8 @@ function OpenRoomCard({ room, onJoin }: { room: Room; onJoin: () => void }) {
         <Text style={styles.openCardDesc} numberOfLines={2}>{room.description}</Text>
       )}
       <View style={styles.openCardFooter}>
-        <Text style={styles.openCardMembers}>{room.members?.length ?? 0} members</Text>
+        {/* The room list carries a count, not a member array — and it is a string. */}
+        <Text style={styles.openCardMembers}>{Number(room.member_count ?? 0)} members</Text>
         <TouchableOpacity style={styles.joinBtn} onPress={onJoin}>
           <Text style={styles.joinBtnText}>Join</Text>
         </TouchableOpacity>
@@ -242,14 +246,15 @@ export default function ChatHubScreen() {
     const members = isSelf
       ? [user.userId]
       : (apiType === '1to1' ? [user.userId, memberId] : [user.userId]);
-    const created = await unitedChat.createRoom({
+    // The response is wrapped — `{ room: { id, … } }`.
+    const { room: created } = await unitedChat.createRoom({
       room_type:  apiType,
       creator_id: user.userId,
       room_name:  isSelf ? 'My Notes' : (name || undefined),
       members,
     });
     await loadRooms();
-    router.push(`/(main)/chat/${created.room_id}`);
+    router.push(`/(main)/chat/${created.id}`);
   };
 
   const handleJoinByCode = async () => {
@@ -268,9 +273,9 @@ export default function ChatHubScreen() {
   const handleJoinOpen = async (room: Room) => {
     if (!user) return;
     try {
-      await unitedChat.joinRoom(room.room_id, user.userId, user.userName);
+      await unitedChat.joinRoom(room.id, user.userId, user.userName);
       await loadRooms();
-      router.push(`/(main)/chat/${room.room_id}`);
+      router.push(`/(main)/chat/${room.id}`);
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Failed to join room.');
     }
@@ -334,11 +339,11 @@ export default function ChatHubScreen() {
           ) : (
             <FlatList
               data={filteredRooms}
-              keyExtractor={(r) => r.room_id}
+              keyExtractor={(r) => r.id}
               renderItem={({ item }) => (
                 <RoomItem
                   room={item}
-                  onPress={() => router.push(`/(main)/chat/${item.room_id}`)}
+                  onPress={() => router.push(`/(main)/chat/${item.id}`)}
                 />
               )}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />}
@@ -388,7 +393,7 @@ export default function ChatHubScreen() {
             </View>
           ) : (
             openRooms.map((r) => (
-              <OpenRoomCard key={r.room_id} room={r} onJoin={() => handleJoinOpen(r)} />
+              <OpenRoomCard key={r.id} room={r} onJoin={() => handleJoinOpen(r)} />
             ))
           )}
         </ScrollView>

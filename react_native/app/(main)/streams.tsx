@@ -118,11 +118,21 @@ export default function StreamsScreen() {
         )}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />}
         contentContainerStyle={styles.list}
+        // 🔴 Tell the truth in the empty state. Listing broadcasts calls
+        //    `/stream/*`, which authenticates with the ORGANIZATION API key —
+        //    never present on a device — so here the call returns 401 and the
+        //    list is always empty. "No live streams right now" would read as
+        //    "nobody is broadcasting", sending a developer hunting for a bug
+        //    that isn't one. See src/services/streamService.ts.
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={styles.emptyIcon}>📡</Text>
-            <Text style={styles.emptyText}>No live streams right now</Text>
-            <Text style={styles.emptyHint}>Tap &quot;Go Live&quot; to start broadcasting</Text>
+            <Text style={styles.emptyText}>Live streaming needs your backend</Text>
+            <Text style={styles.emptyHint}>
+              Listing and creating broadcasts authenticates with your organization API key,
+              which never ships on a device — so this list stays empty here. Proxy
+              /stream/* through your own server to light it up.
+            </Text>
           </View>
         }
       />
@@ -154,5 +164,5 @@ const styles = StyleSheet.create({
   empty:             { alignItems: 'center', paddingVertical: spacing[20] },
   emptyIcon:         { fontSize: 48, marginBottom: spacing[4] },
   emptyText:         { ...textPresets.h4, color: colors.textSecondary, marginBottom: spacing[2] },
-  emptyHint:         { ...textPresets.label, color: colors.textMuted },
+  emptyHint:         { ...textPresets.label, color: colors.textMuted, textAlign: 'center', paddingHorizontal: spacing[6] },
 });

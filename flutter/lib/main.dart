@@ -21,8 +21,11 @@ Future<void> main() async {
 
   // Load .env. fileNotFound is tolerated — the app still builds, and the
   // sign-in screen renders a "config missing" notice instead of crashing.
+  // `isOptional` matters: without it a missing .env leaves `dotenv.env`
+  // uninitialised, and the first read of HB_API_URL throws instead of
+  // falling back to the default URL.
   try {
-    await dotenv.load(fileName: '.env');
+    await dotenv.load(fileName: '.env', isOptional: true);
   } catch (_) {
     // No .env present — defaults will apply where possible.
   }
@@ -105,9 +108,13 @@ class HyperBabelDemoApp extends ConsumerWidget {
       theme: AppTheme.darkTheme,
       routerConfig: router,
       // The listener wraps every routed screen and renders an Accept / Reject
-      // overlay when a CALL_INVITE arrives on the user's private channel.
-      builder: (context, child) =>
-          IncomingCallListener(child: child ?? const SizedBox.shrink()),
+      // overlay when a CALL_INVITE signal arrives on the user's private
+      // channel. It sits above the router, so navigation goes via `router`.
+      builder: (context, child) => IncomingCallListener(
+        userId: authState.user?.userId,
+        onJoinCall: (roomId) => router.go('/video/$roomId'),
+        child: child ?? const SizedBox.shrink(),
+      ),
     );
   }
 }

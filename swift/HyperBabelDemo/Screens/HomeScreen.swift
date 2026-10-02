@@ -84,7 +84,7 @@ struct HomeScreen: View {
         HStack {
             VStack(alignment: .leading) {
                 Text(room.roomName ?? room.id).fontWeight(.semibold)
-                Text("\(room.roomType) · \(room.memberCount.map(String.init) ?? "—") members")
+                Text("\(room.roomType ?? "room") · \(room.memberCount.map(String.init) ?? "—") members")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -100,7 +100,7 @@ struct HomeScreen: View {
         error = ""
         do {
             let resp = try await UnitedChatService.listRooms(userId: session.userId)
-            rooms = resp.rooms ?? resp.memberRooms ?? []
+            rooms = resp.rooms ?? []
         } catch {
             self.error = (error as? ApiError)?.errorDescription ?? error.localizedDescription
         }

@@ -29,6 +29,7 @@ export function InCallChat({ roomId, visible, onClose }: InCallChatProps) {
   const { channelService }  = useRealtime();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input,    setInput]    = useState('');
+  const [realtimeChannel, setRealtimeChannel] = useState<string | null>(null);
   const [sending,  setSending]  = useState(false);
   const slideAnim = useRef(new Animated.Value(300)).current;
   const listRef   = useRef<FlatList>(null);
@@ -45,23 +46,40 @@ export function InCallChat({ roomId, visible, onClose }: InCallChatProps) {
   useEffect(() => {
     if (!visible) return;
     unitedChat.getMessages(roomId, { limit: 20 })
-      .then(({ messages: m }) => setMessages([...(m ?? [])].reverse()))
+      // Call events (`video_call`) have empty content — nothing to show here.
+      .then(({ messages: m }) => setMessages([...(m ?? [])].filter((x) => x.message_type !== 'video_call').reverse()))
+      .catch(() => {});
+  }, [visible, roomId]);
+
+  // Resolve the room's real-time channel name. It CANNOT be derived from the
+  // room id — always read it from the room resource.
+  useEffect(() => {
+    if (!visible) { setRealtimeChannel(null); return; }
+    unitedChat.getRoom(roomId)
+      .then((room) => setRealtimeChannel(room?.realtime_channel ?? null))
       .catch(() => {});
   }, [visible, roomId]);
 
   // Real-time subscription
   useEffect(() => {
-    if (!channelService || !visible) return;
-    const unsub = channelService.subscribeToRoom(roomId, ({ message }) => {
-      const msg = message as Message;
+    if (!channelService || !visible || !realtimeChannel) return;
+    const unsub = channelService.subscribeToRoom(realtimeChannel, ({ message, type }) => {
+      // Chat messages arrive wrapped as { type: 'message', data: <Message> }.
+      // Typing, reactions and other room events share the channel — skip them.
+      const envelope = message as { type?: string; data?: Message } | null;
+      if (type !== 'message' || envelope?.type !== 'message' || !envelope.data?.id) return;
+      const msg = envelope.data;
+      // Call events have no text, and live-caption lines are not chat — the
+      // message list never returns them either.
+      if (msg.message_type === 'video_call' || msg.message_type === 'caption') return;
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
     });
     return () => unsub();
-  }, [channelService, roomId, visible]);
+  }, [channelService, realtimeChannel, visible]);
 
   const handleSend = useCallback(async () => {
     const text = input.trim();
@@ -69,9 +87,9 @@ export function InCallChat({ roomId, visible, onClose }: InCallChatProps) {
     setInput('');
     setSending(true);
     try {
-      const msg = await unitedChat.sendMessage(roomId, { sender_id: user.userId, content: text });
+      const { message: msg } = await unitedChat.sendMessage(roomId, { sender_id: user.userId, content: text });
       setMessages((prev) => {
-        if (prev.some((m) => m.message_id === msg.message_id)) return prev;
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 50);
@@ -95,7 +113,7 @@ export function InCallChat({ roomId, visible, onClose }: InCallChatProps) {
         <FlatList
           ref={listRef}
           data={messages}
-          keyExtractor={(m) => m.message_id}
+          keyExtractor={(m) => m.id}
           renderItem={({ item }) => {
             const isSelf = item.sender_id === user?.userId;
             return (

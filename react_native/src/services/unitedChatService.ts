@@ -19,7 +19,11 @@ const BASE = '/unitedchat';
 // ── Types ─────────────────────────────────────────────────────────────────
 
 export type RoomType = '1to1' | 'group' | 'open';
-export type MessageType = 'text' | 'image' | 'file' | 'video' | 'audio' | 'location' | 'contact' | 'system';
+export type MessageType =
+  | 'text' | 'image' | 'file' | 'video' | 'audio' | 'location' | 'contact' | 'system'
+  // Written by the server only: call events (empty content, details in
+  // `metadata.event`) and live-call captions (never returned by the list API).
+  | 'video_call' | 'caption';
 export type MemberRole = 'owner' | 'sub_admin' | 'member';
 
 export interface CreateRoomParams {
@@ -46,18 +50,39 @@ export interface GetMessagesParams {
 }
 
 export interface Room {
-  room_id:        string;
-  room_type:      RoomType;
+  /** Room id (UUID) — the value every `/rooms/:roomId` path takes. */
+  id:             string;
+  /** Room kind. Room reads name it `channel_type` — `room_type` is the create-request field. */
+  channel_type:   RoomType;
   room_name:      string | null;
   description?:   string | null;
-  invite_code?:   string;
+  invite_code?:   string | null;
   is_frozen:      boolean;
   is_muted?:      boolean;
   unread_count:   number;
+  /**
+   * GET /rooms only. A database COUNT, which arrives as a STRING
+   * (e.g. "3") — read it through `Number()`.
+   */
+  member_count?:  string | number;
   last_message?:  Message | null;
-  members:        RoomMember[];
-  pinned_message?: Message | null;
+  /** GET /rooms/:roomId only — the room list does not embed members. */
+  members?:       RoomMember[];
+  /**
+   * Id of the pinned message, or null. The API returns the id only — there is
+   * no embedded message and no get-by-id route, so resolve it against the
+   * messages you have loaded.
+   */
+  pinned_message_id?: string | null;
   created_at:     string;
+  /**
+   * The room's real-time channel name, supplied by the API.
+   *
+   * Pass this VERBATIM to `subscribeToRoom()`. It cannot be derived from
+   * the room `id` — the server builds it from values the client does not have,
+   * so a hand-built name silently subscribes to a channel nobody publishes on.
+   */
+  realtime_channel?: string;
 }
 
 export interface RoomMember {
@@ -68,8 +93,10 @@ export interface RoomMember {
 }
 
 export interface Message {
-  message_id:   string;
-  room_id:      string;
+  /** Message id (UUID) — pass this to delete / edit / react / reply / translate. */
+  id:           string;
+  /** Id of the room the message belongs to. */
+  channel_id:   string;
   sender_id:    string;
   sender_name?: string;
   content:      string;
@@ -78,37 +105,113 @@ export interface Message {
   metadata?:    Record<string, unknown> | null;
   deleted_at?:  string | null;
   created_at:   string;
-  updated_at?:  string;
-  translations?: Record<string, string>;
-  reactions?:   Reaction[];
+  /** Set on the first edit (null until then). */
+  edited_at?:   string | null;
+  /** Translations stored so far, keyed by language code. */
+  translated_content?: Record<string, string> | null;
+  /**
+   * Emoji reactions, exactly as the API stores them: a MAP of emoji to the
+   * user ids that reacted with it — `{ "👍": ["user_1", "user_2"] }`.
+   *
+   * It is NOT a list of `{ emoji, user_id, count }` objects. The count is
+   * simply the array length; there is no separate count field to keep in
+   * sync. `POST`/`DELETE .../reactions` returns this same map in full.
+   */
+  reactions?:   Record<string, string[]>;
   reply_count?: number;
 }
 
-export interface Reaction {
-  emoji:   string;
-  user_id: string;
-  count:   number;
+/** One participant slot of a video call session. */
+export interface VideoCallParticipant {
+  user_id:    string;
+  /** Numeric media uid to join the video channel with. */
+  uid:        number;
+  /**
+   * Video channel token. With an end-user token only YOUR OWN entry carries
+   * one — the server strips everyone else's.
+   */
+  rtc_token?: string;
+  /** 'invited' until accepted, then 'active'; 'left' after leaving. */
+  status:     string;
+  is_caller?: boolean;
 }
 
-export interface ActiveVideoCall {
+/**
+ * A call session. Both the start and the active-call responses NEST it under
+ * `session` — the id is `session.id` (there is no `session_id` field here).
+ */
+export interface VideoCallSession {
+  id:           string;
+  channel_name: string;
+  call_type?:   '1to1' | 'group';
+  status:       string;
+  participants: VideoCallParticipant[];
+  app_id?:      string;
+}
+
+/** POST /rooms/:roomId/video-call */
+export interface StartVideoCallResponse {
+  session:          VideoCallSession;
+  /** The caller's own slot — `caller.rtc_token` + `caller.uid` join the channel. */
+  caller:           VideoCallParticipant;
+  targets:          string[];
+  quality_warning?: string;
+}
+
+/** GET /rooms/:roomId/video-call/active */
+export interface ActiveVideoCallResponse {
+  active:  boolean;
+  session: VideoCallSession | null;
+}
+
+/** POST /rooms/:roomId/video-call/renew-token */
+export interface RenewVideoCallTokenResponse {
   session_id:   string;
   channel_name: string;
-  rtc_token?:   string;
-  uid?:         number;
-  app_id?:      string;
-  call_type:    '1to1' | 'group';
-  started_by:   string;
-  participants: string[];
+  uid:          number;
+  rtc_token:    string;
+  app_id:       string;
+  expires_in:   number;
 }
+
+/**
+ * A call event: call_started | call_accepted | call_ended | call_rejected |
+ * call_missed | call_busy. For the last three, `user_id` is the callee.
+ */
+export interface CallEvent {
+  event:      string;
+  session_id: string;
+  user_id?:   string;
+}
+
+/**
+ * Read a call event out of a ROOM-channel delivery, or null for anything
+ * else. Call events travel as ordinary chat messages — event name 'message',
+ * payload `{ type: 'message', data: <message> }` where the message has
+ * `message_type: 'video_call'`, empty `content` and the details in `metadata`.
+ */
+export const callEventFrom = (eventName: string, payload: unknown): CallEvent | null => {
+  const envelope = payload as { type?: string; data?: Message } | null;
+  if (eventName !== 'message' || envelope?.type !== 'message') return null;
+  if (envelope.data?.message_type !== 'video_call') return null;
+  const meta = (envelope.data.metadata ?? {}) as Record<string, unknown>;
+  if (typeof meta.event !== 'string' || typeof meta.session_id !== 'string') return null;
+  return {
+    event:      meta.event,
+    session_id: meta.session_id,
+    user_id:    typeof meta.user_id === 'string' ? meta.user_id : undefined,
+  };
+};
 
 // ── Room Management ──────────────────────────────────────────────────────
 
 /**
- * Create a chat room.
- * Returns the existing room if a 1:1 room between the same users already exists.
+ * Create a chat room. The response is WRAPPED: `{ room: { id, … } }`.
+ * If a 1:1 room between the same users already exists, it answers
+ * `{ room: { id, already_exists: true } }` instead.
  */
 export const createRoom = (data: CreateRoomParams) =>
-  api.post<Room>(`${BASE}/rooms`, data);
+  api.post<{ room: Partial<Room> & { id: string; already_exists?: boolean } }>(`${BASE}/rooms`, data);
 
 /**
  * List rooms the user belongs to, plus joinable open rooms.
@@ -122,8 +225,19 @@ export const listRooms = (userId: string, params: { limit?: number; cursor?: str
 /**
  * Get full room details including member list with roles.
  */
-export const getRoom = (roomId: string) =>
-  api.get<Room>(`${BASE}/rooms/${roomId}`);
+/**
+ * Fetch one room.
+ *
+ * The endpoint answers with the room WRAPPED as `{ room: { … } }`, so unwrap
+ * it here rather than in every screen. Reading the raw response as a `Room`
+ * yields an object whose every field is `undefined` — including
+ * `realtime_channel`, `members` and `is_frozen` — and nothing throws, so the
+ * screen just renders empty.
+ */
+export const getRoom = async (roomId: string): Promise<Room> => {
+  const res = await api.get<{ room?: Room }>(`${BASE}/rooms/${roomId}`);
+  return (res?.room ?? (res as unknown as Room));
+};
 
 /**
  * Set a per-user custom display name for a room.
@@ -139,9 +253,13 @@ export const updateRoomDescription = (roomId: string, userId: string, descriptio
 
 /**
  * Join an open room using an 8-character invite code.
+ * Unlike the room objects elsewhere, this response names the id `room_id`.
  */
 export const joinByCode = (inviteCode: string, userId: string, displayName?: string) =>
-  api.post<Room>(`${BASE}/rooms/join-by-code`, { invite_code: inviteCode, user_id: userId, display_name: displayName });
+  api.post<{ success: boolean; room_id: string; room_name: string | null; realtime_channel: string }>(
+    `${BASE}/rooms/join-by-code`,
+    { invite_code: inviteCode, user_id: userId, display_name: displayName },
+  );
 
 /**
  * Join an open (public) room.
@@ -164,10 +282,10 @@ export const markAsRead = (roomId: string, userId: string) =>
 // ── Messages ─────────────────────────────────────────────────────────────
 
 /**
- * Send a message to a room.
+ * Send a message to a room. The response is WRAPPED: `{ message: { … } }`.
  */
 export const sendMessage = (roomId: string, data: SendMessageParams) =>
-  api.post<Message>(`${BASE}/rooms/${roomId}/messages`, data);
+  api.post<{ message: Message }>(`${BASE}/rooms/${roomId}/messages`, data);
 
 /**
  * Fetch paginated message history.
@@ -203,10 +321,16 @@ export const batchTranslateMessages = (roomId: string, messageIds: string[], tar
 
 /**
  * Initiate a video call in a room.
- * Broadcasts a CALL_INVITE event to all room members via the private channel.
+ *
+ * Each callee is rung on their private real-time channel: event name
+ * `'signal'`, payload `{ type: 'CALL_INVITE', sessionId, roomId, … }`.
+ * 1:1 rooms ring the other member; group rooms REQUIRE `targetUserIds`.
+ *
+ * The response nests everything: `session.id`, `session.channel_name`,
+ * `session.app_id`, and the caller's own `caller.rtc_token` / `caller.uid`.
  */
 export const startVideoCall = (roomId: string, callerId: string, targetUserIds?: string[]) =>
-  api.post<ActiveVideoCall>(`${BASE}/rooms/${roomId}/video-call`, {
+  api.post<StartVideoCallResponse>(`${BASE}/rooms/${roomId}/video-call`, {
     caller_id: callerId,
     ...(targetUserIds?.length ? { target_user_ids: targetUserIds } : {}),
     // Billing tier for this call. Derived from the publishing preset in
@@ -220,47 +344,104 @@ export const startVideoCall = (roomId: string, callerId: string, targetUserIds?:
     publish_resolution: publishResolutionFor(1 + (targetUserIds?.length || 1)),
   });
 
-/**
- * Accept an incoming video call and join the session.
+/*
+ * Every call action below identifies the call by `session_id` (from the
+ * invite's `sessionId`, or `session.id` of the start / active responses).
+ * The API answers 400 when it is missing.
  */
-export const acceptVideoCall = (roomId: string, userId: string) =>
-  api.post<ActiveVideoCall>(`${BASE}/rooms/${roomId}/video-call/accept`, { user_id: userId });
 
 /**
- * Decline an incoming video call.
+ * Accept an incoming video call. Answers `{ success: true }` — it does not
+ * return a token; read your own slot from `getActiveVideoCall()` afterwards.
+ * 410 `session_ended` means the call is already over.
+ *
+ * Also revives a participant who left, so a rejoin calls it too.
  */
-export const rejectVideoCall = (roomId: string, userId: string) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/reject`, { user_id: userId });
+export const acceptVideoCall = (roomId: string, userId: string, sessionId: string) =>
+  api.post<{ success: boolean }>(`${BASE}/rooms/${roomId}/video-call/accept`, {
+    user_id:    userId,
+    session_id: sessionId,
+  });
+
+/**
+ * Decline an incoming video call. `reason` picks the event the room sees:
+ * 'missed' → call_missed, 'busy' → call_busy, omitted → call_rejected.
+ * Rejecting does not end the session.
+ */
+export const rejectVideoCall = (roomId: string, userId: string, sessionId: string, reason?: 'missed' | 'busy') =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/reject`, {
+    user_id:    userId,
+    session_id: sessionId,
+    ...(reason ? { reason } : {}),
+  });
 
 /**
  * End the video call for ALL participants.
- * Only the caller or room owner can end the call.
+ * Only the caller or a room owner / sub_admin can end it (403 otherwise).
  */
-export const endVideoCall = (roomId: string, userId: string) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/end`, { user_id: userId });
+export const endVideoCall = (roomId: string, userId: string, sessionId: string) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/end`, { user_id: userId, session_id: sessionId });
 
 /**
  * Leave the call individually — other participants remain connected.
  * If the last participant leaves, the call ends automatically.
+ * (Not to be confused with `leaveRoom()`, which leaves the chat room.)
  */
-export const leaveVideoCall = (roomId: string, userId: string) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/leave`, { user_id: userId });
+export const leaveVideoCall = (roomId: string, userId: string, sessionId: string) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/leave`, { user_id: userId, session_id: sessionId });
 
 /**
  * Check if there is an active video call in the room.
+ * Answers `{ active: false, session: null }` when there is none.
  */
 export const getActiveVideoCall = (roomId: string) =>
-  api.get<ActiveVideoCall | null>(`${BASE}/rooms/${roomId}/video-call/active`);
+  api.get<ActiveVideoCallResponse>(`${BASE}/rooms/${roomId}/video-call/active`);
+
+/**
+ * Report that this participant actually joined the video channel. Call it
+ * from the video SDK's join-success callback. Idempotent. `matched: false`
+ * means the stamp did not land (e.g. the session is no longer live).
+ */
+export const markJoinedRtc = (roomId: string, userId: string, sessionId: string) =>
+  api.post<{ success: boolean; matched: boolean }>(`${BASE}/rooms/${roomId}/video-call/joined-rtc`, {
+    user_id:    userId,
+    session_id: sessionId,
+  });
+
+/**
+ * Liveness ping — send once a minute while on the call. Without it the
+ * platform cannot tell a long call from an abandoned one. Always answers 200;
+ * never surface a failure to the user.
+ */
+export const sendCallHeartbeat = (roomId: string, userId: string, sessionId: string) =>
+  api.post<{ success: boolean }>(`${BASE}/rooms/${roomId}/video-call/heartbeat`, {
+    user_id:    userId,
+    session_id: sessionId,
+  });
+
+/**
+ * Mint a fresh video channel token for your own slot. Call tokens expire
+ * after one hour — renew when the video SDK reports the token is about to
+ * expire, and before re-joining a call after a pause.
+ */
+export const renewVideoCallToken = (roomId: string, userId: string, sessionId: string) =>
+  api.post<RenewVideoCallTokenResponse>(`${BASE}/rooms/${roomId}/video-call/renew-token`, {
+    user_id:    userId,
+    session_id: sessionId,
+  });
 
 // ── Ban / Unban ──────────────────────────────────────────────────────────
 
-/** Ban a user from the room (owner/sub_admin only). */
-export const banUser = (roomId: string, adminId: string, userId: string) =>
-  api.post(`${BASE}/rooms/${roomId}/ban`, { admin_id: adminId, user_id: userId });
+/** Ban a user from the room (owner/sub_admin only). `bannedBy` is the acting user. */
+export const banUser = (roomId: string, bannedBy: string, userId: string) =>
+  api.post(`${BASE}/rooms/${roomId}/ban`, { banned_by: bannedBy, user_id: userId });
 
-/** Lift a ban — the user can rejoin after unbanning. */
-export const unbanUser = (roomId: string, userId: string) =>
-  api.delete(`${BASE}/rooms/${roomId}/ban/${userId}`);
+/**
+ * Lift a ban — the user can rejoin after unbanning. `unbannedBy` is the
+ * acting user; it travels in the JSON body of the DELETE (required).
+ */
+export const unbanUser = (roomId: string, unbannedBy: string, userId: string) =>
+  api.delete(`${BASE}/rooms/${roomId}/ban/${userId}`, { unbanned_by: unbannedBy });
 
 /** Get all active bans for a room. */
 export const getBans = (roomId: string) =>
@@ -272,9 +453,12 @@ export const getBans = (roomId: string) =>
 export const addSubAdmin = (roomId: string, ownerId: string, userId: string) =>
   api.post(`${BASE}/rooms/${roomId}/sub-admins`, { owner_id: ownerId, user_id: userId });
 
-/** Demote a sub_admin back to member (owner only). */
-export const removeSubAdmin = (roomId: string, userId: string) =>
-  api.delete(`${BASE}/rooms/${roomId}/sub-admins/${userId}`);
+/**
+ * Demote a sub_admin back to member (owner only). `ownerId` travels in the
+ * JSON body of the DELETE (required).
+ */
+export const removeSubAdmin = (roomId: string, ownerId: string, userId: string) =>
+  api.delete(`${BASE}/rooms/${roomId}/sub-admins/${userId}`, { owner_id: ownerId });
 
 export const promoteToSubAdmin = addSubAdmin;
 export const demoteSubAdmin    = removeSubAdmin;

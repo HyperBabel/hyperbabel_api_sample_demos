@@ -7,13 +7,15 @@
  *   .chat(roomId)     — chat in a room (text + real-time push)
  *   .video(roomId)    — 1:1 video call
  *   .stream           — live stream list / host / viewer
- *   .settings         — usage / push tokens / language detect / logout
+ *   .settings         — usage / push tokens / logout
  *   .blocks           — global block list
  *
- * The IncomingCallOverlay sits above NavigationStack so a CALL_INVITE event
- * paints an Accept / Reject prompt over whatever screen is foregrounded.
- * Accept needs to push the .video route, so navigation state is lifted to
- * a shared NavStore that both the overlay and the stack observe.
+ * While a user is signed in, RootNavigation keeps IncomingCallStore listening
+ * on the user's private real-time channel. The IncomingCallOverlay sits above
+ * NavigationStack so a CALL_INVITE signal paints an Accept / Reject prompt
+ * over whatever screen is foregrounded. Accept needs to push the .video
+ * route, so navigation state is lifted to a shared NavStore that both the
+ * overlay and the stack observe.
  */
 import SwiftUI
 import FirebaseCore
@@ -42,24 +44,24 @@ struct HyperBabelDemoApp: App {
                     .environmentObject(callStore)
                     .environmentObject(nav)
                 IncomingCallOverlay(
-                    onAccept: { roomId in
-                        // POST /unitedchat/rooms/:roomId/video/accept then jump
-                        // to the video call screen. Both calls are best-effort;
-                        // the user has already explicitly accepted, so we don't
-                        // surface server failures here.
-                        guard !roomId.isEmpty else { return }
+                    onAccept: { roomId, sessionId in
+                        // POST /unitedchat/rooms/:roomId/video-call/accept then
+                        // jump to the video call screen. Both calls are
+                        // best-effort; the user has already explicitly
+                        // accepted, so we don't surface server failures here.
+                        guard !roomId.isEmpty, !sessionId.isEmpty else { return }
                         Task {
                             _ = try? await UnitedChatService.acceptVideoCall(
-                                roomId: roomId, userId: session.userId
+                                roomId: roomId, sessionId: sessionId, userId: session.userId
                             )
                             await MainActor.run { nav.push(.video(roomId: roomId)) }
                         }
                     },
-                    onReject: { roomId in
-                        guard !roomId.isEmpty else { return }
+                    onReject: { roomId, sessionId in
+                        guard !roomId.isEmpty, !sessionId.isEmpty else { return }
                         Task {
                             _ = try? await UnitedChatService.rejectVideoCall(
-                                roomId: roomId, userId: session.userId
+                                roomId: roomId, sessionId: sessionId, userId: session.userId
                             )
                         }
                     }
@@ -94,6 +96,7 @@ final class NavStore: ObservableObject {
 struct RootNavigation: View {
     @EnvironmentObject var session: Session
     @EnvironmentObject var nav: NavStore
+    @EnvironmentObject var callStore: IncomingCallStore
 
     var body: some View {
         NavigationStack(path: $nav.path) {
@@ -142,6 +145,11 @@ struct RootNavigation: View {
                     BlocksScreen(onBack: { nav.popLast() })
                 }
             }
+        }
+        // Listen for incoming calls while signed in. Re-runs on sign-in,
+        // sign-out and account switch; sign-out also closes the connection.
+        .task(id: session.userId) {
+            await callStore.listen(signedIn: session.isSignedIn)
         }
     }
 }

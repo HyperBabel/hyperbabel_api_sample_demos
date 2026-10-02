@@ -3,8 +3,8 @@
 A production-grade React Native sample that demonstrates the HyperBabel API
 suite on Android and iOS. Built on **Expo SDK 56 + React Native 0.85 +
 `@react-native-firebase` v24 + `useFrameworks: 'static'`** with the React
-Native source build enabled (matches the pinning used by the Arirang
-shipping app, so the integration path is identical).
+Native source build enabled (see [iOS build notes](#ios-build-notes) for why
+each pin is needed).
 
 Authentication uses **Customer Auth pattern B1 — Firebase Direct
 Exchange**. The mobile app signs in with Firebase, exchanges the resulting
@@ -62,6 +62,34 @@ start so you don't have to dig through build logs.
 
 ## Key Implemented Features
 
+> ### ⚠️ Live streaming needs your backend
+>
+> Everything below runs from the app as-is **except the live-stream screens**,
+> and that is by design rather than a gap.
+>
+> Every `/stream/*` endpoint authenticates with your **organization API key**
+> (`Authorization: Bearer hb_live_…`). A request carrying anything else is
+> rejected before it reaches the handler:
+>
+> ```
+> POST /api/v1/stream/sessions
+> → 401 { "error": { "code": "invalid_api_key_format" } }
+> ```
+>
+> Creating a broadcast allocates paid capacity and is metered against your
+> organization, so the caller has to be **you**, not a signed-in end user. This
+> demo holds only a customer JWT — `src/services/api.ts` refuses to carry an org
+> key on a device — so those calls fail here on purpose.
+>
+> Run live streaming as: `app → your backend (holds hb_live_…) → HyperBabel /stream/*`.
+> `src/services/streamService.ts` documents the exact paths, payloads and call
+> order; implement that on your server and expose a thin endpoint the app calls.
+>
+> The same applies to free-text translation and language detection
+> (`/translate/*`, documented in `src/services/translateService.ts`). Chat
+> translation is unaffected — it uses the room batch-translate endpoint, which
+> accepts the end-user token.
+
 ### 1. Unified Chat
 - **Real-time pipeline**: `RealtimeContext` subscribes to messages,
   typing indicators, and deleted-message events.
@@ -86,10 +114,20 @@ start so you don't have to dig through build logs.
 - **In-call chat**: `InCallChat` keeps side-channel messaging visible
   without leaving the call.
 - **Rejoin & auto-reject**: a "Rejoin Call" banner reattaches to an active
-  call; a 30 s `autoRejectTimer` clears unanswered invitations.
+  call; an invitation left unanswered for 45 s is declined as missed.
+- **Call events**: the call screen and the ringing overlay follow the room's
+  real-time channel — both close when the call ends. The caller stops ringing
+  after 45 s with no answer (in a 1:1 call, also when the callee declines,
+  misses or is busy), and hangs up when the last remote participant leaves.
+  In the chat, call events show as one-line notices. Room calls hold at most
+  3 people (the caller plus 2); some plans allow 1:1 calls only.
 - **Background incoming call**: `IncomingCallListener` detects invites on
   both platforms, rings via `expo-audio`, and vibrates with native
-  `Vibration` loops.
+  `Vibration` loops. Invites arrive on the user's private channel with the
+  event name `signal` and `data.type === 'CALL_INVITE'`.
+- **Session upkeep**: every call action sends the call's `session_id`; the
+  call screen reports the media join, sends a heartbeat once a minute, and
+  renews the one-hour video token before it expires.
 
 ### 4. Push Notifications & Presence
 - **Presence**: `usePresence` pulses a heartbeat every 30 s while the app
@@ -279,10 +317,10 @@ sample_demos/react_native/
 │   ├── (main)/                 # Authenticated tabs
 │   │   ├── dashboard.tsx       # Sandbox Hub
 │   │   ├── chat/               # Chat Hub + Room Detail
-│   │   ├── streams.tsx         # Live stream discovery
+│   │   ├── streams.tsx         # Live stream discovery (⚠️ needs your backend)
 │   │   └── settings.tsx        # Settings + API usage
 │   ├── video-call/             # Video call room
-│   └── live-stream/            # Host + Viewer screens
+│   └── live-stream/            # Host + Viewer screens (⚠️ needs your backend — see below)
 │
 ├── src/
 │   ├── components/             # Design system + always-on overlays
@@ -292,7 +330,7 @@ sample_demos/react_native/
 │   │   ├── firebaseAuthService.ts    # Firebase → /customer/auth/firebase-exchange
 │   │   ├── unitedChatService.ts
 │   │   ├── realtimeService.ts
-│   │   ├── translateService.ts
+│   │   ├── translateService.ts       # ⚠️ needs your backend (org API key)
 │   │   ├── storageService.ts
 │   │   ├── presenceService.ts
 │   │   ├── pushService.ts

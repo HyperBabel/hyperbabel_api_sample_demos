@@ -8,8 +8,8 @@
  *
  * Usage:
  *   const { translatedMap, translateMessages } = useTranslation(roomId, 'ko');
- *   await translateMessages(messages.map(m => m.message_id));
- *   const text = translatedMap[msg.message_id] ?? msg.content;
+ *   await translateMessages(messages.map(m => m.id));
+ *   const text = translatedMap[msg.id] ?? msg.content;
  */
 
 import { useCallback, useRef, useState } from 'react';

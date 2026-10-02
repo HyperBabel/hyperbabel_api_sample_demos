@@ -1,6 +1,22 @@
 /*
  * HyperBabel API — AI Translation service.
  *
+ * ⚠️ EVERY CALL HERE NEEDS YOUR BACKEND — THIS APP NEVER CALLS IT.
+ *
+ *   The `/translate` endpoints accept ONLY your organization API key
+ *   (`Authorization: Bearer hb_live_…`). The customer JWT this demo signs in
+ *   with is rejected with 401 — and every 401 also makes the API client
+ *   rotate the customer session through a token refresh. An end-user app
+ *   must never hold the org key.
+ *
+ *   Ship it as:  app -> your backend (holds hb_live_…) -> HyperBabel /translate
+ *   The paths and payloads below are accurate — implement them on your server.
+ *
+ *   To translate CHAT messages from the app, use
+ *   `UnitedChatService.batchTranslateMessages` (POST
+ *   /unitedchat/rooms/:roomId/messages/batch-translate), which accepts the
+ *   customer JWT.
+ *
  * Wire shapes:
  *   POST /translate/text      → { translated_text, source_language, target_language, char_count }
  *   POST /translate/detect    → { detected_language, confidence }

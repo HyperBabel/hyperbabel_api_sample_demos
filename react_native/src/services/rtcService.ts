@@ -52,6 +52,11 @@ export interface RtcEventHandlers {
   onUserJoined?:   (uid: number) => void;
   onUserLeft?:     (uid: number) => void;
   onError?:        (code: number) => void;
+  /**
+   * The channel token is about to expire (~30 s ahead) or already has.
+   * Fetch a fresh token and pass it to `renewToken()`.
+   */
+  onTokenWillExpire?: () => void;
 }
 
 /**
@@ -127,6 +132,9 @@ export class RtcClient {
         handlers.onUserLeft?.(uid);
       },
       onError:       (code: number) => handlers.onError?.(code),
+      // ~30 s before the token expires, and once it has expired.
+      onTokenPrivilegeWillExpire: () => handlers.onTokenWillExpire?.(),
+      onRequestToken:             () => handlers.onTokenWillExpire?.(),
     };
     engine.registerEventHandler(eventHandler);
     engine.enableVideo();
@@ -149,6 +157,19 @@ export class RtcClient {
             : ClientRoleType.ClientRoleAudience,
       },
     );
+  }
+
+  /**
+   * Remote participants in the channel right now. `onUserLeft` fires after
+   * the leaver has been removed, so reading this inside it is already final.
+   */
+  get remoteCount(): number {
+    return this.remoteUids.size;
+  }
+
+  /** Hand a freshly issued channel token to the engine. */
+  renewToken(token: string): void {
+    this.engine?.renewToken(token);
   }
 
   muteAudio(muted: boolean): void {

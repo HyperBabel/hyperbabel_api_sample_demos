@@ -34,13 +34,16 @@ export const getMembers = (roomId) =>
 export const sendMessage = (roomId, payload) =>
   api.post(`/unitedchat/rooms/${roomId}/messages`, payload);
 
+// `reply_to` is a top-level field: the id of the message being answered. Every
+// read returns it as `message.reply_to`, and GET …/messages also returns the
+// quoted originals in `reply_snapshots` (keyed by id).
 export const sendReply = (roomId, { senderId, senderName, content, replyTo }) =>
   api.post(`/unitedchat/rooms/${roomId}/messages`, {
     sender_id: senderId,
     sender_name: senderName,
     content,
     message_type: 'text',
-    metadata: { reply_to: replyTo },
+    reply_to: replyTo,
   });
 
 export const getMessages = (roomId, query = {}) =>
@@ -64,10 +67,19 @@ export const sendTypingIndicator = (roomId, userId, displayName) =>
     display_name: displayName,
   });
 
-export const batchTranslateMessages = (roomId, messageIds, targetLangCd) =>
+/**
+ * Translate chat messages for the signed-in user. Unlike `/translate/*`, this
+ * works with the end-user token. Up to 100 ids per call.
+ *
+ * Response: `{ translations: { [messageId]: text } }`, plus `limited: true`
+ * when new translations were skipped because the daily limit was reached.
+ * Ids that are missing from the map had nothing to translate (media, or
+ * already in `targetLang`).
+ */
+export const batchTranslateMessages = (roomId, messageIds, targetLang) =>
   api.post(`/unitedchat/rooms/${roomId}/messages/batch-translate`, {
     message_ids: messageIds,
-    target_lang_cd: targetLangCd,
+    target_lang: targetLang,
   });
 
 // ── Video call ────────────────────────────────────────────────────────────
@@ -87,17 +99,46 @@ export const startVideoCall = (roomId, callerId, targets) =>
     ...(targets && targets.length ? { target_user_ids: targets } : {}),
   });
 
-export const acceptVideoCall = (roomId, userId) =>
-  api.post(`/unitedchat/rooms/${roomId}/video-call/accept`, { user_id: userId });
+// Every call action below targets ONE call session and answers 400 without
+// its id: `session.id` from the start response or from GET …/video-call/active,
+// or `sessionId` from an incoming CALL_INVITE.
 
-export const rejectVideoCall = (roomId, userId) =>
-  api.post(`/unitedchat/rooms/${roomId}/video-call/reject`, { user_id: userId });
+export const acceptVideoCall = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/accept`, { user_id: userId, session_id: sessionId });
 
-export const endVideoCall = (roomId, userId) =>
-  api.post(`/unitedchat/rooms/${roomId}/video-call/end`, { user_id: userId });
+// `reason` is optional: 'missed' (rang out) or 'busy' post "Missed call" /
+// "Busy" to the room instead of "Call declined".
+export const rejectVideoCall = (roomId, userId, sessionId, reason) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/reject`, {
+    user_id: userId,
+    session_id: sessionId,
+    ...(reason ? { reason } : {}),
+  });
 
-export const leaveVideoCall = (roomId, userId) =>
-  api.post(`/unitedchat/rooms/${roomId}/video-call/leave`, { user_id: userId });
+// Ends the call for everyone. Only the caller, the room owner or a sub-admin
+// may do this — everyone else uses leaveVideoCall.
+export const endVideoCall = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/end`, { user_id: userId, session_id: sessionId });
+
+// Leaves the CALL; the server ends it once one or no participant is left.
+// Not the same as leaveRoom, which leaves the chat room itself.
+export const leaveVideoCall = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/leave`, { user_id: userId, session_id: sessionId });
+
+// Call once you are actually in the media channel — call billing is measured
+// from this moment. `{ success: false }` means the stamp did not land; retry.
+export const markJoinedRtc = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/joined-rtc`, { user_id: userId, session_id: sessionId });
+
+// Liveness ping, once a minute while the call screen is open. Without it the
+// server cannot tell a long call from one both apps abandoned.
+export const sendCallHeartbeat = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/heartbeat`, { user_id: userId, session_id: sessionId });
+
+// A fresh RTC token (valid 1 hour) for the same channel and uid.
+// Response: `{ session_id, channel_name, uid, rtc_token, app_id, expires_in }`.
+export const renewVideoCallToken = (roomId, userId, sessionId) =>
+  api.post(`/unitedchat/rooms/${roomId}/video-call/renew-token`, { user_id: userId, session_id: sessionId });
 
 export const getActiveVideoCall = (roomId) =>
   api.get(`/unitedchat/rooms/${roomId}/video-call/active`);
@@ -105,7 +146,7 @@ export const getActiveVideoCall = (roomId) =>
 // ── Moderation: ban / sub-admin / freeze ─────────────────────────────────
 
 export const banUser = (roomId, adminId, userId) =>
-  api.post(`/unitedchat/rooms/${roomId}/ban`, { admin_id: adminId, user_id: userId });
+  api.post(`/unitedchat/rooms/${roomId}/ban`, { banned_by: adminId, user_id: userId });
 
 export const unbanUser = (roomId, userId, unbannedBy) =>
   api.del(`/unitedchat/rooms/${roomId}/ban/${userId}`, { unbanned_by: unbannedBy });

@@ -5,9 +5,9 @@
  *   2. PUT  binary bytes to the URL (no auth — the URL is signed)
  *   3. POST /storage/confirm  → server records the upload, returns CDN URL
  *
- * The cf_workers_api responses for both presign and confirm wrap their
- * payload under `{ message, data: {…} }`, mirroring the legacy hb_api
- * controller. Decoding has to peel that envelope off.
+ * The HyperBabel responses for both presign and confirm wrap their
+ * payload under `{ message, data: {…} }`, so decoding has to peel that
+ * envelope off.
  */
 import Foundation
 
@@ -42,8 +42,8 @@ struct ConfirmedUpload: Codable {
     let sizeBytes: Int?
     let mimeType: String?
     let messageType: String?
-    // The legacy `cdn_url` field never appeared on cf_workers_api but the
-    // ChatScreen code falls back to it for compatibility with hb_api.
+    // The current API returns the file URL as `url`. `cdn_url` is only an
+    // older field name; ChatScreen falls back to it when `url` is absent.
     let cdnUrl: String?
 
     enum CodingKeys: String, CodingKey {
@@ -79,7 +79,7 @@ enum StorageService {
     /// Walk the 3-step presign flow and return the confirm response.
     ///
     /// `channelId` is optional but should be passed for chat-room uploads —
-    /// it routes the presigned object key into the chat-scoped R2 path
+    /// it routes the presigned object key into the chat-scoped storage path
     /// (`<org>/chat/<channelId>/...`), which lets the server populate
     /// `com_uploaded_files.channel_id` and `com_usage_logs.metadata.channel_id`.
     /// Omitting it falls back to the generic user-content path.

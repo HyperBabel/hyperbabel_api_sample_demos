@@ -155,9 +155,20 @@ export const editMessage = (roomId, messageId, userId, content) =>
  * Batch-translate multiple messages into the target language.
  * Call once when loading history to avoid N individual requests.
  *
+ * Works with the end-user token, so this is how a client app translates chat.
+ * (The standalone `/translate/*` endpoints need your organization API key and
+ * belong on your backend.) Up to 100 message ids per call. Translations are
+ * cached on the message, so asking again for an already-translated message is
+ * answered from that cache without metering new translation characters.
+ *
  * @param {string}   roomId
  * @param {string[]} messageIds
  * @param {string}   targetLang — e.g. 'ko', 'en', 'ja'
+ * @returns {Promise<{ translations: Object<string, string>, limited?: boolean }>}
+ *   `translations` maps message id → translated text. Messages that need no
+ *   translation (already in `targetLang`, or not text) are simply absent.
+ *   `limited: true` means new translations were skipped because the user hit
+ *   the daily fair-use translation limit (cached ones are still returned).
  */
 export const batchTranslateMessages = (roomId, messageIds, targetLang) =>
   api.post(`${BASE}/rooms/${roomId}/messages/batch-translate`, {
@@ -169,10 +180,17 @@ export const batchTranslateMessages = (roomId, messageIds, targetLang) =>
 
 /**
  * Initiate a video call in a room.
- * Broadcasts `video_call.started` to all room members.
+ * Each callee receives a `CALL_INVITE` signal on their private real-time
+ * channel, and a `call_started` event is posted to the room.
  *
- * @param {string} roomId
- * @param {string} callerId
+ * @param {string}   roomId
+ * @param {string}   callerId
+ * @param {string[]} [targetUserIds] — Required for group rooms (who to ring)
+ * @returns {Promise<{ session: object, caller: object, targets: string[] }>}
+ *   `session.id` is the session id every later call action needs
+ *   (accept / reject / end / leave / heartbeat); `session.channel_name` is
+ *   the media channel; `caller` carries the caller's own `uid` / `rtc_token`.
+ *   `quality_warning` is present when the declared quality looks too low.
  */
 export const startVideoCall = (roomId, callerId, targetUserIds) =>
   api.post(`${BASE}/rooms/${roomId}/video-call`, {
@@ -191,43 +209,98 @@ export const startVideoCall = (roomId, callerId, targetUserIds) =>
 
 /**
  * Accept an incoming video call and join the session.
+ * Answers 410 (`session_ended`) when the caller hung up first.
+ *
  * @param {string} roomId
  * @param {string} userId
+ * @param {string} sessionId — `sessionId` from the CALL_INVITE signal
  */
-export const acceptVideoCall = (roomId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/accept`, { user_id: userId });
+export const acceptVideoCall = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/accept`, { user_id: userId, session_id: sessionId });
 
 /**
  * Decline an incoming video call.
+ *
  * @param {string} roomId
  * @param {string} userId
+ * @param {string} sessionId — `sessionId` from the CALL_INVITE signal
+ * @param {'missed'|'busy'} [reason] — Omit for a plain decline
  */
-export const rejectVideoCall = (roomId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/reject`, { user_id: userId });
+export const rejectVideoCall = (roomId, userId, sessionId, reason) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/reject`, {
+    user_id: userId,
+    session_id: sessionId,
+    ...(reason && { reason }),
+  });
 
 /**
  * End the video call for ALL participants.
- * Only the caller or room owner can end.
+ * Only the caller, the room owner or a sub_admin can end it for everyone —
+ * anyone else gets 403 and should use leaveVideoCall() instead.
  *
  * @param {string} roomId
  * @param {string} userId
+ * @param {string} sessionId
  */
-export const endVideoCall = (roomId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/end`, { user_id: userId });
+export const endVideoCall = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/end`, { user_id: userId, session_id: sessionId });
 
 /**
  * Leave the call individually — other participants remain connected.
- * If the last participant leaves, the call ends automatically.
+ * When one participant or fewer is left, the call ends automatically.
+ * (This is the CALL. `leaveRoom()` leaves the chat room — never use it to hang up.)
  *
  * @param {string} roomId
  * @param {string} userId
+ * @param {string} sessionId
  */
-export const leaveVideoCall = (roomId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/video-call/leave`, { user_id: userId });
+export const leaveVideoCall = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/leave`, { user_id: userId, session_id: sessionId });
+
+/**
+ * Tell HyperBabel this participant has actually joined the media channel.
+ * Call once right after the RTC join succeeds — call duration is measured from
+ * real media presence (the accept time is only a fallback). Returns
+ * `{ success, matched }`; retry while `matched` is false.
+ *
+ * @param {string} roomId
+ * @param {string} userId
+ * @param {string} sessionId
+ */
+export const markJoinedRtc = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/joined-rtc`, { user_id: userId, session_id: sessionId });
+
+/**
+ * Liveness ping — send once a minute while on the call screen. Without it the
+ * server cannot tell a long call from one both apps abandoned, and may close
+ * the session when someone else tries to call a participant.
+ *
+ * @param {string} roomId
+ * @param {string} userId
+ * @param {string} sessionId
+ */
+export const sendVideoCallHeartbeat = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/heartbeat`, { user_id: userId, session_id: sessionId });
+
+/**
+ * Get a fresh RTC token for this participant (same channel and uid). RTC
+ * tokens are valid for one hour — renew shortly before they expire, or the
+ * call drops.
+ *
+ * @param {string} roomId
+ * @param {string} userId
+ * @param {string} sessionId
+ * @returns {Promise<{ rtc_token: string, channel_name: string, uid: number, app_id: string, expires_in: number, session_id: string }>}
+ */
+export const renewVideoCallToken = (roomId, userId, sessionId) =>
+  api.post(`${BASE}/rooms/${roomId}/video-call/renew-token`, { user_id: userId, session_id: sessionId });
 
 /**
  * Check if there is an active video call in the room.
  * @param {string} roomId
+ * @returns {Promise<{ active: boolean, session: object|null }>}
+ *   `session` is null when there is no call; otherwise it carries `id`,
+ *   `channel_name`, `status`, `participants` and `active_participant_count`.
  */
 export const getActiveVideoCall = (roomId) =>
   api.get(`${BASE}/rooms/${roomId}/video-call/active`);
@@ -237,23 +310,26 @@ export const getActiveVideoCall = (roomId) =>
 /**
  * Ban a user from the room (owner/sub_admin only).
  * @param {string} roomId
- * @param {string} adminId
- * @param {string} userId
+ * @param {string} adminId — The owner / sub_admin performing the ban (sent as `banned_by`)
+ * @param {string} userId  — The user being banned
  */
 export const banUser = (roomId, adminId, userId) =>
-  api.post(`${BASE}/rooms/${roomId}/ban`, { admin_id: adminId, user_id: userId });
+  api.post(`${BASE}/rooms/${roomId}/ban`, { user_id: userId, banned_by: adminId });
 
 /**
- * Lift a ban — the user can rejoin after unbanning.
+ * Lift a ban — the user can rejoin after unbanning (owner/sub_admin only).
  * @param {string} roomId
- * @param {string} userId
+ * @param {string} adminId — The owner / sub_admin lifting the ban (sent as `unbanned_by`)
+ * @param {string} userId  — The banned user
  */
-export const unbanUser = (roomId, userId) =>
-  api.delete(`${BASE}/rooms/${roomId}/ban/${userId}`);
+export const unbanUser = (roomId, adminId, userId) =>
+  api.delete(`${BASE}/rooms/${roomId}/ban/${userId}`, { unbanned_by: adminId });
 
 /**
- * Get all active bans for a room.
+ * Get the ban history for a room.
  * @param {string} roomId
+ * @returns {Promise<{ bans: Array<{ user_id, banned_by, banned_at, unbanned_by, unbanned_at, is_active }> }>}
+ *   Includes lifted bans — filter on `is_active` for the current ones.
  */
 export const getBans = (roomId) => api.get(`${BASE}/rooms/${roomId}/bans`);
 
@@ -271,10 +347,11 @@ export const addSubAdmin = (roomId, ownerId, userId) =>
 /**
  * Demote a sub_admin back to member (owner only).
  * @param {string} roomId
- * @param {string} userId
+ * @param {string} ownerId — The room owner performing the demotion
+ * @param {string} userId  — The sub_admin being demoted
  */
-export const removeSubAdmin = (roomId, userId) =>
-  api.delete(`${BASE}/rooms/${roomId}/sub-admins/${userId}`);
+export const removeSubAdmin = (roomId, ownerId, userId) =>
+  api.delete(`${BASE}/rooms/${roomId}/sub-admins/${userId}`, { owner_id: ownerId });
 
 /** Alias: promote member → sub_admin (same as addSubAdmin) */
 export const promoteToSubAdmin = addSubAdmin;

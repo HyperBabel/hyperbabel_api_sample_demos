@@ -9,6 +9,7 @@
  *  - IncomingCallListener subscribes to the private real-time channel
  *    and dispatches CALL_INVITE events here.
  *  - IncomingCallOverlay reads incomingCall and renders the accept/reject UI.
+ *    It also owns the ring timeout (45 s, then declined as missed).
  *  - VideoCallScreen reads/writes isInCall to guard against busy rejection.
  */
 
@@ -26,6 +27,8 @@ export interface IncomingCallData {
   rtcToken?:    string;
   uid?:         number;
   appId?:       string;
+  /** The room's real-time channel — call events for this invite arrive here. */
+  roomSignalChannel?: string;
 }
 
 interface CallContextValue {
@@ -60,14 +63,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     setIsInCall(val);
   }, []);
 
-  const autoRejectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const clearIncomingCall = useCallback(() => {
     setIncomingCall(null);
-    if (autoRejectTimerRef.current) {
-      clearTimeout(autoRejectTimerRef.current);
-      autoRejectTimerRef.current = null;
-    }
   }, []);
 
   const receiveCallInvite = useCallback(
@@ -77,15 +74,9 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
         busyCallback();
         return;
       }
+      // The overlay rings, and declines the invite as missed if nobody
+      // answers within 45 s — see IncomingCallOverlay.
       setIncomingCall(call);
-
-      // 30-second auto-reject: if no action taken, reject silently
-      if (autoRejectTimerRef.current) clearTimeout(autoRejectTimerRef.current);
-      autoRejectTimerRef.current = setTimeout(() => {
-        setIncomingCall(null);
-        autoRejectTimerRef.current = null;
-        // Caller will receive a timeout / no-answer state
-      }, 30_000);
     },
     [],
   );

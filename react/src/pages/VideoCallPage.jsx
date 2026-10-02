@@ -43,11 +43,30 @@
  *  1. Pre-join screen checks camera/mic permission before joining.
  *  2. On permission granted, joins RTC session via HyperBabel token.
  *  3. Local camera/mic published; remote tracks received and rendered.
- *  4. In-call chat messages auto-translated into each user's preferred language.
+ *  4. Once joined: POST /video-call/joined-rtc once, then
+ *     POST /video-call/heartbeat every 60 s while on this page, and
+ *     POST /video-call/renew-token shortly before the 1-hour RTC token expires.
+ *  5. In-call chat messages auto-translated into each user's preferred
+ *     language (United Chat batch-translate).
+ *  6. Leaving without a button press — call events arrive on the ROOM
+ *     real-time channel as `video_call` system messages:
+ *     - `call_ended` for this session → leave the screen (no API call).
+ *     - CALLER of a 1:1 call, nobody joined yet: `call_rejected` /
+ *       `call_missed` / `call_busy` → POST leave, show why, leave the screen.
+ *     - CALLER of any call: nobody joined 45 s after the caller is in the
+ *       channel → POST leave, "No answer".
+ *     - The last other participant left the media channel → POST leave and
+ *       leave the screen (a group call carries on while anyone remains).
+ *
+ * Every call action needs the session id. It arrives in the navigation state
+ * as `session.id` on all three ways in: the start-call response (caller), the
+ * CALL_INVITE signal (callee) and the active-call lookup (rejoin).
  *
  * Group call support:
  *  - `leaveVideoCall()` removes just this participant (others remain).
- *  - `endVideoCall()` ends the session for all participants.
+ *  - `endVideoCall()` ends the session for all participants — only the
+ *    caller, the room owner or a sub-admin may; anyone else falls back to
+ *    leaving, which ends the call once one participant or fewer remain.
  *  - Pass `rejoin: true` in navigation state to re-enter an existing session
  *    without starting a new call (e.g. after accidentally leaving).
  */
@@ -58,12 +77,23 @@ import { useCall } from '../context/CallContext';
 import ChatMessageList from '../components/ChatMessageList';
 import ChatInput from '../components/ChatInput';
 import * as unitedChat from '../services/unitedChatService';
-import * as translateService from '../services/translateService';
 import rtcService from '../services/rtcService';
+import realtimeService from '../services/realtimeService';
 import * as captionsService from '../services/captionsService';
 
 // Permission status enum
 const PERM = { CHECKING: 'checking', GRANTED: 'granted', DENIED: 'denied', UNAVAILABLE: 'unavailable' };
+
+// The caller gives up when nobody has joined this long after the caller is in
+// the call. Matches the callee's ring timeout (IncomingCallOverlay).
+const RING_TIMEOUT_MS = 45_000;
+
+// What the caller is told when a 1:1 callee does not pick up.
+const DECLINE_NOTICE = {
+  call_rejected: 'Declined',
+  call_missed:   'No answer',
+  call_busy:     'Busy',
+};
 
 export default function VideoCallPage() {
   const { roomId } = useParams();
@@ -72,13 +102,22 @@ export default function VideoCallPage() {
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
 
   const session  = location.state?.session;
+  // Required by joined-rtc / heartbeat / renew-token / leave / end.
+  const sessionId = session?.id;
   const roomType = location.state?.roomType || '1to1';
   const roomName = location.state?.roomName || 'Video Call';
-  // rejoin: re-enter an existing session — currently surfaced only via the
-  // navigation state docstring; preserved here so the field is documented at
-  // the entry point even if no branch reads it yet.
-  // eslint-disable-next-line no-unused-vars
+  // rejoin: re-enter an existing session (e.g. after accidentally leaving).
   const rejoin   = location.state?.rejoin || false;
+  // The room's real-time channel, where call events arrive. Fetched from
+  // GET /unitedchat/rooms/{roomId} when the navigation state lacks it.
+  const roomChannel = location.state?.realtimeChannel || null;
+  // Did THIS user just start the call? (The start response marks the caller
+  // with `is_caller`; a rejoin is not ringing anybody.)
+  const isCaller = !rejoin && (session?.participants || []).some(
+    (p) => p.is_caller && p.user_id === user.user_id,
+  );
+  // `call_type` is '1to1' when exactly one other person was rung.
+  const isOneToOneCall = session?.call_type === '1to1';
 
   // ── Camera/mic permission pre-check state ────────────────────────────────
   const [permStatus, setPermStatus] = useState(PERM.CHECKING);
@@ -114,6 +153,16 @@ export default function VideoCallPage() {
   const chatPollRef      = useRef(null);
   // Guard: prevent navigating away twice when session ends
   const sessionEndedRef  = useRef(false);
+  // Has any other participant entered the media channel yet?
+  const peerJoinedRef    = useRef(false);
+  // Latest exitCall / call-event handler, for callbacks registered earlier
+  const exitCallRef      = useRef(() => {});
+  const callEventRef     = useRef(() => {});
+  const exitTimerRef     = useRef(null);
+  // Why the call ended on its own ("Declined", "No answer", …), shown briefly
+  const [endNotice, setEndNotice] = useState('');
+  // Bumped on `call_accepted` to restart the caller's ring timeout (Step 5).
+  const [ringRestarts, setRingRestarts] = useState(0);
 
   // ── Busy flag: while on this page, incoming calls are auto-rejected ──────
   // IncomingCallListener reads setIsInCall to decide whether to show popup.
@@ -175,7 +224,6 @@ export default function VideoCallPage() {
      * would be rejected (and, before it was rejected, would have run on a
      * channel the server could not meter).
      */
-    const sessionId = session?.id || session?.session_id;
     const channelName = session?.channel_name;
     const uid = Math.abs(hashCode(user.user_id)) % 100000;
 
@@ -194,6 +242,88 @@ export default function VideoCallPage() {
       rtcSessionRef.current?.leave().catch(() => {});
     };
   }, [permStatus]);
+
+  // ── Step 3: Report media presence + keep the session alive ───────────────
+  // joined-rtc (once, retried while the server reports `matched: false`)
+  // anchors the call's measured duration to real media presence. The
+  // heartbeat (every 60 s) tells HyperBabel the call is still live — without
+  // it a long call looks abandoned and can be closed by the server.
+  useEffect(() => {
+    if (!connected || !sessionId) return undefined;
+    let stopped = false;
+    let retryTimer = null;
+
+    // `matched: false` = the stamp did not land yet (e.g. the callee's accept
+    // is not stored yet) — retry up to 5 times, 2 s apart.
+    const stampJoined = (attempt = 1) => {
+      unitedChat.markJoinedRtc(roomId, user.user_id, sessionId)
+        .then((res) => {
+          if (!res?.matched && attempt < 5 && !stopped) {
+            retryTimer = setTimeout(() => stampJoined(attempt + 1), 2000);
+          }
+        })
+        .catch(() => { /* non-critical — the accept time is the fallback */ });
+    };
+    stampJoined();
+
+    const beat = () => {
+      unitedChat.sendVideoCallHeartbeat(roomId, user.user_id, sessionId).catch(() => {});
+    };
+    beat();
+    const heartbeat = setInterval(beat, 60_000);
+
+    return () => {
+      stopped = true;
+      clearTimeout(retryTimer);
+      clearInterval(heartbeat);
+    };
+  }, [connected, sessionId, roomId, user.user_id]);
+
+  // ── Step 4: Call events on the room's real-time channel ──────────────────
+  // Subscribes only its own listener; unsubscribing never detaches the
+  // channel, which the chat screen may also be using.
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    let stop = null;
+    let cancelled = false;
+
+    (async () => {
+      let channel = roomChannel;
+      if (!channel) {
+        try {
+          const res = await unitedChat.getRoom(roomId);
+          channel = (res.room || res)?.realtime_channel;
+        } catch { /* no channel — the polling safety net below still applies */ }
+      }
+      if (cancelled || !channel) return;
+      try {
+        const rt = await realtimeService.init(user.user_id, user.display_name, user.preferred_lang_cd);
+        if (cancelled) return;
+        stop = rt.subscribeToRoom(channel, (event) => callEventRef.current(event));
+      } catch { /* real-time unavailable */ }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (typeof stop === 'function') stop();
+    };
+  }, [sessionId, roomId, roomChannel, user.user_id, user.display_name, user.preferred_lang_cd]);
+
+  // ── Step 5: Ring timeout — the caller hangs up when nobody joins ─────────
+  // Restarted on `call_accepted`, so an answer in the last seconds of the
+  // ring still has time to reach the media channel.
+  useEffect(() => {
+    if (!connected || !isCaller) return undefined;
+    const timer = setTimeout(() => {
+      const anyoneJoined =
+        peerJoinedRef.current || (rtcSessionRef.current?.getRemoteUsers()?.length ?? 0) > 0;
+      if (!anyoneJoined) exitCallRef.current({ leaveSession: true, notice: 'No answer' });
+    }, RING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [connected, isCaller, ringRestarts]);
+
+  // Cancel a pending "return to chat" if the page unmounts first.
+  useEffect(() => () => clearTimeout(exitTimerRef.current), []);
 
   const hashCode = (str) => {
     let hash = 0;
@@ -218,10 +348,15 @@ export default function VideoCallPage() {
       });
 
       rtcSessionRef.current = rtcChannelSession;
-      setStatusText('Publishing local tracks...');
+      if (sessionEndedRef.current) {
+        // The call ended (or the user left) while we were still joining.
+        await rtcChannelSession.leave().catch(() => {});
+        return;
+      }
 
-      await rtcChannelSession.publishLocalTracks(localVideoRef.current, true, true);
-
+      // Register every handler BEFORE publishing: participants already in the
+      // channel are reported right after the join, and publishing the local
+      // camera takes long enough for those events to be missed otherwise.
       rtcChannelSession.onRemoteUser(({ user: remoteUser, videoTrack, audioTrack, mediaType }) => {
         setRemoteUsers((prev) => {
           const exists = prev.find((u) => u.uid === remoteUser.uid);
@@ -238,9 +373,45 @@ export default function VideoCallPage() {
         setRemoteUsers((prev) => prev.filter((u) => u.uid !== leftUser.uid));
       });
 
+      rtcChannelSession.onPeerJoined(() => { peerJoinedRef.current = true; });
+
+      // Hang up once nobody else is left in the media channel. `remaining` is
+      // counted after the leave event settled, so a group call carries on
+      // while at least one other participant is still here.
+      rtcChannelSession.onPeerLeft(({ user: leftUser, remaining }) => {
+        setRemoteUsers((prev) => prev.filter((u) => u.uid !== leftUser.uid));
+        if (remaining === 0) exitCallRef.current({ leaveSession: true });
+      });
+
       rtcChannelSession.onConnectionChange((state) => {
         if (state === 'CONNECTED') { setConnected(true); setStatusText('Connected'); }
       });
+
+      // RTC tokens are valid for one hour. Swap in a fresh one before it
+      // expires — without this every call drops at the one-hour mark.
+      rtcChannelSession.onTokenWillExpire(async () => {
+        try {
+          const fresh = await unitedChat.renewVideoCallToken(roomId, user.user_id, sessionId);
+          await rtcChannelSession.renewToken(fresh.rtc_token);
+        } catch (err) {
+          console.warn('RTC token renewal failed:', err?.message);
+        }
+      });
+
+      // The token already expired (the renewal above did not get through):
+      // the media connection is gone — join again with a fresh token.
+      rtcChannelSession.onTokenExpired(async () => {
+        try {
+          const fresh = await unitedChat.renewVideoCallToken(roomId, user.user_id, sessionId);
+          await rtcChannelSession.rejoin(fresh.rtc_token);
+        } catch (err) {
+          console.warn('RTC rejoin after token expiry failed:', err?.message);
+          exitCallRef.current({ leaveSession: true, notice: 'Connection lost' });
+        }
+      });
+
+      setStatusText('Publishing local tracks...');
+      await rtcChannelSession.publishLocalTracks(localVideoRef.current, true, true);
 
       setConnected(true);
       setStatusText('Connected');
@@ -252,39 +423,40 @@ export default function VideoCallPage() {
 
   // ── In-call Chat with Auto-Translation ─────────────────────────────────
   // Incoming messages from other participants are translated into this
-  // user's preferred language (preferred_lang_cd) using the HyperBabel
-  // Translation API. Translation runs on history load and on each new message.
+  // user's preferred language (preferred_lang_cd) with United Chat
+  // batch-translate, which works with the end-user token. (The standalone
+  // /translate/* endpoints need your organization API key — backend only.)
 
   const loadChatMessages = async () => {
     try {
       const data = await unitedChat.getMessages(roomId, { limit: 50 });
       const msgs = data.messages || data || [];
 
-      // Auto-translate messages from other users into my preferred language
+      // Auto-translate messages from other users into my preferred language.
+      // HyperBabel stores each translation on the message (`translated_content`
+      // is a { [lang]: text } map), so only ask for the ones not yet in my
+      // language — the next poll returns them pre-translated.
       if (msgs.length > 0 && user.preferred_lang_cd) {
+        const myLang = user.preferred_lang_cd.split('-')[0];
         const untranslatedIds = msgs
-          .filter((m) => m.sender_id !== user.user_id && !m.translated_content)
+          .filter((m) =>
+            m.sender_id !== user.user_id &&
+            m.message_type === 'text' &&
+            m.sender_lang_cd !== myLang &&
+            !m.translated_content?.[myLang])
           .map((m) => m.id);
 
         if (untranslatedIds.length > 0) {
           try {
-            const translated = await translateService.translateBatch(
-              untranslatedIds.map((id) => {
-                const msg = msgs.find((m) => m.id === id);
-                return { id, text: msg?.content || '' };
-              }),
-              user.preferred_lang_cd
+            // Response: { translations: { [messageId]: text }, limited?: true }
+            const { translations = {} } = await unitedChat.batchTranslateMessages(
+              roomId,
+              untranslatedIds,
+              user.preferred_lang_cd,
             );
-            const translationMap = {};
-            if (Array.isArray(translated)) {
-              translated.forEach((t) => { translationMap[t.id] = t.translated_text; });
-            }
-            const translatedMsgs = msgs.map((m) =>
-              translationMap[m.id]
-                ? { ...m, translated_content: translationMap[m.id] }
-                : m
-            );
-            setChatMessages(translatedMsgs);
+            setChatMessages(msgs.map((m) =>
+              translations[m.id] ? { ...m, translated_content: translations[m.id] } : m
+            ));
             return;
           } catch { /* Fall through to set untranslated messages */ }
         }
@@ -317,76 +489,27 @@ export default function VideoCallPage() {
     }
   };
 
-  // ── Auto-exit: detect when group session ends (last participant left) ────
-  //
-  // Strategy 1 — RTC trigger: when all remote users leave the HyperBabel Video channel
-  //   (onRemoteUserLeft fires), wait 2s then confirm via getActiveVideoCall.
-  //   If the session is gone/ended → navigate back to chat.
-  //
-  // Strategy 2 — Polling safety net: every 10s check the active session status
-  //   in case the RTC event was missed (e.g. network interruption).
-  //
-  // Both strategies share sessionEndedRef to prevent double-navigation.
-
-  // Strategy 1: RTC-triggered check
+  // ── Safety net: the call ended but the real-time event was missed ─────────
+  // Group calls only: every 10 s, ask whether this session is still the live
+  // call in the room. Errors are ignored — a network blip must not end the
+  // call; only a definite "no longer live" answer leaves the screen.
   useEffect(() => {
-    // Only for group calls; skip if not yet connected to avoid false-positives
-    if (roomType !== 'group' || !connected) return;
-    // remoteUsers just became empty — all others have left the RTC channel
-    if (remoteUsers.length > 0) return;
-
-    let timer;
-    const checkIfEnded = async () => {
-      if (sessionEndedRef.current) return;
-      try {
-        const data = await unitedChat.getActiveVideoCall(roomId);
-        const activeSession = data?.session || data;
-        // If API returns no active session, the backend already ended it
-        if (!activeSession?.id || activeSession.status === 'ended') {
-          sessionEndedRef.current = true;
-          await rtcSessionRef.current?.leave().catch(() => {});
-          navigate(`/chat/${roomId}`, { replace: true });
-        }
-        // Still active (e.g. brief RTC dropout) → stay
-      } catch {
-        // 404 = no active session = session ended
-        sessionEndedRef.current = true;
-        await rtcSessionRef.current?.leave().catch(() => {});
-        navigate(`/chat/${roomId}`, { replace: true });
-      }
-    };
-
-    // Give 2s buffer: brief network drops can cause false-positive empty remoteUsers
-    timer = setTimeout(checkIfEnded, 2000);
-    return () => clearTimeout(timer);
-  }, [remoteUsers.length, connected, roomType, roomId]);
-
-  // Strategy 2: Periodic polling safety net (every 10s)
-  useEffect(() => {
-    if (roomType !== 'group' || !connected) return;
+    if (roomType !== 'group' || !connected || !sessionId) return undefined;
 
     const interval = setInterval(async () => {
       if (sessionEndedRef.current) { clearInterval(interval); return; }
       try {
+        // { active: false, session: null } when no call is live in the room
         const data = await unitedChat.getActiveVideoCall(roomId);
-        const activeSession = data?.session || data;
-        if (!activeSession?.id || activeSession.status === 'ended') {
-          sessionEndedRef.current = true;
+        if (!data?.active || data.session?.id !== sessionId) {
           clearInterval(interval);
-          await rtcSessionRef.current?.leave().catch(() => {});
-          navigate(`/chat/${roomId}`, { replace: true });
+          exitCallRef.current();
         }
-      } catch {
-        // 404 = session ended
-        sessionEndedRef.current = true;
-        clearInterval(interval);
-        await rtcSessionRef.current?.leave().catch(() => {});
-        navigate(`/chat/${roomId}`, { replace: true });
-      }
+      } catch { /* transient — try again on the next tick */ }
     }, 10_000);
 
     return () => clearInterval(interval);
-  }, [connected, roomType, roomId]);
+  }, [connected, roomType, roomId, sessionId]);
 
   // ── Live Captions (HyperBabel Speech Translation) ───────────────────────
   //
@@ -431,7 +554,7 @@ export default function VideoCallPage() {
         translateTo: target,
         // The relay accepts either the call session id or the room id of a
         // room-scoped call — pass both; session_id wins when present.
-        sessionId: session?.id || session?.session_id,
+        sessionId,
         roomId,
         onCaption: (msg) => {
           if (seq !== ccSeqRef.current) return; // stale session — ignore
@@ -493,7 +616,7 @@ export default function VideoCallPage() {
     sessionEndedRef.current = true; // prevent auto-exit from firing after manual leave
     stopCaptions();
     await rtcSessionRef.current?.leave().catch(() => {});
-    try { await unitedChat.leaveVideoCall(roomId, user.user_id); } catch { /* May be ended */ }
+    try { await unitedChat.leaveVideoCall(roomId, user.user_id, sessionId); } catch { /* May be ended */ }
     navigate(`/chat/${roomId}`);
   };
 
@@ -501,9 +624,76 @@ export default function VideoCallPage() {
     sessionEndedRef.current = true; // prevent auto-exit from firing after manual end
     stopCaptions();
     await rtcSessionRef.current?.leave().catch(() => {});
-    try { await unitedChat.endVideoCall(roomId, user.user_id); } catch { /* May be ended */ }
+    try {
+      await unitedChat.endVideoCall(roomId, user.user_id, sessionId);
+    } catch (err) {
+      // Only the caller, the room owner or a sub-admin may end the call for
+      // everyone (403 for anyone else, e.g. the callee in a 1:1 room they did
+      // not create). Hang up by leaving instead — the server ends the session
+      // once one participant or fewer remain.
+      if (err.status === 403) {
+        try { await unitedChat.leaveVideoCall(roomId, user.user_id, sessionId); } catch { /* May be ended */ }
+      }
+    }
     navigate(`/chat/${roomId}`);
   };
+
+  // ── Leaving the screen without a button press ───────────────────────────
+  // `leaveSession` also tells HyperBabel we hung up (POST …/video-call/leave —
+  // the server ends the call once one participant or fewer remain). It is
+  // skipped when the call already ended server-side.
+  const exitCall = async ({ leaveSession = false, notice = '' } = {}) => {
+    if (sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+    stopCaptions();
+    await rtcSessionRef.current?.leave().catch(() => {});
+    if (leaveSession) {
+      try { await unitedChat.leaveVideoCall(roomId, user.user_id, sessionId); } catch { /* May be ended */ }
+    }
+    if (notice) {
+      setEndNotice(notice); // shown for a moment, then back to the chat
+      exitTimerRef.current = setTimeout(() => navigate(`/chat/${roomId}`, { replace: true }), 2000);
+    } else {
+      navigate(`/chat/${roomId}`, { replace: true });
+    }
+  };
+
+  /** Is another participant in the media channel now, or was one earlier? */
+  const hasPeerJoined = () =>
+    peerJoinedRef.current || (rtcSessionRef.current?.getRemoteUsers()?.length ?? 0) > 0;
+
+  // Call events for THIS session from the room channel (Step 4). They are
+  // `video_call` system messages: event 'message', payload
+  // { type: 'message', data: { message_type: 'video_call', metadata: { event, session_id, … } } }.
+  const handleCallEvent = ({ message, type }) => {
+    const data = type === 'message' ? message?.data : null;
+    if (data?.message_type !== 'video_call') return;
+    const meta = data.metadata || {};
+    if (!sessionId || meta.session_id !== sessionId) return;
+
+    if (meta.event === 'call_ended') {
+      exitCall(); // the session is already over — nothing to tell the server
+      return;
+    }
+    // Someone answered: give them a fresh 45 s to join the media channel.
+    if (meta.event === 'call_accepted') {
+      if (isCaller && !hasPeerJoined()) setRingRestarts((n) => n + 1);
+      return;
+    }
+    // The 1:1 callee declined / missed / was busy while it was still ringing.
+    // Group calls ignore these: one callee declining must not end the call.
+    const notice = DECLINE_NOTICE[meta.event];
+    if (notice && isCaller && isOneToOneCall && !hasPeerJoined()) {
+      exitCall({ leaveSession: true, notice });
+    }
+  };
+
+  // Callbacks registered earlier (RTC handlers, timers, the room
+  // subscription) always reach the latest version of these.
+  useEffect(() => {
+    exitCallRef.current = exitCall;
+    callEventRef.current = handleCallEvent;
+  });
 
   // ── Render: Camera/Mic Permission Pre-check Screen ────────────────────────
 
@@ -575,7 +765,14 @@ export default function VideoCallPage() {
           {remoteUsers.map((ru) => (
             <div key={ru.uid} className="video-tile">
               <video
-                ref={(el) => { if (el) remoteVideoRefs.current[ru.uid] = el; }}
+                ref={(el) => {
+                  // The video track can arrive before this tile exists — play
+                  // it as soon as the element mounts (once per element).
+                  if (el && remoteVideoRefs.current[ru.uid] !== el) {
+                    remoteVideoRefs.current[ru.uid] = el;
+                    ru.videoTrack?.play(el);
+                  }
+                }}
                 autoPlay playsInline
                 style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'var(--hb-radius)' }}
               />
@@ -583,6 +780,19 @@ export default function VideoCallPage() {
             </div>
           ))}
         </div>
+
+        {/* Why the call ended on its own — shown briefly before returning to chat */}
+        {endNotice && (
+          <div style={{
+            padding: '10px 16px',
+            background: 'rgba(0,0,0,0.85)',
+            color: '#fff',
+            fontWeight: 600,
+            textAlign: 'center',
+          }}>
+            {endNotice} — returning to the chat…
+          </div>
+        )}
 
         {/* Captions failure banner — persists until the next CC start */}
         {ccError && (

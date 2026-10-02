@@ -167,6 +167,30 @@ export function onRemoteUserPublished(handler) {
   });
 }
 
+export function onRemoteUserJoined(handler) {
+  ensureEngine().on('user-joined', handler);
+}
+
 export function onRemoteUserLeft(handler) {
   ensureEngine().on('user-left', handler);
+}
+
+/** Remote participants currently in the channel (camera on or off). */
+export function remoteParticipantCount() {
+  return _remoteUids.size;
+}
+
+/**
+ * Fires about 30 seconds before the current RTC token expires (tokens last one
+ * hour). Fetch a fresh token from HyperBabel and pass it to `renewToken`, or
+ * the SDK disconnects when the old one runs out.
+ */
+export function onTokenWillExpire(handler) {
+  ensureEngine().on('token-privilege-will-expire', handler);
+}
+
+/** Swap in a fresh token for the channel + uid this client already joined with. */
+export async function renewToken(token) {
+  if (!_engine) return;
+  await _engine.renewToken(token);
 }

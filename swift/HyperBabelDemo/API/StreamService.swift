@@ -1,6 +1,23 @@
 /*
  * HyperBabel API — Live Stream service.
  *
+ * ⚠️ EVERY CALL HERE NEEDS YOUR BACKEND — IT CANNOT RUN FROM THIS APP.
+ *
+ *   Every `/stream` endpoint authenticates with your ORGANIZATION API KEY
+ *   (`Authorization: Bearer hb_live_…`). Anything else is rejected up front:
+ *
+ *       POST /api/v1/stream/sessions
+ *       -> 401 { "error": { "code": "invalid_api_key_format" } }
+ *
+ *   Creating a broadcast allocates paid capacity and is metered against your
+ *   organization, so the caller has to be YOU, not a signed-in end user. This
+ *   demo only ever holds a customer JWT (the API client refuses to carry an org
+ *   key), so these calls fail here by design.
+ *
+ *   Ship it as:  app -> your backend (holds hb_live_…) -> HyperBabel /stream
+ *   The paths, payloads and call order below are accurate — implement them
+ *   on your server and expose a thin endpoint the app can call.
+ *
  * Wire shapes:
  *   POST /stream/sessions                   → { session: { id, channel_name, app_id, host: { uid, rtc_token } } }
  *   GET  /stream/sessions                   → { sessions: [{ id, title, host_user_id, host_name, viewer_count }, …] }
@@ -19,10 +36,10 @@ struct StreamSession: Codable, Identifiable {
     let hostName: String?
     let hostUserId: String?
     let viewerCount: Int?
-    /// `GET /stream/sessions` returns the host as a nested object on Workers
-    /// (`{ host: { user_id, display_name } }`), unlike the legacy hb_api
-    /// surface which spread `host_user_id` / `host_name` flat. Decode both
-    /// shapes so the row renders regardless of which backend serves us.
+    /// `GET /stream/sessions` returns the host as a nested object
+    /// (`{ host: { user_id, display_name } }`); older API versions spread
+    /// `host_user_id` / `host_name` flat. Decode both shapes so the row
+    /// renders either way.
     let host: StreamRowHost?
 
     var id: String { sessionId ?? id_ ?? UUID().uuidString }
@@ -113,7 +130,7 @@ struct StreamViewerTokenResponse: Codable {
     }
 }
 
-/// Wire shape per cf_workers_api/src/routes/stream.ts createStreamSchema:
+/// Wire shape per the HyperBabel Stream API (POST /stream/sessions):
 /// flat `{ title, host_user_id, host_display_name? }`. `title` is required
 /// (zod min-length 1).
 struct CreateStreamRequest: Codable {

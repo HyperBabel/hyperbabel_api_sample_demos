@@ -4,7 +4,7 @@
  * Provides configuration and monitoring panels:
  * - API Usage statistics (monthly breakdown by service)
  * - Push notification token management
- * - Language detection playground
+ * - Language detection — needs your backend (explained on the page)
  *
  * Webhooks are managed in the HyperBabel Console (https://console.hyperbabel.com),
  * not from this demo, because webhook CRUD is a tenant-admin operation that
@@ -13,7 +13,10 @@
  * API Integration:
  * - Auth API: getUsage
  * - Push API: register/unregister tokens, list tokens
- * - Translation API: detectLanguage, getSupportedLanguages
+ * - Translation API (`/translate/detect`, `/translate/languages`): NOT called —
+ *   it authenticates with the organization API key, so it belongs on your
+ *   backend. With the end-user token it answers 401, and every 401 also
+ *   costs a token refresh.
  */
 
 import { useState, useEffect } from 'react';
@@ -21,7 +24,6 @@ import { useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
 import * as authService from '../services/authService';
 import * as pushService from '../services/pushService';
-import * as translateService from '../services/translateService';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
@@ -30,9 +32,6 @@ export default function SettingsPage() {
   // ── State ──
   const [usage, setUsage] = useState(null);
   const [pushTokens, setPushTokens] = useState([]);
-  const [supportedLangs, setSupportedLangs] = useState([]);
-  const [detectInput, setDetectInput] = useState('');
-  const [detectResult, setDetectResult] = useState(null);
 
   useEffect(() => {
     if (!user.user_id) {
@@ -50,26 +49,13 @@ export default function SettingsPage() {
     const results = await Promise.allSettled([
       authService.getUsage(),
       pushService.getTokens(user.user_id),
-      translateService.getSupportedLanguages(),
     ]);
 
     if (results[0].status === 'fulfilled') setUsage(results[0].value);
     if (results[1].status === 'fulfilled') setPushTokens(results[1].value?.tokens || results[1].value || []);
-    if (results[2].status === 'fulfilled') setSupportedLangs(results[2].value?.languages || results[2].value || []);
   };
 
-  /**
-   * Detect the language of user-provided text.
-   */
-  const handleDetectLanguage = async () => {
-    if (!detectInput.trim()) return;
-    try {
-      const result = await translateService.detectLanguage(detectInput);
-      setDetectResult(result);
-    } catch (err) {
-      setDetectResult({ error: err.message });
-    }
-  };
+  const usageSummary = usage ? authService.summarizeUsage(usage) : null;
 
   return (
     <>
@@ -83,26 +69,35 @@ export default function SettingsPage() {
         <div className="settings-section">
           <h2 className="settings-section-title">📊 API Usage</h2>
           <div className="settings-card glass-card">
-            {usage ? (
+            {usageSummary ? (
               <>
-                <div style={{ marginBottom: '16px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                  <span className="badge badge-primary">Period: {usage.period || 'N/A'}</span>
-                  <span className="badge badge-success">Plan: {usage.plan || 'Free'}</span>
+                <div style={{ marginBottom: '16px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span className="badge badge-primary">Period: current month</span>
+                  <span className="badge badge-success">Plan: {usageSummary.plan}</span>
+                  {usageSummary.periodEnd && (
+                    <span className="badge badge-primary">
+                      Billing period ends: {new Date(usageSummary.periodEnd).toLocaleDateString()}
+                    </span>
+                  )}
                 </div>
                 <div className="usage-grid">
-                  {usage.usage && Object.entries(usage.usage).map(([key, val]) => (
-                    <div key={key} className="usage-item">
+                  {usageSummary.items.map((item) => (
+                    <div key={item.key} className="usage-item">
                       <div className="usage-value">
-                        {typeof val === 'number' ? val.toLocaleString() : val}
+                        {item.used.toLocaleString()}
+                        <span className="text-muted text-sm">
+                          {' / '}{item.limit === null ? 'Unlimited' : item.limit.toLocaleString()}
+                        </span>
                       </div>
-                      <div className="usage-label">{key.replace(/_/g, ' ')}</div>
+                      <div className="usage-label">{item.label}</div>
                     </div>
                   ))}
                 </div>
               </>
             ) : (
               <div className="text-muted">
-                Connect your API key to view usage statistics.
+                Usage statistics are unavailable — the organization has no active
+                subscription, or the request failed.
               </div>
             )}
           </div>
@@ -142,54 +137,14 @@ export default function SettingsPage() {
 
         {/* ══════════ LANGUAGE DETECTION ══════════ */}
         <div className="settings-section">
-          <h2 className="settings-section-title">🔍 Language Detection</h2>
-          <div className="settings-card glass-card">
-            <div className="flex gap-md">
-              <input
-                type="text"
-                className="input-field"
-                placeholder="Type text to detect its language..."
-                value={detectInput}
-                onChange={(e) => setDetectInput(e.target.value)}
-                style={{ flex: 1 }}
-              />
-              <button className="btn btn-primary" onClick={handleDetectLanguage}>
-                Detect
-              </button>
-            </div>
-            {detectResult && (
-              <div style={{ marginTop: '12px', padding: '12px', background: 'var(--hb-surface-alt)', borderRadius: 'var(--hb-radius-sm)' }}>
-                {detectResult.error ? (
-                  <span className="text-muted">Error: {detectResult.error}</span>
-                ) : (
-                  <span>
-                    Detected: <strong>{detectResult.language}</strong>
-                    {detectResult.confidence && ` (${(detectResult.confidence * 100).toFixed(1)}% confidence)`}
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Supported Languages List */}
-            {supportedLangs.length > 0 && (
-              <div style={{ marginTop: '16px' }}>
-                <div className="text-sm text-muted" style={{ marginBottom: '8px' }}>
-                  Supported Languages ({supportedLangs.length}):
-                </div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {supportedLangs.slice(0, 30).map((lang) => (
-                    <span key={typeof lang === 'string' ? lang : lang.code} className="badge badge-primary">
-                      {typeof lang === 'string' ? lang : lang.code}
-                    </span>
-                  ))}
-                  {supportedLangs.length > 30 && (
-                    <span className="badge" style={{ background: 'var(--hb-surface-alt)', color: 'var(--hb-text-muted)' }}>
-                      +{supportedLangs.length - 30} more
-                    </span>
-                  )}
-                </div>
-              </div>
-            )}
+          <h2 className="settings-section-title">🔍 Language Detection ⚠️ needs your backend</h2>
+          <div className="settings-card glass-card text-muted" style={{ lineHeight: 1.6 }}>
+            <code>POST /translate/detect</code> and <code>GET /translate/languages</code>{' '}
+            authenticate with your organization API key, which never ships in a browser
+            bundle — so this demo does not call them. Expose a thin endpoint on your own
+            server that calls them (request shapes in{' '}
+            <code>src/services/translateService.js</code>).
+            Chat messages are still translated in-app via United Chat batch-translate.
           </div>
         </div>
       </div>

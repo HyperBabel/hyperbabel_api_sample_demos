@@ -1,6 +1,7 @@
 /**
  * HyperBabel Demo — Formatters
- * Shared utility functions for dates, file sizes, text truncation.
+ * Shared utility functions for dates, file sizes, text truncation, and
+ * call-event notices.
  */
 
 import dayjs from 'dayjs';
@@ -52,6 +53,22 @@ export const formatFileSize = (bytes: number): string => {
   if (bytes < 1024 * 1024)    return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3)      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+};
+
+/**
+ * One-line notice for a call-event message (`message_type: 'video_call'`).
+ * Those messages have EMPTY content — the event is in `metadata.event`.
+ */
+export const callEventLabel = (metadata: Record<string, unknown> | null | undefined): string => {
+  switch (metadata?.event) {
+    case 'call_started':  return 'Video call started';
+    case 'call_accepted': return 'Call answered';
+    case 'call_ended':    return 'Video call ended';
+    case 'call_rejected': return 'Call declined';
+    case 'call_missed':   return 'Missed call';
+    case 'call_busy':     return 'Line busy';
+    default:              return 'Video call';
+  }
 };
 
 /**

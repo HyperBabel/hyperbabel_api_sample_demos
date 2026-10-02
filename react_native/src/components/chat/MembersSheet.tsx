@@ -53,8 +53,12 @@ export function MembersSheet({ visible, roomId, currentUserId, currentRole, onCl
         text: 'Ban',
         style: 'destructive',
         onPress: async () => {
-          await unitedChat.banUser(roomId, currentUserId, member.user_id);
-          setMembers((prev) => prev.filter((m) => m.user_id !== member.user_id));
+          try {
+            await unitedChat.banUser(roomId, currentUserId, member.user_id);
+            setMembers((prev) => prev.filter((m) => m.user_id !== member.user_id));
+          } catch (err: any) {
+            Alert.alert('Ban failed', err?.message ?? 'Please try again.');
+          }
         },
       },
     ]);
@@ -62,13 +66,17 @@ export function MembersSheet({ visible, roomId, currentUserId, currentRole, onCl
 
   const handleToggleAdmin = async (member: RoomMember) => {
     if (currentRole !== 'owner') return;
-    if (member.role === 'sub_admin') {
-      await unitedChat.removeSubAdmin(roomId, member.user_id);
-    } else {
-      await unitedChat.addSubAdmin(roomId, currentUserId, member.user_id);
+    try {
+      if (member.role === 'sub_admin') {
+        await unitedChat.removeSubAdmin(roomId, currentUserId, member.user_id);
+      } else {
+        await unitedChat.addSubAdmin(roomId, currentUserId, member.user_id);
+      }
+      const { members: m } = await unitedChat.getMembers(roomId);
+      setMembers(m);
+    } catch (err: any) {
+      Alert.alert('Role change failed', err?.message ?? 'Please try again.');
     }
-    const { members: m } = await unitedChat.getMembers(roomId);
-    setMembers(m);
   };
 
   return (
