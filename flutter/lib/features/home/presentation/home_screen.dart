@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/network/presence_repository.dart';
+import '../../../core/network/push_repository.dart';
 import '../../../core/network/united_chat_repository.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/glass_container.dart';
@@ -84,6 +85,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     _userId = userId;
     _startHeartbeat();
+    // Register this device's real FCM token — once per app run per user.
+    // Without the native push setup (README) it registers nothing and
+    // Settings shows why; the rest of the demo works either way.
+    PushRegistration.registerThisDevice(userId);
     await _loadRooms();
   }
 
@@ -113,6 +118,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
     if (name == null || name.isEmpty || _userId == null) return;
     try {
+      // A group with just you in it. This demo has no screen for adding
+      // members — use POST /unitedchat/rooms/:roomId/members from your app,
+      // or pass the other user ids in `members` here.
       final room = await _repo.createRoom(
         roomType: 'group',
         creatorId: _userId!,
@@ -121,7 +129,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       await _loadRooms();
       if (!mounted) return;
-      context.go('/chat/${room['id'] ?? room['room_id']}');
+      context.go('/chat/${room['id']}');
     } catch (e) {
       if (!mounted) return;
       _toast(e.toString());
@@ -129,15 +137,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _confirmLeave(Map<String, dynamic> room) async {
-    final id = (room['id'] ?? room['room_id']) as String?;
+    final id = room['id'] as String?;
     if (id == null || _userId == null) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Leave room?'),
         content: Text(
-          'You will stop receiving messages from "${room['room_name'] ?? id}". '
-          'Owners must transfer ownership before leaving.',
+          'You will stop receiving messages from "${room['room_name'] ?? id}".',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
@@ -220,7 +227,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             _buildActionCard(
               context,
               title: 'Settings',
-              description: 'API usage, push tokens, language, blocked users.',
+              description: 'Push tokens, language, blocked users.',
               icon: Icons.settings_outlined,
               onTap: () => context.go('/settings'),
             ),
@@ -254,10 +261,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildRoomTile(Map<String, dynamic> room) {
-    final id = (room['id'] ?? room['room_id'] ?? '').toString();
+    // Fields of a GET /unitedchat/rooms entry: `id`, `room_name` (already
+    // resolved for you — a 1:1 room shows the peer's name), `channel_type`
+    // ('1to1' | 'group' | 'open') and `member_count`.
+    final id = (room['id'] ?? '').toString();
     final name = (room['room_name'] ?? id).toString();
-    final type = (room['room_type'] ?? 'group').toString();
-    final memberCount = room['member_count'] ?? room['members']?.length;
+    final type = (room['channel_type'] ?? '').toString();
+    final memberCount = room['member_count'];
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: InkWell(

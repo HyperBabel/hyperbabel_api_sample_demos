@@ -122,10 +122,12 @@ export async function joinCall({
 /**
  * Join with a token the server already issued — no token request of our own.
  *
- * Live-stream hosts use this: `POST /stream/sessions` returns a 24-hour
- * publisher token together with the channel name and uid, so asking
- * `/rtm/rtc/token` for a second one is a wasted round-trip (and that endpoint
- * only issues publisher tokens for *video call* sessions).
+ * Live streams use this. Hosts: `POST /stream/sessions` returns a 24-hour
+ * publisher token (`session.host.rtc_token`, `session.host.uid`) with the
+ * channel name, so asking `/rtm/rtc/token` for a second one is a wasted
+ * round-trip (and that endpoint only issues publisher tokens for *video call*
+ * sessions). Viewers: `POST /stream/sessions/:id/viewer-token` returns a
+ * subscriber `token` and `uid` — join with those and never publish.
  */
 export async function joinWithToken({ appId, channelName, token, uid, sessionKind = 'call' }) {
   _sessionKind = sessionKind === 'broadcast' ? 'broadcast' : 'call';

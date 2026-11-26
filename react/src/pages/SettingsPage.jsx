@@ -2,7 +2,6 @@
  * HyperBabel React Demo — Settings Page
  *
  * Provides configuration and monitoring panels:
- * - API Usage statistics (monthly breakdown by service)
  * - Push notification token management
  * - Language detection — needs your backend (explained on the page)
  *
@@ -10,8 +9,11 @@
  * not from this demo, because webhook CRUD is a tenant-admin operation that
  * requires a Console session and is not exposed to API keys.
  *
+ * Organization usage and plan data are not shown: they are business data for
+ * your backend, read with the organization API key, and are not available to
+ * end-user apps.
+ *
  * API Integration:
- * - Auth API: getUsage
  * - Push API: register/unregister tokens, list tokens
  * - Translation API (`/translate/detect`, `/translate/languages`): NOT called —
  *   it authenticates with the organization API key, so it belongs on your
@@ -22,7 +24,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
-import * as authService from '../services/authService';
 import * as pushService from '../services/pushService';
 
 export default function SettingsPage() {
@@ -30,7 +31,6 @@ export default function SettingsPage() {
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
 
   // ── State ──
-  const [usage, setUsage] = useState(null);
   const [pushTokens, setPushTokens] = useState([]);
 
   useEffect(() => {
@@ -45,17 +45,13 @@ export default function SettingsPage() {
    * Load all settings data on mount.
    */
   const loadData = async () => {
-    // Fetch all data in parallel for faster page load
-    const results = await Promise.allSettled([
-      authService.getUsage(),
-      pushService.getTokens(user.user_id),
-    ]);
-
-    if (results[0].status === 'fulfilled') setUsage(results[0].value);
-    if (results[1].status === 'fulfilled') setPushTokens(results[1].value?.tokens || results[1].value || []);
+    try {
+      const result = await pushService.getTokens(user.user_id);
+      setPushTokens(result?.tokens || result || []);
+    } catch {
+      // Leave the list empty — the card shows the "no tokens" hint.
+    }
   };
-
-  const usageSummary = usage ? authService.summarizeUsage(usage) : null;
 
   return (
     <>
@@ -64,44 +60,6 @@ export default function SettingsPage() {
         <h1 style={{ fontSize: '1.8rem', fontWeight: 800, marginBottom: '32px' }}>
           ⚙️ Settings
         </h1>
-
-        {/* ══════════ API USAGE ══════════ */}
-        <div className="settings-section">
-          <h2 className="settings-section-title">📊 API Usage</h2>
-          <div className="settings-card glass-card">
-            {usageSummary ? (
-              <>
-                <div style={{ marginBottom: '16px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span className="badge badge-primary">Period: current month</span>
-                  <span className="badge badge-success">Plan: {usageSummary.plan}</span>
-                  {usageSummary.periodEnd && (
-                    <span className="badge badge-primary">
-                      Billing period ends: {new Date(usageSummary.periodEnd).toLocaleDateString()}
-                    </span>
-                  )}
-                </div>
-                <div className="usage-grid">
-                  {usageSummary.items.map((item) => (
-                    <div key={item.key} className="usage-item">
-                      <div className="usage-value">
-                        {item.used.toLocaleString()}
-                        <span className="text-muted text-sm">
-                          {' / '}{item.limit === null ? 'Unlimited' : item.limit.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="usage-label">{item.label}</div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <div className="text-muted">
-                Usage statistics are unavailable — the organization has no active
-                subscription, or the request failed.
-              </div>
-            )}
-          </div>
-        </div>
 
         {/* ══════════ PUSH TOKENS ══════════ */}
         <div className="settings-section">
@@ -129,7 +87,8 @@ export default function SettingsPage() {
             ) : (
               <div className="text-muted text-center" style={{ padding: '24px' }}>
                 No push tokens registered for this user.
-                Use <code>pushService.registerToken()</code> to register FCM/APNs tokens.
+                Use <code>pushService.registerToken()</code> to register FCM registration
+                tokens — on every platform, iOS included.
               </div>
             )}
           </div>

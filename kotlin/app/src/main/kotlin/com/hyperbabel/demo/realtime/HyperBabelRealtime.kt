@@ -136,9 +136,10 @@ object HyperBabelRealtime {
      * payload; there is no separate typing channel.
      *
      * Callers receive the event name (e.g. `message`, `message.deleted`,
-     * `message.updated`, `read_receipt`) and a Map view of the payload. For
-     * `message.deleted` / `message.updated` the message id is inside the
-     * payload's `data` object (`data.message_id`), not at the top level.
+     * `message.updated`, `read_receipt`, `room.updated`) and a Map view of the
+     * payload. For `message.deleted` / `message.updated` the message id is
+     * inside the payload's `data` object (`data.message_id`), not at the top
+     * level; `room.updated` carries `data.is_frozen` after a freeze / unfreeze.
      */
     fun subscribeRoom(realtimeChannel: String, onEvent: (String, Any?) -> Unit): () -> Unit =
         subscribe(realtimeChannel, onEvent)

@@ -2,7 +2,9 @@
  * HyperBabel Demo — MembersSheet Component
  *
  * Bottom-sheet overlay listing room members with their roles.
- * Owner/sub_admin actions: ban, promote/demote sub_admin.
+ * Owner / sub_admin actions: ban (removes the member from this room; only the
+ * owner may ban a sub_admin). Owner only: promote / demote sub_admin.
+ * Unbanning is not wired into this sheet — see unitedChat.unbanUser().
  */
 
 import React, { useEffect, useState } from 'react';
@@ -47,7 +49,7 @@ export function MembersSheet({ visible, roomId, currentUserId, currentRole, onCl
   const canManage = currentRole === 'owner' || currentRole === 'sub_admin';
 
   const handleBan = (member: RoomMember) => {
-    Alert.alert('Ban Member', `Ban ${member.user_name}?`, [
+    Alert.alert('Ban Member', `Ban ${member.user_name ?? member.user_id} from this room?`, [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Ban',
@@ -94,9 +96,9 @@ export function MembersSheet({ visible, roomId, currentUserId, currentRole, onCl
             keyExtractor={(m) => m.user_id}
             renderItem={({ item }) => (
               <View style={styles.row}>
-                <Avatar name={item.user_name} size={40} />
+                <Avatar name={item.user_name ?? item.user_id} size={40} />
                 <View style={styles.info}>
-                  <Text style={styles.name}>{item.user_name}</Text>
+                  <Text style={styles.name}>{item.user_name ?? item.user_id}</Text>
                   <Text style={styles.uid}>{item.user_id}</Text>
                 </View>
                 <Badge label={item.role} variant={roleVariant(item.role) as any} />
@@ -109,9 +111,11 @@ export function MembersSheet({ visible, roomId, currentUserId, currentRole, onCl
                         </Text>
                       </TouchableOpacity>
                     )}
-                    <TouchableOpacity onPress={() => handleBan(item)} style={styles.actionBtn}>
-                      <Text style={[styles.actionText, { color: colors.error }]}>🚫</Text>
-                    </TouchableOpacity>
+                    {(currentRole === 'owner' || item.role !== 'sub_admin') && (
+                      <TouchableOpacity onPress={() => handleBan(item)} style={styles.actionBtn}>
+                        <Text style={[styles.actionText, { color: colors.error }]}>🚫</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 )}
               </View>

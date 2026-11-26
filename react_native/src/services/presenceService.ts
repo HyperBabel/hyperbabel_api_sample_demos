@@ -20,11 +20,12 @@ export interface PresenceEntry {
 }
 
 /**
- * Send a heartbeat to mark the user as online.
- * Call every 30 seconds to keep the status active.
+ * Send a heartbeat to keep the user present. Call every 30 seconds.
+ * It turns 'offline' back into 'online' but keeps a status the user chose
+ * ('away' / 'dnd'); the response `status` is the stored status.
  */
 export const heartbeat = (userId: string) =>
-  api.post<{ status: 'ok' }>(`${BASE}/heartbeat`, { user_id: userId });
+  api.post<{ success: boolean; status: PresenceStatus }>(`${BASE}/heartbeat`, { user_id: userId });
 
 /**
  * Explicitly set the user's presence status.

@@ -1,6 +1,10 @@
 /*
- * Settings — surfaces every account-level read endpoint the demo cares about.
+ * Settings — profile, blocked users, push tokens and logout.
  * Webhooks are explicitly excluded; manage those in the HyperBabel Console.
+ *
+ * Organization usage and plan data are not shown: they are business data
+ * for your backend, read with the organization API key, and are not
+ * available to end-user apps.
  *
  * There is no language-detection / text-translation playground: the
  * standalone Translation endpoints (`/translate/…`) accept only your
@@ -35,7 +39,6 @@ import com.hyperbabel.demo.api.ApiClient
 import com.hyperbabel.demo.data.Session
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -46,13 +49,11 @@ fun SettingsScreen(
     onOpenBlocks: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    var usage by remember { mutableStateOf<JsonObject?>(null) }
     var tokens by remember { mutableStateOf<List<JsonObject>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         loading = true
-        runCatching { usage = ApiClient.auth.getUsage() }
         runCatching {
             val resp = ApiClient.push.getTokens(Session.userId)
             val list: JsonArray = resp["tokens"]?.jsonArray ?: JsonArray(emptyList())
@@ -89,47 +90,6 @@ fun SettingsScreen(
         Section("Privacy")
         OutlinedButton(onClick = onOpenBlocks, modifier = Modifier.fillMaxWidth()) {
             Text("🚫  Blocked Users  →")
-        }
-
-        Section("API Usage")
-        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                if (loading) Text("Loading…", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                else if (usage == null) Text("Unable to load usage stats.",
-                    color = MaterialTheme.colorScheme.error)
-                else {
-                    // GET /auth/usage is ONE flat object: this month's usage
-                    // (`messages_sent`, `hd_video_mins`, …) next to the plan's
-                    // monthly allowance (`monthly_messages`, …; -1 = unlimited).
-                    val u = usage!!
-                    fun field(key: String): String? = u[key]?.jsonPrimitive?.contentOrNull
-                    field("plan_name")?.let { plan ->
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("Plan", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(plan, style = MaterialTheme.typography.titleSmall)
-                        }
-                    }
-                    listOf(
-                        "Chat Messages"          to ("messages_sent"   to "monthly_messages"),
-                        "HD Video Minutes"       to ("hd_video_mins"   to "monthly_hd_video_mins"),
-                        "Full HD Video Minutes"  to ("fhd_video_mins"  to "monthly_fhd_video_mins"),
-                        "HD Stream Minutes"      to ("hd_stream_mins"  to "monthly_hd_stream_mins"),
-                        "Full HD Stream Minutes" to ("fhd_stream_mins" to "monthly_fhd_stream_mins"),
-                        "Translation Characters" to ("translate_chars" to "monthly_translate_chars"),
-                    ).forEach { (label, keys) ->
-                        val (vKey, lKey) = keys
-                        val value = field(vKey) ?: "—"
-                        val limit = field(lKey)?.let { if (it == "-1") "Unlimited" else it }
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(if (limit != null) "$value / $limit" else value,
-                                style = MaterialTheme.typography.titleSmall)
-                        }
-                    }
-                }
-            }
         }
 
         Section("Push Tokens")

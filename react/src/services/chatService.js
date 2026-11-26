@@ -65,13 +65,15 @@ export const sendMessage = (channelId, data) =>
   api.post(`${BASE}/channels/${channelId}/messages`, data);
 
 /**
- * Get paginated message history for a channel.
+ * Get paginated message history for a channel — NEWEST FIRST (reverse a page
+ * before rendering oldest → newest; page back with `next_cursor`).
  *
- * Performance tip: always include created_at_gte/lte to enable
- * PostgreSQL partition pruning on the monthly-partitioned table.
+ * Performance tip: pass created_at_gte/lte when you know the time range —
+ * a bounded range is answered faster.
  *
- * @param {string} channelId
+ * @param {string} channelId — The channel's id (UUID) from createChannel, not its name
  * @param {{ cursor?: string, limit?: number, created_at_gte?: string, created_at_lte?: string }} [params]
+ * @returns {Promise<{ messages: object[], next_cursor: string|null, has_more: boolean }>}
  */
 export const getMessages = (channelId, params) =>
   api.get(`${BASE}/channels/${channelId}/messages`, params);
@@ -98,15 +100,15 @@ export const editMessage = (channelId, messageId, userId, content) =>
 // ── Reactions ────────────────────────────────────────────────────────────
 
 /**
-/**
  * Add an emoji reaction to a message (idempotent for same user+emoji).
  *
  * 🔴 On `/chat` a reaction is MESSAGE-scoped — the path carries no room id:
  *        POST /chat/messages/:messageId/reactions
  *    United Chat's equivalent IS room-scoped
- *    (`/unitedchat/rooms/:roomId/messages/:messageId/reactions`), and mixing
- *    the two shapes produces `/chat/rooms/…`, which is not a route at all and
- *    404s. Reach for `unitedChatService.addReaction()` in end-user code.
+ *    (`POST /unitedchat/rooms/:roomId/messages/:messageId/reactions`), and
+ *    mixing the two shapes produces `/chat/rooms/…`, which is not a route at
+ *    all and 404s. End-user code uses the United Chat one
+ *    (`addReaction` / `removeReaction` in unitedChatService.js).
  *
  * The response is the FULL reaction map for that message:
  *   { "reactions": { "👍": ["user_1", "user_2"], "❤️": ["user_3"] } }
@@ -149,8 +151,12 @@ export const sendTypingIndicator = (channelId, userId, isTyping) =>
 // ── Search ───────────────────────────────────────────────────────────────
 
 /**
- * Full-text search messages in a channel using PostgreSQL GIN index.
- * Maximum range: 6 months. Results include `highlight` with <mark> tags.
+ * Full-text search messages in a channel. Maximum range: 6 months.
+ * Results include `highlight`: the matching text, HTML-escaped by the server
+ * (& < > "), with the hits wrapped in <mark>…</mark> — the only markup it
+ * contains — so it can be inserted as HTML. To build React nodes instead,
+ * split it on <mark> / </mark> and decode &amp; &lt; &gt; &quot; in the text
+ * parts. Never insert a message's raw `content` as HTML.
  *
  * @param {string} channelId
  * @param {string} query

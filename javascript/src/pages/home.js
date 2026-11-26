@@ -1,6 +1,12 @@
 /**
  * Home page — list of rooms the signed-in user belongs to, with a primitive
  * "create room" form so the demo is self-contained.
+ *
+ * Two users meet by putting each other in a room: one of them creates a 1:1
+ * or group room with the other's user ID (shown below the form and in
+ * Settings). The room then appears in both users' lists. This demo has no
+ * open-room browser or invite-code join, so an Open room has only you until
+ * your app adds one of those.
  */
 
 import * as unitedChat from '../api/unitedChat.js';
@@ -26,12 +32,17 @@ export async function renderHome(navigate) {
     <div class="card">
       <h3 style="margin-top: 0;">Create a room</h3>
       <div class="row">
-        <input id="new-room-name" placeholder="Room name" />
+        <input id="new-room-name" placeholder="Room name (group / open)" />
         <select id="new-room-type" style="margin-bottom: 12px;">
           <option value="group">Group</option>
+          <option value="1to1">1:1</option>
           <option value="open">Open</option>
         </select>
       </div>
+      <input id="new-room-members" placeholder="Other user IDs, comma-separated (1:1: exactly one)" />
+      <p class="muted" style="font-size: 12px; margin: 4px 0 12px;">
+        Your user ID: <code>${escapeHtml(user.user_id)}</code> — share it so someone can add you.
+      </p>
       <button id="create-room">Create</button>
       <div id="create-error" class="error"></div>
     </div>
@@ -46,22 +57,48 @@ export async function renderHome(navigate) {
   document.getElementById('open-settings').onclick = () => navigate('#/settings');
 
   document.getElementById('create-room').onclick = async () => {
+    const errorEl = document.getElementById('create-error');
+    errorEl.textContent = '';
     const roomName = document.getElementById('new-room-name').value.trim();
     const roomType = document.getElementById('new-room-type').value;
-    if (!roomName) {
-      document.getElementById('create-error').textContent = 'Room name is required.';
-      return;
+    const others = [...new Set(
+      document.getElementById('new-room-members').value
+        .split(',')
+        .map((s) => s.trim())
+        .filter((id) => id && id !== user.user_id),
+    )];
+
+    // `members` lists the OTHER people — you are the room's `creator_id`.
+    //   1:1   → exactly one id: the peer (`[me, peer]` would make a self-chat).
+    //   group → the people to add; with none, it is a room of one for now.
+    //   open  → only you; others join through your app's open-room flow.
+    let members;
+    if (roomType === '1to1') {
+      if (others.length !== 1) {
+        errorEl.textContent = 'A 1:1 room needs exactly one other user ID.';
+        return;
+      }
+      members = others;
+    } else {
+      if (!roomName) {
+        errorEl.textContent = 'Room name is required.';
+        return;
+      }
+      members = roomType === 'group' && others.length ? others : [user.user_id];
     }
+
     try {
+      // `{ room: { id, … } }` — `already_exists: true` when that 1:1 (or the
+      // same set of group members) already has a room.
       await unitedChat.createRoom({
         room_type: roomType,
         creator_id: user.user_id,
-        room_name: roomName,
-        members: [user.user_id],
+        ...(roomName ? { room_name: roomName } : {}),
+        members,
       });
       await loadRooms(user.user_id, navigate);
     } catch (err) {
-      document.getElementById('create-error').textContent = err.message;
+      errorEl.textContent = err.message;
     }
   };
 

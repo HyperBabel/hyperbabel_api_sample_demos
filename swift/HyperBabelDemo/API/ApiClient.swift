@@ -30,6 +30,29 @@ enum ApiError: Error, LocalizedError {
     }
 }
 
+extension ApiError {
+    /// The human-readable message from a HyperBabel error body.
+    ///
+    /// Error bodies come in two shapes, and both carry the server's message:
+    ///   `{ "error": { "code": "...", "message": "..." } }`
+    ///   `{ "error": "plain string" }`  (e.g. 401 `Firebase project "<id>" is
+    ///   not registered with HyperBabel`)
+    /// Falls back to the `code`, then to the raw body text, then to nil.
+    static func serverMessage(from data: Data) -> String? {
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let text = json["error"] as? String, !text.isEmpty { return text }
+            if let obj = json["error"] as? [String: Any] {
+                if let text = obj["message"] as? String, !text.isEmpty { return text }
+                if let code = obj["code"] as? String, !code.isEmpty { return code }
+            }
+            if let text = json["message"] as? String, !text.isEmpty { return text }
+        }
+        let raw = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (raw?.isEmpty == false) ? raw : nil
+    }
+}
+
 struct EmptyBody: Codable {}
 struct EmptyResponse: Codable {}
 
@@ -129,24 +152,50 @@ final class ApiClient {
         }
     }
 
+    /// Sign this device out on the server: POST /customer/logout.
+    ///
+    /// No Authorization header — the refresh token in the body authenticates
+    /// the call (same as /customer/refresh). The server revokes this session
+    /// and deletes the listed push tokens, so the device stops receiving the
+    /// previous user's notifications. Idempotent; an invalid or expired refresh
+    /// token answers 401. Best-effort: the caller clears local state whatever
+    /// happens here.
+    func logout(refreshToken: String, pushTokens: [String]) async {
+        guard let url = URL(string: "\(Session.shared.apiUrl)/customer/logout") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["refresh_token": refreshToken]
+        if !pushTokens.isEmpty { body["push_tokens"] = pushTokens }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await urlSession.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                print("[ApiClient] logout returned \(http.statusCode): \(ApiError.serverMessage(from: data) ?? "")")
+            }
+        } catch {
+            print("[ApiClient] logout failed: \(error.localizedDescription)")
+        }
+    }
+
     // ── Request core ────────────────────────────────────────────────────
 
     func request<T: Decodable>(
         _ method: String,
         _ path: String,
         body: Encodable? = nil,
-        query: [(String, String)] = [],
+        query: [(String, String)] = []
     ) async throws -> T {
         let token = await currentAccessToken()
         let (data, http) = try await send(
-            method: method, path: path, body: body, query: query, token: token,
+            method: method, path: path, body: body, query: query, token: token
         )
 
         if http.statusCode == 401, token != nil {
             // Reactive fallback for any 401 the proactive refresh missed.
             if let refreshed = await attemptRefresh() {
                 let (retryData, retryHttp) = try await send(
-                    method: method, path: path, body: body, query: query, token: refreshed,
+                    method: method, path: path, body: body, query: query, token: refreshed
                 )
                 return try decodeOrThrow(data: retryData, http: retryHttp)
             }
@@ -157,7 +206,7 @@ final class ApiClient {
     }
 
     private func send(
-        method: String, path: String, body: Encodable?, query: [(String, String)], token: String?,
+        method: String, path: String, body: Encodable?, query: [(String, String)], token: String?
     ) async throws -> (Data, HTTPURLResponse) {
         var components = URLComponents(string: Session.shared.apiUrl + path)
         if !query.isEmpty {
@@ -192,8 +241,7 @@ final class ApiClient {
 
     private func decodeOrThrow<T: Decodable>(data: Data, http: HTTPURLResponse) throws -> T {
         guard (200..<300).contains(http.statusCode) else {
-            let message = String(data: data, encoding: .utf8)
-            throw ApiError.http(status: http.statusCode, message: message)
+            throw ApiError.http(status: http.statusCode, message: ApiError.serverMessage(from: data))
         }
         if T.self == EmptyResponse.self {
             return EmptyResponse() as! T

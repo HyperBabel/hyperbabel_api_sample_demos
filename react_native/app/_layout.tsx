@@ -2,8 +2,10 @@
  * HyperBabel Demo — Root Layout
  *
  * Wraps the entire app with:
- *  - AuthProvider     (user identity + API key)
+ *  - AuthProvider     (user identity + customer JWT session)
+ *  - RealtimeProvider (HyperBabel Real-Time connection)
  *  - CallProvider     (global incoming call state)
+ *  - ToastProvider    (in-app notices)
  *  - GestureHandlerRootView (required by react-native-gesture-handler)
  *  - StatusBar config (dark, translucent)
  *

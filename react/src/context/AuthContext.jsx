@@ -8,8 +8,14 @@
  * Single mode: Customer Auth pattern B1 (Firebase Direct Exchange).
  * See https://hyperbabel.com/docs#customer-auth for the full architecture.
  *
- * Sign-out also closes the app-wide HyperBabel Real-Time connection (opened
- * by IncomingCallListener when a user signs in).
+ * Sign-out, in order:
+ *   1. POST /customer/logout { refresh_token, push_tokens } — revokes this
+ *      device's session and deletes its push token server-side, so the
+ *      browser stops receiving the previous user's notifications. It must
+ *      run BEFORE local storage is cleared (it reads the refresh token).
+ *   2. Close the app-wide HyperBabel Real-Time connection (opened by
+ *      IncomingCallListener when a user signs in) and stop push handling.
+ *   3. Clear local storage and sign out of Firebase.
  */
 
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
@@ -17,8 +23,10 @@ import {
   STORAGE_KEY_ACCESS_TOKEN,
   STORAGE_KEY_REFRESH_TOKEN,
   STORAGE_KEY_EXPIRES_AT,
+  logoutCustomerSession,
 } from '../services/api';
 import { firebaseSignOut } from '../services/firebaseAuthService';
+import { getRegisteredPushToken, stopPushNotifications } from '../services/firebaseService';
 import realtimeService from '../services/realtimeService';
 
 // ── Identity storage keys ─────────────────────────────────────────────────
@@ -93,7 +101,10 @@ export function AuthProvider({ children }) {
   }, []);
 
   const logout = useCallback(async () => {
+    // Server side first — needs the stored refresh token. Never throws.
+    await logoutCustomerSession([getRegisteredPushToken()]);
     realtimeService.disconnect();
+    stopPushNotifications();
     localStorage.removeItem(STORAGE_KEY_USER);
     localStorage.removeItem(STORAGE_KEY_USER_ID);
     localStorage.removeItem(STORAGE_KEY_USERNAME);

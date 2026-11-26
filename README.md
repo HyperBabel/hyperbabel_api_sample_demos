@@ -38,16 +38,27 @@ under **Customer Auth**.
 ## Supported Features
 
 The demos cover the end-user side of the HyperBabel API — the calls an app
-makes with the customer JWT described above:
+makes with the customer JWT described above. Not every demo has a screen for
+every feature: **each demo's README has a feature table that lists exactly
+what that demo does** (and which wrappers exist without a screen). Across the
+six demos you will find:
 
+- **Sign-in, display name, sign-out** — Firebase sign-in exchanged for a
+  customer JWT; a display name typed on the form is saved with
+  `PATCH /customer/users/me` so other members never see the user's email;
+  sign-out calls `POST /customer/logout` (revokes the session and this
+  device's push tokens on the server) before clearing local state.
 - **Real-time chat** — 1:1, group, and open rooms via the United Chat API,
   with live message / typing / read-receipt push over a single channel.
-- **Message translation** — chat messages are translated to the viewer's
+  Which rooms you can create or join from the UI (1:1, group, open-room
+  list, invite code) varies by demo.
+- **Message translation** — chat messages translated to the viewer's
   preferred language with the end-user endpoint
-  `POST /unitedchat/rooms/:roomId/messages/batch-translate`.
+  `POST /unitedchat/rooms/:roomId/messages/batch-translate` (in the demos
+  whose README lists it).
 - **Rich messaging** — reply quotes, edit / delete, emoji reactions,
   message search, freeze toggle, per-room mute, ban / sub-admin / promote
-  moderation.
+  moderation — the exact set differs per demo.
 - **Image & file uploads** — 3-step presigned-URL flow against the
   Storage API.
 - **Video calls** — 1:1 in every demo; group calls of up to 3 participants
@@ -57,16 +68,23 @@ makes with the customer JWT described above:
   screen keeps the session alive (`joined-rtc`, a 60 s heartbeat, RTC token
   renewal) and follows the call's events (`call_ended`, declines, …) on the
   room channel.
-- **Presence + push** — heartbeat to mark "online", FCM token
-  registration so background pushes light up the right device.
-- **Settings** — usage stats, blocked-user list, push-token inspector.
+- **Presence + push** — heartbeat to mark "online" (a chosen `away` / `dnd`
+  survives heartbeats), and FCM token registration so background pushes
+  light up the right device. HyperBabel delivers push to **FCM registration
+  tokens only — on iOS too** (not raw APNs device tokens); a demo registers a
+  token only once push is configured for it (see its README).
+- **Settings** — blocked-user list, push-token inspector.
 
 **Needs your backend.** The AI Translation API (`/translate/*` — free-text
-translation, language detection) and live streaming (`/stream/*`)
-authenticate with your **organization API key** only, so an end-user app
-cannot call them directly. Where a demo shows these screens, they are
+translation, language detection), live streaming (`/stream/*`) and
+standalone video sessions (`/video/*`) authenticate with your
+**organization API key** only, and the legacy Chat API (`/chat/*`) rejects
+end-user tokens with `403 forbidden` — so an end-user app cannot call any of
+them directly (apps use the United Chat API for messaging and room calls). Where a demo shows these screens, they are
 reference code for your server (`app → your backend (holds hb_live_…) →
-HyperBabel`) and are marked as such in that demo's README.
+HyperBabel`) and are marked as such in that demo's README. Organization
+usage and plan data are likewise available to your backend with the API key,
+not to end-user apps, so the demos do not show them.
 
 Webhook CRUD, billing, and other tenant-admin endpoints are intentionally
 **not** exposed by the demos — those live in the HyperBabel Console

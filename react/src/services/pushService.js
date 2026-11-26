@@ -1,7 +1,14 @@
 /**
  * HyperBabel API — Push Notification Service
  *
- * Register and manage FCM (Android/Web) or APNs (iOS) push tokens.
+ * Register and manage push tokens. HyperBabel delivers B2B push through
+ * Firebase Cloud Messaging only, so every token is an FCM registration token
+ * — on iOS too (get it from Firebase Messaging; a raw APNs device token does
+ * not work). Tokens FCM rejects are pruned server-side, so never register a
+ * placeholder.
+ *
+ * Signing out: POST /customer/logout with this device's tokens removes them
+ * (see AuthContext.logout) — no separate unregister call is needed.
  *
  * Base path: /push
  */
@@ -13,8 +20,8 @@ const BASE = '/push';
 /**
  * Register a push notification token for a user.
  *
- * @param {string} userId
- * @param {string} token    — FCM or APNs device token
+ * @param {string} userId   — Must be the signed-in user
+ * @param {string} token    — FCM registration token (all platforms)
  * @param {'ios'|'android'|'web'} platform
  */
 export const registerToken = (userId, token, platform) =>

@@ -1,14 +1,8 @@
-import 'dart:async' show unawaited;
-import 'dart:io' show Platform;
-
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/auth/auth_controller.dart';
-import '../../../core/network/push_repository.dart';
 import '../../../shared/widgets/glass_container.dart';
 
 /// HyperBabel Flutter Demo — Login Screen
@@ -20,8 +14,12 @@ import '../../../shared/widgets/glass_container.dart';
 ///   2. We exchange the resulting Firebase ID token for a HyperBabel
 ///      customer JWT via POST /customer/auth/firebase-exchange.
 ///   3. AuthController persists the JWT pair to flutter_secure_storage
-///      (iOS Keychain / Android KeyStore). The API client attaches it
-///      to every subsequent request.
+///      (iOS Keychain / Android KeyStore) and, if a display name was typed,
+///      saves it with PATCH /customer/users/me. The API client attaches the
+///      JWT to every subsequent request.
+///
+/// The device's FCM push token is registered from the home screen once the
+/// user is signed in (see `PushRegistration` in push_repository.dart).
 ///
 /// If Firebase isn't initialised (no google-services.json /
 /// GoogleService-Info.plist on the device) the screen renders a
@@ -85,43 +83,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     });
     try {
       await action();
-      final user = ref.read(authControllerProvider).user;
-      if (user != null) {
-        // Best-effort push token registration. Failures don't block sign-in
-        // and don't surface to the user — the demo continues without push
-        // if FCM isn't configured.
-        unawaited(_autoRegisterPushToken(user.userId));
-      }
       if (mounted) context.go('/home');
     } catch (e) {
-      setState(() => _errorMsg = e.toString());
+      if (mounted) setState(() => _errorMsg = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-  }
-
-  Future<void> _autoRegisterPushToken(String userId) async {
-    final platform = _detectPlatform();
-    final prefs = await SharedPreferences.getInstance();
-    var token = prefs.getString('hb_push_token');
-    if (token == null) {
-      // Synthetic token placeholder — production apps replace with the
-      // real FCM / APNs token from FirebaseMessaging.instance.getToken().
-      token = 'demo-flutter-$platform-${DateTime.now().millisecondsSinceEpoch}';
-      await prefs.setString('hb_push_token', token);
-    }
-    await PushRepository().registerToken(
-      userId:   userId,
-      token:    token,
-      platform: platform,
-    );
-  }
-
-  String _detectPlatform() {
-    if (kIsWeb) return 'web';
-    if (Platform.isIOS) return 'ios';
-    if (Platform.isAndroid) return 'android';
-    return 'web';
   }
 
   @override

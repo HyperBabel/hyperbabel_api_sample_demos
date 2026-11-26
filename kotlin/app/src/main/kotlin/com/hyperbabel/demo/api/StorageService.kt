@@ -26,10 +26,10 @@ import retrofit2.http.POST
 import java.io.File
 
 interface StorageService {
-    @POST("api/v1/storage/presign")
+    @POST("storage/presign")
     suspend fun presign(@Body body: JsonObject): JsonObject
 
-    @POST("api/v1/storage/confirm")
+    @POST("storage/confirm")
     suspend fun confirm(@Body body: JsonObject): JsonObject
 }
 

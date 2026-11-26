@@ -1,10 +1,13 @@
 /*
  * Chat screen — full HyperBabel chat surface with:
- *   - Real-time message + typing events
+ *   - Real-time message, typing, edit, delete and reaction events
  *   - Edit / delete on own messages, Reply / React on any
- *   - Image and arbitrary-file upload via the 3-step presign flow
+ *   - Image and arbitrary-file upload via the 3-step presign flow, sent as an
+ *     image / video / audio / file message that carries the file URL
  *   - Members modal with promote / demote / ban + room mute toggle
- *   - Freeze toggle for owner / sub_admin
+ *   - Freeze toggle for owner / sub_admin; the frozen state is read from the
+ *     room and kept current by the room's `room.updated` event
+ *   - Video-call button (hidden in `open` rooms — calls are not available there)
  *   - Locale-aware timestamps + edited indicator
  *   - Video-call events shown as one-line notices
  */
@@ -28,6 +31,8 @@ struct ChatScreen: View {
     /// Room member ids — a group-room call has to name who to ring.
     @State private var memberIds: [String] = []
     @State private var isFrozen = false
+    /// False until the room is loaded, and for `open` rooms.
+    @State private var canCall = false
     @State private var isMuted = false
     @State private var typingFrom: String?
     @State private var typingClearTask: Task<Void, Never>?
@@ -107,6 +112,8 @@ struct ChatScreen: View {
             allowsMultipleSelection: false
         ) { result in
             if case .success(let urls) = result, let url = urls.first {
+                // "file" is only the fallback: the server derives image /
+                // video / audio / file from the name and confirm returns it.
                 Task { await uploadFile(url, messageType: "file") }
             }
         }
@@ -118,9 +125,11 @@ struct ChatScreen: View {
         HStack {
             Button("← Back", action: onBack).buttonStyle(.bordered)
             Spacer()
-            Button { Task { await startCall() } } label: {
-                Image(systemName: "video.fill")
-            }.buttonStyle(.borderedProminent)
+            if canCall {
+                Button { Task { await startCall() } } label: {
+                    Image(systemName: "video.fill")
+                }.buttonStyle(.borderedProminent)
+            }
             if canModerate {
                 Button { Task { await toggleFreeze() } } label: {
                     Image(systemName: isFrozen ? "lock.open" : "lock")
@@ -165,7 +174,7 @@ struct ChatScreen: View {
                 VStack(alignment: .leading) {
                     Text("Replying to \(parent.senderName ?? parent.senderId)")
                         .font(.caption2.bold()).foregroundStyle(Color.accentColor)
-                    Text(parent.content ?? "[media]")
+                    Text(previewText(parent))
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -217,7 +226,7 @@ struct ChatScreen: View {
                         Rectangle().fill(Color.gray.opacity(0.4)).frame(width: 2)
                         VStack(alignment: .leading) {
                             Text("↩ \(parent.senderName ?? parent.senderId)").font(.caption2.bold())
-                            Text(parent.content ?? "[media]").font(.caption2).lineLimit(1)
+                            Text(previewText(parent)).font(.caption2).lineLimit(1)
                         }
                     }
                     .foregroundStyle(.secondary)
@@ -286,12 +295,57 @@ struct ChatScreen: View {
         } else {
             switch msg.messageType ?? "text" {
             case "image":
-                Label(msg.metadata?.filename ?? "Image", systemImage: "photo")
-            case "file":
-                Label(msg.metadata?.filename ?? msg.content ?? "File", systemImage: "doc")
+                if let url = attachmentURL(msg) {
+                    Link(destination: url) {
+                        AsyncImage(url: url) { image in
+                            image.resizable().scaledToFit()
+                        } placeholder: {
+                            Label(msg.metadata?.filename ?? "Image", systemImage: "photo")
+                        }
+                        .frame(maxWidth: 220, maxHeight: 220)
+                    }
+                } else {
+                    Label(msg.metadata?.filename ?? "Image", systemImage: "photo")
+                }
+            case "video", "audio", "file":
+                let icon = msg.messageType == "video" ? "film"
+                    : msg.messageType == "audio" ? "waveform" : "doc"
+                let label = Label(attachmentName(msg), systemImage: icon)
+                if let url = attachmentURL(msg) {
+                    Link(destination: url) { label.underline() }
+                } else {
+                    label
+                }
             default:
                 Text(msg.content ?? "")
             }
+        }
+    }
+
+    /// Attachments carry the file URL as `metadata.url` and as `content`.
+    private func attachmentURL(_ msg: Message) -> URL? {
+        let raw = msg.metadata?.url ?? msg.content ?? ""
+        guard raw.hasPrefix("https://") || raw.hasPrefix("http://") else { return nil }
+        return URL(string: raw)
+    }
+
+    private func attachmentName(_ msg: Message) -> String {
+        if let name = msg.metadata?.filename, !name.isEmpty { return name }
+        switch msg.messageType {
+        case "video": return "Video"
+        case "audio": return "Audio"
+        default:      return "File"
+        }
+    }
+
+    /// One-line preview used by reply quotes — never the raw file URL.
+    private func previewText(_ msg: Message) -> String {
+        switch msg.messageType ?? "text" {
+        case "image": return "🖼 \(msg.metadata?.filename ?? "Image")"
+        case "video": return "🎬 \(attachmentName(msg))"
+        case "audio": return "🎵 \(attachmentName(msg))"
+        case "file":  return "📎 \(attachmentName(msg))"
+        default:      return msg.content ?? ""
         }
     }
 
@@ -374,6 +428,8 @@ struct ChatScreen: View {
             // The channel name comes from the API and is used verbatim — it
             // cannot be rebuilt from the room id (see subscribeRoom's doc).
             let res = try await UnitedChatService.getRoom(roomId: roomId, userId: session.userId)
+            isFrozen = res.room.isFrozen ?? false
+            canCall = res.room.allowsVideoCall
             guard let realtimeChannel = res.room.realtimeChannel, !realtimeChannel.isEmpty else { return }
 
             try await HyperBabelRealtime.shared.connect()
@@ -434,6 +490,21 @@ struct ChatScreen: View {
                         messages[idx].editedAt = (data?["edited_at"] as? String)
                             ?? ISO8601DateFormatter().string(from: Date())
                     }
+                // reaction → { type, timestamp, data: { message_id, emoji, user_id, action: "add" | "remove" } }
+                // Applied idempotently: your own reaction also comes back here.
+                case "reaction":
+                    let data = envelope["data"] as? [String: Any]
+                    if let id = data?["message_id"] as? String,
+                       let emoji = data?["emoji"] as? String,
+                       let user = data?["user_id"] as? String,
+                       let idx = messages.firstIndex(where: { $0.id == id }) {
+                        applyReaction(at: idx, emoji: emoji, userId: user,
+                                      added: (data?["action"] as? String) != "remove")
+                    }
+                // room.updated → { type, timestamp, data: { channel_id, is_frozen, actor_user_id } }
+                case "room.updated":
+                    let data = envelope["data"] as? [String: Any]
+                    if let frozen = data?["is_frozen"] as? Bool { isFrozen = frozen }
                 default: break
                 }
             }
@@ -473,7 +544,10 @@ struct ChatScreen: View {
         // A group room must name who to ring (`target_user_ids`, 400 when it
         // is empty); a 1:1 room rings the other member and ignores the list.
         // This demo's call screen is 1:1 (see VideoQuality.swift), so it rings
-        // one other member.
+        // one other member. Room calls allow up to 3 people (caller + 2) on a
+        // plan with group video and 2 otherwise — more answers 400
+        // `plan_upgrade_required` (`limit_exceeded` above 3). A call nobody
+        // answers is closed by the server after 3 minutes.
         let targets = Array(memberIds.filter { $0 != session.userId }.prefix(1))
         do {
             _ = try await UnitedChatService.startVideoCall(
@@ -538,9 +612,24 @@ struct ChatScreen: View {
         }
     }
 
+    /// Apply one live reaction change to the emoji → user ids map.
+    private func applyReaction(at idx: Int, emoji: String, userId: String, added: Bool) {
+        var map = messages[idx].reactions ?? [:]
+        var users = map[emoji] ?? []
+        if added {
+            if !users.contains(userId) { users.append(userId) }
+        } else {
+            users.removeAll { $0 == userId }
+        }
+        map[emoji] = users.isEmpty ? nil : users
+        messages[idx].reactions = map
+    }
+
     private func pingTyping() {
         let now = Date()
-        if now.timeIntervalSince(lastTypingPing) < 2 { return }
+        // Typing calls count against the same per-minute rate limit as every
+        // other call (sending included), so send at most one every 3 s.
+        if now.timeIntervalSince(lastTypingPing) < 3 { return }
         lastTypingPing = now
         Task {
             _ = try? await UnitedChatService.sendTyping(
@@ -582,18 +671,31 @@ struct ChatScreen: View {
                 try FileManager.default.copyItem(at: url, to: copy)
             }
             let mime = mimeType(for: url)
+            let filename = url.lastPathComponent
             let confirmed = try await StorageService.uploadFile(
-                fileURL: copy, filename: url.lastPathComponent, mimeType: mime,
+                fileURL: copy, filename: filename, mimeType: mime,
                 channelId: roomId
             )
-            let cdn = confirmed.url ?? confirmed.cdnUrl ?? ""
+            guard let fileUrl = confirmed.url ?? confirmed.cdnUrl, !fileUrl.isEmpty else {
+                throw ApiError.http(status: -1, message: "The server did not return a file URL")
+            }
+            // Send as the type the server derived for this file —
+            // "image" | "video" | "audio" | "file", all accepted by the send
+            // endpoint. The URL goes in `content` and `metadata.url` so every
+            // client can open the attachment.
             let sent = try await UnitedChatService.sendMessage(
                 roomId: roomId,
                 body: SendMessageRequest(
                     senderId: session.userId,
                     senderName: session.displayName,
-                    content: messageType == "image" ? cdn : url.lastPathComponent,
-                    messageType: messageType
+                    content: fileUrl,
+                    messageType: confirmed.messageType ?? messageType,
+                    metadata: AttachmentMetadata(
+                        url: fileUrl,
+                        filename: filename,
+                        mimeType: confirmed.mimeType ?? mime,
+                        sizeBytes: confirmed.sizeBytes
+                    )
                 )
             )
             appendIfNew(sent)

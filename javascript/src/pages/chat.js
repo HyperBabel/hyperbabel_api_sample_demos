@@ -339,9 +339,12 @@ export async function renderChat(roomId, navigate) {
     }
   }
 
+  // Typing calls count against the same per-user, per-minute rate limit as
+  // every other call (sending messages included) — send at most one every 3 s,
+  // never one per keystroke.
   function pingTyping() {
     const now = Date.now();
-    if (now - state.lastTypingPing < 2000) return;
+    if (now - state.lastTypingPing < 3000) return;
     state.lastTypingPing = now;
     unitedChat
       .sendTypingIndicator(roomId, user.user_id, user.display_name)

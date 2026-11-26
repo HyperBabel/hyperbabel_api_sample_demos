@@ -18,20 +18,45 @@ The per-org Firebase project allow-list is configured in the
 
 ## Features
 
-| Feature | APIs Used |
+What the app actually does, screen by screen:
+
+| Feature | APIs used |
 |---|---|
-| **1:1 Chat** | United Chat — Rooms, Messages, Batch-Translate |
-| **Group Chat** | United Chat — Rooms, Messages, Members |
-| **Open Chat** | United Chat — Rooms, Join, Leave |
-| **Video Call** (1:1, or up to 3 people in a group room) | United Chat — Video Call (start, accept, reject, leave, joined-rtc, heartbeat, renew-token) via HyperBabel Video |
-| **Live Stream** ⚠️ | Stream — Broadcast & Spectate — **needs your backend**, see note below |
-| **Auto-Translation** ⚠️ | Translation — Text, Batch, Detect, Languages — **needs your backend**, see note below |
-| **Real-time Engine** | HyperBabel Real-Time — room events, typing and incoming-call signals |
+| **Sign in / sign up** — email + password, or anonymous | Firebase Auth → `POST /customer/auth/firebase-exchange` |
+| **Display name** — a name typed on the sign-in / sign-up form is saved right after the exchange, so other members never see your email address | `PATCH /customer/users/me { display_name }` |
+| **Session refresh** — before expiry and on a 401; if the server rejects the refresh token, the app returns to the sign-in screen | `POST /customer/refresh` |
+| **Logout** — revokes the session and deletes this device's push token **before** local state is cleared; a failed call never blocks the logout | `POST /customer/logout { refresh_token, push_tokens }` (no Authorization header) |
+| **Rooms** — list the rooms you belong to, create a group room, long-press to leave | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`, `POST …/leave` |
+| **Chat** — history, text, replies, edit / delete your own messages, image and file upload, reactions, typing indicator (at most one ping every 3 s), read marker, live updates | `/unitedchat/rooms/:roomId/messages*`, `…/reactions`, `…/typing`, `…/read`, `/storage/presign` → PUT → `/storage/confirm`, HyperBabel Real-Time |
+| **Members & moderation** — member list with roles; the owner promotes / demotes sub_admins; owner and sub_admin ban (a sub_admin bans plain members only) and freeze / unfreeze; anyone mutes the room for themselves | `GET …/members`, `POST` / `DELETE …/sub-admins`, `POST …/ban`, `POST` / `DELETE …/freeze`, `POST` / `DELETE …/mute`, `GET …/mute/:userId` |
+| **Video call** — 1:1, or a group call of up to 3 people when your plan includes group video (otherwise 400 `plan_upgrade_required`) | `POST …/video-call`, `…/accept`, `…/reject`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token`, `…/leave`, `GET …/video-call/active`, `POST /rtm/rtc/token` + `CALL_INVITE` on the user's private Real-Time channel + call events on the room channel, via HyperBabel Video |
+| **Blocked users** — list and unblock | `GET /users/:userId/blocks`, `DELETE /users/block` |
+| **Presence** — heartbeat every 30 s while the app is in the foreground | `POST /presence/heartbeat` |
+| **Push** — registers this device's real FCM token (on iOS too) and lists your tokens in Settings | `POST /push/register`, `GET /push/tokens` — see [Push notifications](#push-notifications) |
+| **Errors** — every failed call keeps the server's own message, for both error shapes `{ "error": { "code", "message" } }` and `{ "error": "…" }` | `lib/core/network/api_error.dart` |
+| **Live stream** ⚠️ — host and viewer | `GET` / `POST /stream/sessions`, `…/start`, `…/heartbeat`, `…/end`, `…/viewer-token` — **needs your backend**, see below |
+
+Not covered by any screen:
+
+- **1:1 and open rooms.** The app creates group rooms only, and the group
+  starts with just you — there is no screen for adding members
+  (`POST /unitedchat/rooms/:roomId/members`) or for joining an open room.
+  1:1 and open rooms you already belong to (created by your backend or
+  another app) appear in the list and work in chat.
+- **In the repositories for your own UI, but not called:** message
+  translation (`UnitedChatRepository.batchTranslateMessages` →
+  `POST /unitedchat/rooms/:roomId/messages/batch-translate`), unban
+  (`unbanUser`), block (`UsersRepository.blockUser`), the bulk presence read
+  (`PresenceRepository.getPresence` → `GET /presence?user_ids=a,b`), and
+  `PushRepository.unregisterToken`.
+- **Standalone translation** (`translate_repository.dart`) — needs your
+  backend, see below. Organization usage and plan data are business data for
+  your backend too, so the demo does not show them.
 
 ### ⚠️ Live streaming and text translation need your backend
 
-The rows marked ⚠️ above do **not** run from this demo, and that is by
-design rather than a gap.
+The live-stream screen and `translate_repository.dart` do **not** work from
+this demo, and that is by design rather than a gap.
 
 Every `/stream/*` and `/translate/*` endpoint authenticates with your
 **organization API key** (`Authorization: Bearer hb_live_…`). A request
@@ -39,7 +64,7 @@ carrying anything else is rejected before it reaches the handler:
 
 ```
 POST /api/v1/stream/sessions
-→ 401 { "error": { "code": "invalid_api_key_format" } }
+→ 401 { "error": { "code": "invalid_api_key_format", "message": "Invalid API key format" } }
 ```
 
 Creating a broadcast allocates paid capacity and translation is metered
@@ -63,9 +88,14 @@ app itself, use the end-user endpoint
 demo — chat, video calls, storage uploads, presence, push, blocking — calls
 end-user endpoints that accept the customer JWT.
 
+Two more API families are backend-only, though this app does not call them:
+`/video/*` (standalone video sessions, organization API key — in-app calls
+use the room-scoped `/unitedchat/rooms/:roomId/video-call*` endpoints
+instead) and `/chat/*` (answers 403 to a customer JWT — use `/unitedchat/*`).
+
 ## Stack
 
-- **Flutter** 3.27+ / Dart 3.5+
+- **Flutter** 3.38.4+ / Dart 3.10.3+ (what the committed `pubspec.lock` requires)
 - `firebase_core` / `firebase_auth` / `firebase_messaging` — sign-in &
   push
 - `flutter_secure_storage` — JWT pair lives in iOS Keychain / Android
@@ -83,6 +113,10 @@ end-user endpoints that accept the customer JWT.
 
 ## Quickstart — from zero to running app
 
+This repository ships only the Dart code (`lib/`), `pubspec.yaml` and
+assets. The native `android/` and `ios/` projects are **not** in it — you
+generate them in step 4 and then apply the platform setup below.
+
 1. **Sign up at the HyperBabel Console** —
    <https://console.hyperbabel.com>. Once your organization exists,
    open **Customer Auth → Add Firebase project**.
@@ -91,31 +125,43 @@ end-user endpoints that accept the customer JWT.
    - Paste your Firebase project ID (e.g. `your-app-prod`).
    - Paste a Firebase ID token to prove ownership.
    - Click *Verify and add*. This step tells HyperBabel "trust ID
-     tokens from this Firebase project."
+     tokens from this Firebase project." Without it every sign-in fails
+     with 401 `Firebase project "<id>" is not registered with HyperBabel`.
 
 3. **Enable sign-in methods in Firebase Console**:
    - Authentication → Sign-in method → enable **Email/Password** (and
      **Anonymous** if you want the kiosk-mode button on the login
      screen).
 
-4. **Register your Flutter apps in Firebase**:
-   - Android — application ID must match
-     `android/app/build.gradle`'s `applicationId`.
-   - iOS — bundle ID must match the value in `ios/Runner.xcodeproj`.
+4. **Generate the native projects** (run inside `sample_demos/flutter`):
+   ```bash
+   cd sample_demos/flutter
+   flutter create --platforms=android,ios --org com.yourcompany .
+   rm -f test/widget_test.dart   # template test for a counter app that isn't here
+   ```
+   `flutter create .` only adds files that are missing — it does not
+   touch `lib/`, `pubspec.yaml` or this README. Replace `com.yourcompany`
+   with your own reverse domain. The generated IDs are:
+   - Android `applicationId` — `com.yourcompany.hyperbabel_demo`, in
+     `android/app/build.gradle.kts` (`android/app/build.gradle` on
+     Flutter versions that still generate Groovy).
+   - iOS bundle ID — `com.yourcompany.hyperbabelDemo`
+     (`PRODUCT_BUNDLE_IDENTIFIER` in `ios/Runner.xcodeproj`; Xcode →
+     Runner target → Signing & Capabilities).
 
-5. **Download the Firebase config files** from Firebase Console →
-   Project Settings:
-   - Android — `google-services.json`
-   - iOS — `GoogleService-Info.plist`
+5. **Register both apps in Firebase** with exactly those IDs (Firebase
+   Console → Project settings → Your apps), then **download the config
+   files** — `google-services.json` (Android) and
+   `GoogleService-Info.plist` (iOS) — into [`firebase/`](./firebase/).
+   [`firebase/README.md`](./firebase/README.md) shows how to install them
+   into `android/app/` and the Xcode project.
 
-6. **Drop both files into [`firebase/`](./firebase/)**. See
-   [`firebase/README.md`](./firebase/README.md) for the build-step copy
-   scripts that move them into `android/app/` and `ios/Runner/` on
-   every build.
+6. **Apply the platform setup** — [Android](#android-setup) and
+   [iOS](#ios-setup) below: the Google Services Gradle plugin, `minSdk`,
+   core library desugaring, permissions, the iOS Podfile and `Info.plist`.
 
 7. **Install and run**:
    ```bash
-   cd sample_demos/flutter
    flutter pub get
    flutter run               # or: flutter run -d ios / -d android
    ```
@@ -129,18 +175,177 @@ That's the whole setup. Sign in (or sign up), and the demo exchanges
 the Firebase ID token for a customer JWT, stores the pair in secure
 storage, and routes you into the main app.
 
-### What if I skip step 6?
+### What if I skip the Firebase config files?
 
 The app still builds and runs — `Firebase.initializeApp()` in
 `main.dart` is wrapped in `try/catch`, and the sign-in screen renders
 a "Firebase config missing" hint instead of the form. Useful for
-browsing the source first.
+browsing the source first. (On Android the Google Services Gradle plugin
+fails the build when `android/app/google-services.json` is missing — add
+the plugin only once you have the file.)
 
-### Token storage
+---
+
+## Platform setup
+
+The plugins in `pubspec.yaml` need a few native settings that
+`flutter create` does not add.
+
+### Android setup
+
+**1. Google Services Gradle plugin** — reads
+`android/app/google-services.json`, which `Firebase.initializeApp()`
+depends on. In `android/settings.gradle.kts`, add to the `plugins { }`
+block:
+
+```kotlin
+id("com.google.gms.google-services") version "4.4.2" apply false
+```
+
+and in `android/app/build.gradle.kts`, add to its `plugins { }` block:
+
+```kotlin
+id("com.google.gms.google-services")
+```
+
+(Groovy projects: `id "com.google.gms.google-services" version "4.4.2" apply false`
+in `android/settings.gradle`, and `id "com.google.gms.google-services"` in
+`android/app/build.gradle`.)
+
+**2. `minSdk` and core library desugaring** — in
+`android/app/build.gradle.kts`:
+
+```kotlin
+android {
+    compileOptions {
+        // Required by flutter_local_notifications (in pubspec.yaml) — the
+        // build fails without it.
+        isCoreLibraryDesugaringEnabled = true
+        // keep the sourceCompatibility / targetCompatibility lines
+    }
+    defaultConfig {
+        // API 23 or higher: newer Firebase Android SDKs require it. Recent
+        // Flutter versions already default to 24; older ones default to 21.
+        minSdk = maxOf(flutter.minSdkVersion, 23)
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+}
+```
+
+(Groovy: `coreLibraryDesugaringEnabled true`,
+`minSdk = Math.max(flutter.minSdkVersion, 23)` and
+`coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'`.)
+
+**3. Permissions** — the video SDK and `firebase_messaging` already
+declare these in their own manifests, and Android merges them into your
+app. Declaring them in `android/app/src/main/AndroidManifest.xml` (above
+`<application>`) keeps them visible:
+
+```xml
+<uses-permission android:name="android.permission.INTERNET" />
+<!-- Video calls and live streams -->
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+<uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<!-- Push notifications on Android 13+ -->
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+Camera and microphone are requested at runtime before a call or broadcast
+(`permission_handler`); the notification prompt appears when the push
+token is registered. Picking photos and files uses the system pickers and
+needs no storage permission.
+
+### iOS setup
+
+**1. `ios/Podfile`** — Firebase needs iOS 13, and `permission_handler`
+only asks for the permissions you enable with build flags (without them,
+camera / microphone requests are denied without a prompt):
+
+```ruby
+platform :ios, '13.0'
+
+# …
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
+        '$(inherited)',
+        'PERMISSION_CAMERA=1',
+        'PERMISSION_MICROPHONE=1',
+      ]
+    end
+  end
+end
+```
+
+**2. `ios/Runner/Info.plist`** — usage descriptions for everything the app
+touches, plus remote notifications for push:
+
+```xml
+<key>NSCameraUsageDescription</key>
+<string>Video calls and live streams use the camera.</string>
+<key>NSMicrophoneUsageDescription</key>
+<string>Video calls and live streams use the microphone.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Choose a photo to send in a chat.</string>
+<key>UIBackgroundModes</key>
+<array>
+  <string>remote-notification</string>
+</array>
+```
+
+**3. `GoogleService-Info.plist`** — must be part of the Runner target, not
+just present in the folder: see [`firebase/README.md`](./firebase/README.md).
+
+**4. Push** — in Xcode → Runner target → Signing & Capabilities, add
+**Push Notifications** (and select your development team). Then upload an
+APNs authentication key (`.p8`) in Firebase Console → Project settings →
+Cloud Messaging → Apple app configuration. Without these, Firebase
+Messaging cannot produce an FCM token on iOS: the demo registers nothing
+and Settings → Push Tokens says why. Test push on a real device.
+
+Run `cd ios && pod install` (or just `flutter run`) after changing the
+Podfile.
+
+---
+
+## Push notifications
+
+HyperBabel delivers push notifications only to **FCM registration tokens**
+— on iOS too, where the token comes from Firebase Messaging, not the raw
+APNs device token. Tokens FCM rejects are pruned on the server, so never
+register a placeholder value.
+
+- **Where the token is registered:** `PushRegistration.registerThisDevice()`
+  in `lib/core/network/push_repository.dart`, called from the home screen
+  once per app run while someone is signed in. It asks for notification
+  permission, reads `FirebaseMessaging.instance.getToken()`, and sends
+  `POST /push/register { user_id, token, platform, token_type: "fcm" }`.
+  It registers again when Firebase rotates the token (`onTokenRefresh`).
+- **Sending:** HyperBabel sends through your own Firebase project — upload
+  its service account JSON in the HyperBabel Console → **Push Settings**.
+- **On logout** the registered token goes to `POST /customer/logout` in
+  `push_tokens`, which deletes it, so the next person on the device does not
+  receive the previous user's notifications.
+- **Before you ship:** this demo registers the token but does not render
+  notifications itself — handle `FirebaseMessaging.onMessage` (foreground)
+  and the notification tap in your app.
+
+## Token storage
 
 The customer JWT pair lives in `flutter_secure_storage` (iOS Keychain
 / Android KeyStore — encrypted at rest). Identity preferences
-(`user_id`, `display_name`, `lang`) live in `shared_preferences`.
+(`user_id`, `display_name`, `lang`) and the registered FCM token live in
+`shared_preferences`; logout clears all of them.
 
 ---
 
@@ -179,12 +384,12 @@ flutter/
 │   │   │
 │   │   ├── network/
 │   │   │   ├── api_client.dart              # Customer JWT HTTP client (B1, dio)
-│   │   │   ├── auth_repository.dart
-│   │   │   ├── chat_repository.dart
+│   │   │   ├── api_error.dart               # Server error message, both error shapes
+│   │   │   ├── chat_repository.dart         # Reactions (room-scoped)
 │   │   │   ├── united_chat_repository.dart
 │   │   │   ├── translate_repository.dart     # ⚠️ needs your backend — not called by the app
 │   │   │   ├── storage_repository.dart
-│   │   │   ├── push_repository.dart
+│   │   │   ├── push_repository.dart         # FCM token registration
 │   │   │   ├── stream_repository.dart        # ⚠️ needs your backend
 │   │   │   ├── presence_repository.dart
 │   │   │   ├── users_repository.dart
@@ -197,13 +402,13 @@ flutter/
 │   │
 │   ├── features/                             # Domain-driven feature sets
 │   │   ├── auth/                             # Firebase sign-in + sign-up
-│   │   ├── chat/                             # Threaded messaging & translation
+│   │   ├── chat/                             # Messages, replies, reactions, uploads, members sheet
 │   │   ├── video_call/                       # Interactive video components
 │   │   ├── live_stream/                      # Broadcaster + viewer (⚠️ needs your backend)
 │   │   ├── call/                             # Incoming call overlay
 │   │   ├── blocks/                           # Block management
-│   │   ├── settings/                         # Usage / push / language
-│   │   └── home/                             # Central hub
+│   │   ├── settings/                         # Profile / push tokens / language / logout
+│   │   └── home/                             # Room list, presence heartbeat, push registration
 │   │
 │   ├── shared/widgets/                       # Glassmorphism reusable widgets
 │   └── main.dart                             # dotenv + Firebase init + GoRouter
@@ -212,6 +417,8 @@ flutter/
 │
 ├── firebase/                                 # Drop Firebase native config here
 │   └── README.md
+│
+├── android/, ios/                            # NOT in the repo — `flutter create` (Quickstart step 4)
 │
 ├── .env.example                              # Environment variables template
 ├── pubspec.yaml                              # Dart package dependencies
@@ -227,8 +434,13 @@ transparently on 401:
 
 ```dart
 final dio = ApiClient().client;
-final res = await dio.get('/unitedchat/rooms');
+final res = await dio.get('/unitedchat/rooms', queryParameters: {'user_id': myUserId});
 ```
+
+When `POST /customer/refresh` itself is rejected (the refresh token was
+revoked or expired), `ApiClient.onSessionExpired` fires; `main.dart` signs
+the user out locally, which routes back to the sign-in screen. Turn a failed
+call into a readable message with `apiErrorMessage(e)` from `api_error.dart`.
 
 ### 2. State management & real-time
 

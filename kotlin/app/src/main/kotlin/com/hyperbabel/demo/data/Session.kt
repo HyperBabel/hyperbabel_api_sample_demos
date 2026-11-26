@@ -23,6 +23,7 @@ object Session {
     private const val KEY_USERNAME = "hb_user_name"
     private const val KEY_LANG     = "hb_lang"
     private const val KEY_API_URL  = "hb_api_url"
+    private const val KEY_PUSH_TOKEN = "hb_push_token"
 
     @Volatile private var prefs: SharedPreferences? = null
 
@@ -60,6 +61,15 @@ object Session {
             store.edit().putString(KEY_API_URL, trimmed.ifEmpty { BuildConfig.HB_API_URL }).apply()
         }
 
+    /**
+     * The FCM token this device registered for the signed-in user (see
+     * api/PushService.kt → PushRegistration). Sign-out sends it to
+     * `POST /customer/logout` so the server stops pushing to this device.
+     */
+    var pushToken: String?
+        get() = store.getString(KEY_PUSH_TOKEN, null)?.takeIf { it.isNotBlank() }
+        set(value) { store.edit().putString(KEY_PUSH_TOKEN, value).apply() }
+
     /** True iff we have an identity AND a customer JWT in secure storage. */
     val isSignedIn: Boolean
         get() = userId.isNotBlank() &&
@@ -89,11 +99,17 @@ object Session {
         preferredLangCd = langCode
     }
 
+    /**
+     * Clear this device's local session. Call it only AFTER
+     * `ApiClient.logout(...)`: that request needs the refresh token and the
+     * push token, which this deletes.
+     */
     fun signOut() {
         SecureStore.clearAll()
         FirebaseAuthService.signOut()
         userId = ""
         displayName = ""
+        pushToken = null
         // Keep lang + apiUrl across sessions — they aren't identity-bound.
     }
 }

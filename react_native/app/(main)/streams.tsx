@@ -21,10 +21,10 @@ dayjs.extend(relativeTime);
 import { useAuth } from '@/context/AuthContext';
 import { colors, spacing, textPresets, borderRadius, shadows } from '@/theme';
 import * as streamService from '@/services/streamService';
-import type { StreamSession } from '@/services/streamService';
+import type { StreamListItem } from '@/services/streamService';
 import { declaredQuality, publishResolutionFor } from '@/services/videoQuality';
 
-function StreamCard({ session, onPress }: { session: StreamSession; onPress: () => void }) {
+function StreamCard({ session, onPress }: { session: StreamListItem; onPress: () => void }) {
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.85}>
       <LinearGradient colors={['#0891b2', '#06b6d4']} style={styles.cardThumbnail}>
@@ -33,10 +33,10 @@ function StreamCard({ session, onPress }: { session: StreamSession; onPress: () 
       </LinearGradient>
       <View style={styles.cardFooter}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.hostName} numberOfLines={1}>{session.host_name ?? session.host_user_id}</Text>
+          <Text style={styles.hostName} numberOfLines={1}>{session.host.display_name}</Text>
           <Text style={styles.viewers}>{session.viewer_count} watching</Text>
         </View>
-        <Text style={styles.startedAt}>{dayjs(session.created_at).fromNow()}</Text>
+        <Text style={styles.startedAt}>{dayjs(session.started_at ?? session.created_at).fromNow()}</Text>
       </View>
     </TouchableOpacity>
   );
@@ -44,7 +44,7 @@ function StreamCard({ session, onPress }: { session: StreamSession; onPress: () 
 
 export default function StreamsScreen() {
   const { user } = useAuth();
-  const [sessions,   setSessions]   = useState<StreamSession[]>([]);
+  const [sessions,   setSessions]   = useState<StreamListItem[]>([]);
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -81,7 +81,9 @@ export default function StreamsScreen() {
         // a broadcast's aggregate is this resolution itself — pass 1.
         publish_resolution: publishResolutionFor(1),
       });
-      router.push({ pathname: '/live-stream/host', params: { sessionId: session.session_id } });
+      // The id is `session.id`. createSession keeps the response (with the
+      // host's publisher token in `session.host`) for the host screen.
+      router.push({ pathname: '/live-stream/host', params: { sessionId: session.id } });
     } catch (err: any) {
       Alert.alert('Error', err.message ?? 'Failed to create stream session.');
     }
@@ -109,11 +111,11 @@ export default function StreamsScreen() {
 
       <FlatList
         data={sessions}
-        keyExtractor={(s) => s.session_id}
+        keyExtractor={(s) => s.id}
         renderItem={({ item }) => (
           <StreamCard
             session={item}
-            onPress={() => router.push({ pathname: '/live-stream/viewer/[sessionId]', params: { sessionId: item.session_id } })}
+            onPress={() => router.push({ pathname: '/live-stream/viewer/[sessionId]', params: { sessionId: item.id } })}
           />
         )}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={colors.primary} />}

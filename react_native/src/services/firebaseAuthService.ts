@@ -12,7 +12,7 @@
  *
  * The mobile app never sees the integrator's org API key — the HyperBabel
  * API resolves the org from the Firebase project ID claim after
- * verifying the signature against Google JWKS.
+ * verifying the token signature with Firebase's public signing keys.
  *
  * Prerequisites:
  *   1. firebase/google-services.json (Android) + firebase/GoogleService-Info.plist (iOS)
@@ -20,12 +20,13 @@
  *   2. The chosen sign-in providers (Email/Password, Anonymous, …) enabled
  *      in Firebase Console → Authentication → Sign-in method.
  *   3. The Firebase project ID allow-listed in HyperBabel Console
- *      → Customer Auth → Add Firebase project.
+ *      → Customer Auth → Add Firebase project. Until then the exchange
+ *      answers 401 `Firebase project "<id>" is not registered with HyperBabel`.
  */
 
 import auth, { type FirebaseAuthTypes } from '@react-native-firebase/auth';
 import * as SecureStore from 'expo-secure-store';
-import { STORAGE_KEY_BASE_URL } from '@/services/api';
+import api, { STORAGE_KEY_BASE_URL, apiErrorMessage } from '@/services/api';
 
 const DEFAULT_BASE_URL = 'https://api.hyperbabel.com/api/v1';
 
@@ -87,9 +88,11 @@ const exchangeIdTokenForCustomerJwt = async (
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => null) as any;
-    const msg  = data?.error?.message ?? data?.message ?? `Exchange failed: HTTP ${res.status}`;
-    throw new Error(msg);
+    // Keep the server's message for either error shape — e.g. the most common
+    // setup mistake answers 401 { error: 'Firebase project "<id>" is not
+    // registered with HyperBabel' } (a plain string, not { message }).
+    const data = await res.json().catch(() => null);
+    throw new Error(`Sign-in exchange failed: ${apiErrorMessage(data, res.status)}`);
   }
 
   return res.json() as Promise<FirebaseExchangeResult>;
@@ -121,7 +124,7 @@ export const signInWithEmailAndExchange = async (
 
 /**
  * Create a brand-new Firebase user with email + password, then exchange.
- * HyperBabel auto-creates the matching `com_users` row on first exchange,
+ * HyperBabel creates the matching end-user account on the first exchange,
  * so no extra "create user" call is needed.
  */
 export const signUpWithEmailAndExchange = async (
@@ -160,10 +163,26 @@ export const exchangeCurrentFirebaseUserForJwt = async (
 };
 
 /**
+ * Save the display name the user typed as their HyperBabel profile name.
+ *
+ * Call it right after the exchange (with the new session stored). On the
+ * first sign-in HyperBabel names the user from the Firebase profile — the
+ * Firebase display name, or the EMAIL when there is none (anonymous users:
+ * nothing) — and that is what other members see as your name in room
+ * lists, member lists and call invites. PATCH /customer/users/me replaces it
+ * (1–60 characters).
+ */
+export const saveDisplayName = async (displayName: string): Promise<void> => {
+  const name = displayName.trim().slice(0, 60);
+  if (!name) return;
+  await api.patch('/customer/users/me', { display_name: name });
+};
+
+/**
  * Sign the Firebase user out. Safe to call even when no user is signed in.
- * Does NOT revoke the HyperBabel customer JWT — call AuthContext.logout()
- * separately (or POST /customer/revoke from your backend) if you need to
- * invalidate every device.
+ * Does NOT end the HyperBabel session — AuthContext.logout() does that for
+ * this device (POST /customer/logout); POST /customer/revoke from your
+ * backend signs the user out of every device.
  */
 export const firebaseSignOut = async (): Promise<void> => {
   try {

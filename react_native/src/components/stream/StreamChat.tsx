@@ -2,10 +2,15 @@
  * HyperBabel Demo — Stream Chat Overlay
  *
  * Live chat panel shown during a live stream for both host and viewer.
- * Uses the United Chat API (room-based) or a dedicated stream chat channel.
- * Messages float over the stream video in a semi-transparent list.
+ * Uses a United Chat room. Messages float over the stream video in a
+ * semi-transparent list.
  *
- * Typically mounted as an overlay inside host.tsx and viewer/[sessionId].tsx.
+ * A stream session does NOT come with a chat room. Create an `open` United
+ * Chat room for the broadcast (e.g. on your backend, next to the
+ * POST /stream/sessions call) and hand its id to host and viewers; viewers
+ * join it with POST /unitedchat/rooms/:roomId/join before sending.
+ * host.tsx and viewer/[sessionId].tsx mount this overlay only when a
+ * `chatRoomId` route param is given.
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -21,7 +26,7 @@ import * as unitedChat from '@/services/unitedChatService';
 import type { Message } from '@/services/unitedChatService';
 
 interface StreamChatProps {
-  /** The United Chat room ID that serves as the stream's chat room */
+  /** Id of the open United Chat room you created for this broadcast */
   chatRoomId: string;
 }
 

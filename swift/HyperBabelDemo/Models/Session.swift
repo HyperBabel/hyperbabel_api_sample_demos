@@ -60,6 +60,30 @@ final class Session: ObservableObject {
         defaults.set(resolvedLang,            forKey: Keys.lang)
     }
 
+    /// Save the name the user typed to their HyperBabel profile
+    /// (PATCH /customer/users/me), right after the token exchange.
+    ///
+    /// Other members see the profile name, not this device's copy. Without
+    /// this call a new user is named after the Firebase account — its display
+    /// name, or else its email address. Nothing is sent when the field was
+    /// left empty, so an existing profile name is kept.
+    @MainActor
+    func publishDisplayName(_ typed: String?) async {
+        // The server accepts 1–60 characters, counted in UTF-16 units (an
+        // emoji can take two), so trim by that count without splitting one.
+        var name = ""
+        for ch in (typed ?? "").trimmingCharacters(in: .whitespacesAndNewlines) {
+            if name.utf16.count + String(ch).utf16.count > 60 { break }
+            name.append(ch)
+        }
+        guard !name.isEmpty else { return }
+        do {
+            _ = try await UsersService.updateMyDisplayName(name)
+        } catch {
+            print("[Session] could not save the display name: \(error.localizedDescription)")
+        }
+    }
+
     func updateLang(_ langCode: String) {
         preferredLangCd = langCode
         defaults.set(langCode, forKey: Keys.lang)
@@ -71,7 +95,19 @@ final class Session: ObservableObject {
         defaults.set(apiUrl, forKey: Keys.apiUrl)
     }
 
-    func signOut() {
+    /// Sign out on the server first, then on the device.
+    ///
+    /// POST /customer/logout revokes this device's refresh token (it would
+    /// otherwise stay valid for 30 days) and deletes the push token this device
+    /// registered, so it stops receiving the previous user's notifications.
+    /// A failure there is ignored — local state is cleared either way.
+    @MainActor
+    func signOut() async {
+        if let refreshToken = SecureStore.read(.refreshToken), !refreshToken.isEmpty {
+            let pushTokens = PushRegistration.shared.registeredToken.map { [$0] } ?? []
+            await ApiClient.shared.logout(refreshToken: refreshToken, pushTokens: pushTokens)
+        }
+        PushRegistration.shared.forget()
         SecureStore.clearAll()
         FirebaseAuthService.signOut()
         userId = ""

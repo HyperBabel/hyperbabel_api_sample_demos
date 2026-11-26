@@ -1,14 +1,19 @@
 /*
  * Chat screen — full HyperBabel chat surface with:
- *   - Real-time new-message, typing, edit and delete events
- *   - Edit / delete on own messages, Reply (top-level `reply_to`) / React on any
+ *   - Real-time new-message, typing, edit, delete and room-update events
+ *   - Edit / delete on own messages, Reply (top-level `reply_to`) on any
+ *   - React on any message — this SENDS the reaction only; the demo does not
+ *     render reactions or listen for the `reaction` event
  *   - Image and arbitrary-file upload via the 3-step presign flow, sent with
  *     the `message_type` the server derives for the file
  *   - Members modal with promote / demote / ban + room mute toggle
- *   - Freeze toggle for owner / sub_admin
+ *   - Freeze toggle for owner / sub_admin. The frozen state is the server's:
+ *     `room.is_frozen` from GET …/rooms/:roomId, then the `room.updated`
+ *     real-time event (`data.is_frozen`) when anyone freezes / unfreezes
  *   - Locale-aware timestamps + edited indicator
  *   - Video call button: a 1:1 room rings the other member, a group room
- *     opens a picker (at most MAX_CALL_TARGETS people); none in open rooms
+ *     opens a picker (at most MAX_CALL_TARGETS people — group calls need a
+ *     plan with group video); none in open rooms
  *   - Call events (`video_call` system messages) shown as one-line notices;
  *     live call captions on the room channel are skipped
  */
@@ -83,6 +88,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.hyperbabel.demo.api.ApiClient
+import com.hyperbabel.demo.api.ApiException
 import com.hyperbabel.demo.api.StorageUpload
 import com.hyperbabel.demo.data.Message
 import com.hyperbabel.demo.data.SendMessageRequest
@@ -108,8 +114,16 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.io.File
 
-/** Group calls ring at most this many people (3 including you) — the server rejects more. */
+/**
+ * Group calls ring at most this many people (3 including you) when your plan
+ * includes group video. Without it every call is 1:1 (2 people) and ringing
+ * more answers 400 `plan_upgrade_required`; more than 3 answers 400
+ * `limit_exceeded` on any plan.
+ */
 private const val MAX_CALL_TARGETS = 2
+
+/** At most one typing ping per this interval — it counts against the per-minute rate limit. */
+private const val TYPING_PING_INTERVAL_MS = 3_000L
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -204,6 +218,7 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
             .onSuccess {
                 realtimeChannel = it.room.realtimeChannel
                 roomType = it.room.roomType
+                isFrozen = it.room.isFrozen
             }
     }
 
@@ -218,7 +233,13 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
                     StartVideoCallRequest(callerId = Session.userId, targetUserIds = targets),
                 )
                 onStartCall()
-            }.onFailure { error = it.message ?: "Failed to start call" }
+            }.onFailure {
+                error = if ((it as? ApiException)?.code == "plan_upgrade_required") {
+                    "Group calls need a plan with group video — this plan allows 1:1 calls only."
+                } else {
+                    it.message ?: "Failed to start call"
+                }
+            }
         }
     }
 
@@ -284,6 +305,13 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
                             )
                         }
                     }
+                    // Freeze / unfreeze by any owner or sub_admin (this user included):
+                    //   { type: "room.updated", timestamp, data: { channel_id, is_frozen, actor_user_id } }
+                    "room.updated" -> {
+                        val data = envelope["data"] as? Map<*, *> ?: return@launch
+                        val frozen = data["is_frozen"] as? Boolean ?: return@launch
+                        isFrozen = frozen
+                    }
                 }
             }
         }
@@ -317,9 +345,11 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
                     scope.launch {
                         runCatching {
                             val me = mapOf("user_id" to Session.userId)
-                            if (isFrozen) ApiClient.unitedChat.unfreezeRoom(roomId, me)
-                            else ApiClient.unitedChat.freezeRoom(roomId, me)
-                            isFrozen = !isFrozen
+                            val next = !isFrozen
+                            if (next) ApiClient.unitedChat.freezeRoom(roomId, me)
+                            else ApiClient.unitedChat.unfreezeRoom(roomId, me)
+                            // The `room.updated` event confirms the same value.
+                            isFrozen = next
                         }.onFailure { error = it.message ?: "Failed" }
                     }
                 }) {
@@ -411,7 +441,7 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
                 onValueChange = {
                     input = it
                     val now = System.currentTimeMillis()
-                    if (now - lastTypingPing > 2000) {
+                    if (now - lastTypingPing > TYPING_PING_INTERVAL_MS) {
                         lastTypingPing = now
                         scope.launch {
                             runCatching {
@@ -518,6 +548,8 @@ fun ChatScreen(roomId: String, onBack: () -> Unit, onStartCall: () -> Unit) {
     }
 
     // ── Reaction picker ─────────────────────────────────────────────────────
+    // Sends the reaction only. Rendering reactions (the response's full map,
+    // or the `reaction` real-time event) is left to your app.
     reactionFor?.let { msg ->
         val emojis = listOf("👍", "❤️", "😂", "😮", "😢", "🎉", "🔥", "✅")
         AlertDialog(

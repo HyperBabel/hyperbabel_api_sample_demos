@@ -47,6 +47,11 @@ enum UnitedChatService {
         )
     }
 
+    /// Starts (rings) a room call. Not available in `open` rooms (400).
+    /// Up to 3 people (caller + 2 `target_user_ids`) when your plan includes
+    /// group video, otherwise 2 — a larger call answers 400
+    /// `plan_upgrade_required` (`limit_exceeded` above 3). The server closes
+    /// a call nobody answered after 3 minutes.
     static func startVideoCall(roomId: String, body: StartVideoCallRequest) async throws -> EmptyResponse {
         try await ApiClient.shared.request("POST", "/unitedchat/rooms/\(roomId)/video-call", body: body)
     }
@@ -133,7 +138,7 @@ enum UnitedChatService {
         return try await ApiClient.shared.request(
             "POST",
             "/unitedchat/rooms/\(roomId)/messages/batch-translate",
-            // Server zod field is `target_lang`, not `target_lang_cd`.
+            // The request field is `target_lang`, not `target_lang_cd`.
             body: Body(message_ids: messageIds, target_lang: targetLangCd)
         )
     }

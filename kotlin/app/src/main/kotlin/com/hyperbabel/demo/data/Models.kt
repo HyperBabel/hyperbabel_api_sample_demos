@@ -36,6 +36,12 @@ data class Room(
      * have, so a hand-built name subscribes to a channel nobody publishes on.
      */
     @SerialName("realtime_channel") val realtimeChannel: String? = null,
+    /**
+     * True while an owner / sub_admin has frozen the room — only they can post.
+     * Read it from `GET /unitedchat/rooms/:roomId`, then follow the
+     * `room.updated` real-time event (`data.is_frozen`) for changes.
+     */
+    @SerialName("is_frozen") val isFrozen: Boolean = false,
 )
 
 /**
@@ -257,3 +263,21 @@ data class RtcTokenResponse(
 
 @Serializable
 data class PresenceHeartbeat(@SerialName("user_id") val userId: String)
+
+/** One row of `GET /presence?user_ids=…`. */
+@Serializable
+data class PresenceEntry(
+    @SerialName("user_id") val userId: String,
+    /** "online" | "away" | "dnd" | "offline". Stale rows already read as "offline". */
+    val status: String = "offline",
+    /** ISO timestamp; null for a user who never sent a heartbeat. */
+    @SerialName("last_seen") val lastSeen: String? = null,
+    val device: String? = null,
+)
+
+/** `GET /presence?user_ids=…` — `{ presence: [...], offline_threshold_seconds }`. */
+@Serializable
+data class PresenceListResponse(
+    val presence: List<PresenceEntry> = emptyList(),
+    @SerialName("offline_threshold_seconds") val offlineThresholdSeconds: Int? = null,
+)

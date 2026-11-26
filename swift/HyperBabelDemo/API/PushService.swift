@@ -1,5 +1,10 @@
 /*
  * HyperBabel API — push notification token management.
+ *
+ * HyperBabel delivers push ONLY to FCM registration tokens — on iOS too. Send
+ * the token Firebase Messaging gives you (`Messaging.messaging().token()`),
+ * never the raw APNs device token and never a placeholder: tokens FCM rejects
+ * are pruned on the next send. `PushRegistration.swift` shows the full flow.
  */
 import Foundation
 
@@ -20,10 +25,12 @@ struct PushTokenList: Codable {
 }
 
 enum PushService {
+    /// `token` must be an FCM registration token (`token_type: "fcm"`).
+    /// `user_id` must be the signed-in user's own id.
     static func register(userId: String, token: String, platform: String = "ios") async throws -> EmptyResponse {
         try await ApiClient.shared.request(
             "POST", "/push/register",
-            body: ["user_id": userId, "token": token, "platform": platform]
+            body: ["user_id": userId, "token": token, "platform": platform, "token_type": "fcm"]
         )
     }
 

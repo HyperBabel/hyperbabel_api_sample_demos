@@ -1,12 +1,18 @@
 /**
  * HyperBabel API — Storage Service
  *
- * Three-step presigned-URL upload flow for files up to 5 GB:
+ * Three-step presigned-URL upload flow (per-file size limit set by your plan,
+ * 5 GB at most):
  *   1. POST /storage/presign  — Validate file and get a presigned PUT URL
- *   2. PUT  <presigned_url>   — Upload the file directly (client → storage CDN)
+ *   2. PUT  <presigned_url>   — Upload the file directly (client → HyperBabel Storage)
  *   3. POST /storage/confirm  — Confirm upload and record metadata
  *
- * Download egress is 100% free. Files are served globally via CDN.
+ * The confirmed `url` is a public CDN URL behind an unguessable key — not a
+ * signed, expiring link: anyone holding it can open the file, so share it
+ * the way you share the message that carries it.
+ *
+ * With an end-user token, pass `channelId` (a room id you are a member of)
+ * for chat attachments.
  *
  * React Native difference from the web demo:
  *   Step 2 uses expo-file-system's uploadAsync() instead of fetch() + File
@@ -37,16 +43,17 @@ export interface PresignParams {
  * so callers only see the inner shape declared here.
  */
 export interface PresignResult {
-  upload_url:    string;
-  key:           string;
-  expires_in?:   number;
-  message_type?: string;
-  category?:     string;
+  upload_url:   string;
+  key:          string;
+  expires_in:   number;
+  /** 'image' | 'video' | 'audio' | 'file' — derived from the file name. */
+  message_type: string;
+  category:     string;
 }
 
 export interface PresignEnvelope {
-  message?: string;
-  data?:    PresignResult;
+  message: string;
+  data:    PresignResult;
 }
 
 /**
@@ -54,17 +61,18 @@ export interface PresignEnvelope {
  * `{ message, data: { key, url, original_name, … } }`. Same unwrap.
  */
 export interface ConfirmResult {
-  key:            string;
-  url:            string;
-  original_name?: string;
-  mime_type?:     string;
-  size_bytes?:    number;
-  message_type?:  string;
+  key:           string;
+  /** Public CDN URL of the file — put it in the chat message. */
+  url:           string;
+  original_name: string;
+  mime_type:     string;
+  size_bytes:    number;
+  message_type:  string;
 }
 
 export interface ConfirmEnvelope {
-  message?: string;
-  data?:    ConfirmResult;
+  message: string;
+  data:    ConfirmResult;
 }
 
 export interface UploadFileOption {
@@ -87,8 +95,8 @@ export interface UploadFileOption {
  * Unwraps the HyperBabel response envelope so callers see a flat PresignResult.
  */
 export const presign = async (data: PresignParams): Promise<PresignResult> => {
-  const resp = await api.post<PresignEnvelope | PresignResult>(`${BASE}/presign`, data);
-  return ((resp as PresignEnvelope)?.data ?? (resp as PresignResult));
+  const resp = await api.post<PresignEnvelope>(`${BASE}/presign`, data);
+  return resp.data;
 };
 
 // ── Step 2 ────────────────────────────────────────────────────────────────
@@ -134,8 +142,8 @@ export const uploadToPresignedUrl = async (
  * HyperBabel verifies the file exists in storage and records metadata + usage.
  */
 export const confirmUpload = async (data: { key: string; originalName: string }): Promise<ConfirmResult> => {
-  const resp = await api.post<ConfirmEnvelope | ConfirmResult>(`${BASE}/confirm`, data);
-  return ((resp as ConfirmEnvelope)?.data ?? (resp as ConfirmResult));
+  const resp = await api.post<ConfirmEnvelope>(`${BASE}/confirm`, data);
+  return resp.data;
 };
 
 // ── Convenience wrapper ───────────────────────────────────────────────────
@@ -151,7 +159,7 @@ export const confirmUpload = async (data: { key: string; originalName: string })
  *     fileSize: pickerResult.assets[0].fileSize ?? 0,
  *     onProgress: (pct) => setProgress(pct),
  *   });
- *   console.log(result.url); // Signed CDN GET URL ready to use in a message
+ *   console.log(result.url); // Public CDN URL, ready to put in a message
  */
 export const uploadFile = async (opts: UploadFileOption): Promise<ConfirmResult> => {
   // Step 1

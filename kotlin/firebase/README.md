@@ -46,7 +46,9 @@ gitignored.
    token to prove ownership → click *Verify and add*.
 
    This step tells HyperBabel "trust ID tokens from this project."
-   Without it, `/customer/auth/firebase-exchange` returns 403.
+   Without it, `/customer/auth/firebase-exchange` returns **401** with
+   `{ "error": "Firebase project \"<your-project-id>\" is not registered with HyperBabel" }`
+   — the sign-in screen shows that message.
 
 ## What if I skip this folder?
 

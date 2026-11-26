@@ -16,10 +16,15 @@
  *   refuses to put an org key in a browser bundle — so the calls below fail
  *   here by design.
  *
+ *   The live chat on this page is backend-only too. It uses the low-level
+ *   `/chat/*` API (services/chatService.js), which needs the organization API
+ *   key as well and rejects end-user tokens with
+ *   403 { "error": { "code": "forbidden" } }.
+ *
  *   To run live streaming for real, put these calls in your own server and
  *   expose a thin endpoint your app can call:
  *
- *       browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*
+ *       browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*, /chat/*
  *
  *   Keep reading this file for the call sequence and payloads — that part is
  *   accurate and is what your backend should implement.
@@ -29,22 +34,27 @@
  *
  * HOST mode:
  *  1. Call Stream API to create a session (`POST /stream/sessions`)
- *  2. Receive the session ID (share with viewers)
- *  3. Join as RTC publisher via HyperBabel's token endpoint
+ *     → { session: { id, channel_name, app_id, host: { uid, rtc_token, … }, … } }
+ *  2. Create the stream's chat channel (`POST /chat/channels`) and keep the
+ *     returned `channel.id` (a UUID) — every /chat/channels/:channelId call
+ *     needs that id, not the channel NAME. The stream session does not carry
+ *     a chat id, so your backend stores it next to the session.
+ *  3. Join as RTC publisher with `session.host.rtc_token` / `session.host.uid`
  *  4. Publish camera + mic tracks
  *  5. Start the broadcast (`POST /stream/sessions/:id/start`)
- *  6. Host can see viewer count and use live chat
+ *  6. Share the viewer link (session id + chat channel id)
  *
  * VIEWER mode:
- *  1. Receive session ID from host (via link or QR)
+ *  1. Receive the session ID (and chat channel ID) from the host's link / QR
  *  2. Get a viewer token (`POST /stream/sessions/:id/viewer-token`)
- *  3. Join as RTC subscriber via HyperBabel's token endpoint
+ *     → flat { channel_name, uid, token, app_id, host_display_name, title, … }
+ *  3. Join as RTC subscriber with that `token` / `uid`
  *  4. Remote stream is rendered automatically when host publishes
  *  5. Viewer can participate in live chat (auto-translated)
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { QRCodeSVG } from 'qrcode.react';
 import Header from '../components/Header';
 import ChatMessageList from '../components/ChatMessageList';
@@ -59,8 +69,12 @@ const PERM = { IDLE: 'idle', GRANTED: 'granted', DENIED: 'denied', UNAVAILABLE: 
 
 export default function LiveStreamPage() {
   const { sessionId } = useParams();
+  const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
+  // Viewer: the stream's chat channel id (UUID) arrives in the share link
+  // (`?chat=`). In production your backend would hand it out with the session.
+  const viewerChatId = searchParams.get('chat');
 
   const isHost = !sessionId;
 
@@ -184,12 +198,19 @@ export default function LiveStreamPage() {
       const streamSession = result.session || result;
       setSession(streamSession);
 
-      // Step 2: Create a chat channel for this stream
-      const channelId = `stream-${streamSession.id}`;
-      setChatChannelId(channelId);
+      // Step 2: Create a chat channel for this stream. The NAME is yours to
+      // choose (lowercase letters, digits, '-' and ':'); every later call is
+      // addressed by the returned channel ID (a UUID). A name that is taken
+      // answers 409 `channel_exists` — keep the id from the first creation.
       try {
-        await chatService.createChannel({ channel_name: channelId, channel_type: 'group' });
-      } catch { /* May already exist */ }
+        const created = await chatService.createChannel({
+          channel_name: `stream-${streamSession.id}`,
+          channel_type: 'broadcast',
+        });
+        if (created?.channel?.id) setChatChannelId(created.channel.id);
+      } catch (err) {
+        console.warn('Live chat unavailable:', err.message);
+      }
 
       // Step 3: Join RTC as publisher (host).
       // The create response already carries a 24-hour host token plus the
@@ -248,29 +269,27 @@ export default function LiveStreamPage() {
     try {
       setStatusText('Getting viewer access...');
 
-      // Step 1: Get a viewer token from HyperBabel Stream API
-      const tokenResult = await streamService.getViewerToken(sessionId, {
+      // Step 1: Get a viewer token from HyperBabel Stream API. The response
+      // is FLAT (not wrapped in `session`) and session-scoped: the real
+      // channel name, a uid that cannot collide with the host's, and a
+      // subscriber `token`. Nothing is derived on the client.
+      const vt = await streamService.getViewerToken(sessionId, {
         user_id: user.user_id,
         viewer_display_name: user.display_name,
         viewer_preferred_lang_cd: user.preferred_lang_cd,
       });
 
-      setSession({ id: sessionId, ...tokenResult });
-      setChatChannelId(`stream-${sessionId}`);
+      setSession({ id: sessionId, ...vt });
+      if (viewerChatId) setChatChannelId(viewerChatId);
 
       // Step 2: Join as RTC subscriber
       // When the host publishes, the tracks are surfaced via the callback
       setStatusText('Connecting to stream...');
-      // The viewer-token endpoint is session-scoped: it returns the real
-      // channel name, a uid that cannot collide with the host's, and a
-      // subscriber token. Nothing is derived on the client.
-      const vt = await streamService.getViewerToken(sessionId, { user_id: user.user_id });
-
       const viewerRtcSession = await rtcService.joinAsViewer(
         {
           appId: vt.app_id,
           channelName: vt.channel_name,
-          token: vt.token ?? vt.rtc_token,
+          token: vt.token,
           uid: vt.uid,
         },
         ({ videoTrack, audioTrack, mediaType }) => {
@@ -300,26 +319,28 @@ export default function LiveStreamPage() {
   const loadChatMessages = async () => {
     if (!chatChannelId) return;
     try {
+      // `chatChannelId` is the channel's UUID (see Step 2), never its name.
       const data = await chatService.getMessages(chatChannelId, { limit: 50 });
-      const msgs = data.messages || data || [];
+      // History comes newest first — reverse to render oldest → newest.
+      const msgs = [...(data.messages || [])].reverse();
       setChatMessages(msgs);
 
       // Auto-translate messages from others
       if (msgs.length > 0 && user.preferred_lang_cd) {
+        const myLang = user.preferred_lang_cd.split('-')[0];
         const otherIds = msgs
-          .filter((m) => m.sender_id !== user.user_id && !m.translated_content)
+          .filter((m) => m.sender_id !== user.user_id && !m.translated_content?.[myLang])
           .map((m) => m.id);
 
         if (otherIds.length > 0) {
           chatService
             .batchTranslateMessages(chatChannelId, otherIds, user.preferred_lang_cd)
-            .then((translated) => {
-              if (!Array.isArray(translated)) return;
+            // Response: { translations: { [messageId]: text }, limited?: true }
+            .then((res) => {
+              const map = res?.translations;
+              if (!map || typeof map !== 'object') return;
               setChatMessages((prev) =>
-                prev.map((msg) => {
-                  const t = translated.find((tr) => tr.id === msg.id);
-                  return t ? { ...msg, translated_content: t.translated_content } : msg;
-                })
+                prev.map((msg) => (map[msg.id] ? { ...msg, translated_content: map[msg.id] } : msg))
               );
             })
             .catch(() => {});
@@ -372,9 +393,11 @@ export default function LiveStreamPage() {
           The <code>/stream/*</code> endpoints authenticate with your{' '}
           <strong>organization API key</strong>, which must never ship in a browser bundle.
           This demo holds only an end-user token, so the calls return{' '}
-          <code>401 invalid_api_key_format</code>. Move them to your own server and let the
-          browser call that: <code>browser → your backend → HyperBabel /stream/*</code>.
-          The chat, video call and messaging pages in this demo are end-user surfaces and do run as-is.
+          <code>401 invalid_api_key_format</code>. The <strong>live chat</strong> on this page
+          uses <code>/chat/*</code>, which needs that key too and answers end-user tokens with{' '}
+          <code>403 forbidden</code>. Move both to your own server and let the browser call
+          that: <code>browser → your backend → HyperBabel /stream/*, /chat/*</code>.
+          The chat hub, video call and messaging pages in this demo are end-user surfaces and do run as-is.
         </div>
       </div>
 
@@ -468,7 +491,7 @@ export default function LiveStreamPage() {
                 }}>
                   {/* QR encodes the viewer URL — scanning opens the stream directly */}
                   <QRCodeSVG
-                    value={`${window.location.origin}/live-stream/viewer/${session.id}`}
+                    value={`${window.location.origin}/live-stream/viewer/${session.id}${chatChannelId ? `?chat=${encodeURIComponent(chatChannelId)}` : ''}`}
                     size={180}
                     bgColor="#ffffff"
                     fgColor="#1a1a2e"

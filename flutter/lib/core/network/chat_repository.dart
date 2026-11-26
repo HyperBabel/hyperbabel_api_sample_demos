@@ -1,12 +1,12 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import 'api_error.dart';
 
-/// Low-level Chat API — used by United Chat rooms for cross-cutting concerns
-/// like emoji reactions that target a single message id rather than a room.
+/// Message reactions. Kept apart from [UnitedChatRepository] because they
+/// target a single message, but they use the room-scoped United Chat paths.
 class ChatRepository {
   final ApiClient _apiClient = ApiClient();
 
-  /// Add an emoji reaction to a message.
   /// Add an emoji reaction. ROOM-SCOPED on purpose — the `/chat/...` variant is
   /// server-to-server only and rejects the end-user (Session-Token) JWT this
   /// demo signs in with (403).
@@ -25,7 +25,7 @@ class ChatRepository {
       );
       return _parseReactions(res.data);
     } on DioException catch (e) {
-      throw Exception('Failed to add reaction: ${e.message}');
+      throw Exception('Failed to add reaction: ${apiErrorMessage(e)}');
     }
   }
 
@@ -38,7 +38,6 @@ class ChatRepository {
         ));
   }
 
-  /// Remove an emoji reaction from a message.
   /// Remove an emoji reaction. Same room-scoped path; returns the updated map.
   Future<Map<String, List<String>>> removeReaction({
     required String roomId,
@@ -53,7 +52,7 @@ class ChatRepository {
       );
       return _parseReactions(res.data);
     } on DioException catch (e) {
-      throw Exception('Failed to remove reaction: ${e.message}');
+      throw Exception('Failed to remove reaction: ${apiErrorMessage(e)}');
     }
   }
 }

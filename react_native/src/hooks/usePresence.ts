@@ -2,9 +2,14 @@
  * HyperBabel Demo — usePresence Hook
  *
  * Manages online presence for the current user:
- *  - Sends a heartbeat every 30 seconds on mount
+ *  - Sends a heartbeat every 30 seconds on mount, and one when the app
+ *    returns to the foreground (JS timers stop while it is in the background)
  *  - Cancels the interval on logout / unmount
  *  - Provides a helper to bulk-query presence for a list of user IDs
+ *
+ * 'offline' is sent by AuthContext.logout() while the session is still
+ * valid — sending it from this hook's cleanup would run after the tokens are
+ * cleared and fail with 401.
  *
  * Mount in a persistent layout (e.g., (main)/_layout.tsx) so heartbeats
  * continue regardless of which tab is active.
@@ -32,7 +37,7 @@ export function usePresence() {
       presenceService.heartbeat(user.userId).catch(() => {});
     }, HEARTBEAT_INTERVAL_MS);
 
-    // Pause when app goes background, resume on foreground
+    // Back in the foreground → report presence right away.
     const handleAppState = (state: AppStateStatus) => {
       if (state === 'active') {
         presenceService.heartbeat(user.userId).catch(() => {});
@@ -43,8 +48,6 @@ export function usePresence() {
     return () => {
       clearInterval(interval);
       sub.remove();
-      // Set offline on unmount/logout
-      presenceService.setStatus(user.userId, 'offline').catch(() => {});
     };
   }, [user]);
 

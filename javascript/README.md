@@ -25,25 +25,42 @@ sibling `sample_demos/*` projects.
 
 | Feature              | APIs Used                                                  |
 | -------------------- | ---------------------------------------------------------- |
-| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
-| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
+| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`, then `PATCH /customer/users/me` with the display name you typed |
+| Sign out             | `POST /customer/logout` (ends the session and deletes this device's push tokens), then the real-time connection is closed |
+| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms` (1:1 or group with other user IDs, or open) |
 | Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped; replies use the top-level `reply_to` field) + Real-Time push |
 | Message translation  | `POST /unitedchat/rooms/:roomId/messages/batch-translate`  |
 | Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm` |
 | Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
 | Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
-| Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
-| Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
+| Block list           | `GET /users/:id/blocks`, `DELETE /users/block` (unblock). `src/api/users.js` also wraps `POST /users/block`; no screen calls it |
+| Presence heartbeat   | `POST /presence/heartbeat` every 30 s on the room list. `src/api/presence.js` also wraps `POST /presence/status` and `GET /presence?user_ids=…`; no screen calls them |
 | 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/accept`, `…/reject`, `…/active`, `…/joined-rtc`, `…/heartbeat`, `…/renew-token`, `…/leave` + HyperBabel Video |
 | Incoming call        | Real-Time event `signal` with `type: "CALL_INVITE"` on the user's private channel |
 | Call events          | `video_call` system messages on the room channel (`metadata.event`: `call_started` / `call_accepted` / `call_ended` / `call_rejected` / `call_missed` / `call_busy`) |
-| In-call live captions | `wss /stt-relay` (Speech Translation — live STT + translation subtitles) |
-| Live stream (host) — **needs your backend** | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
+| In-call live captions | `wss /stt-relay` (Speech Translation — live STT + translation subtitles). An `error` frame with `fatal: false` is transient and captions keep running; only `fatal: true` ends them |
+| Live stream (host) — **needs your backend** | `GET /stream/sessions`, `POST /stream/sessions`, `…/start`, `…/heartbeat`, `…/end` + HyperBabel Video (broadcaster) |
 | Live stream (viewer) — **needs your backend** | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
-| Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
-| Usage stats          | `GET /auth/usage`                                          |
-| Language detection — **needs your backend** | `POST /translate/detect`                    |
+| Push tokens          | `GET /push/tokens` (Settings). The demo registers no token — see [Push notifications](#push-notifications) |
+| Language detection — **needs your backend** | `POST /translate/detect` — not called; the Settings screen explains why |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+
+Organization usage and plan data are available to your backend with the
+organization API key, not to end-user apps, so the demo does not show them.
+
+### How two users meet
+
+Run the demo in two browsers (or one normal and one private window) and
+sign in as two different users. Every user's ID is shown under the
+**Create a room** form and in **Settings**. User A picks **1:1** (or
+**Group**), pastes user B's ID into *Other user IDs*, and clicks
+**Create** — the room appears in both users' room lists, and either of
+them can start a video call from it.
+
+The demo has no open-room browser and no invite-code join, so an **Open**
+room it creates contains only you. Your app adds those flows on top of
+the same API (the open rooms are returned as `open_rooms` by
+`GET /unitedchat/rooms`).
 
 ### Features that need your backend
 
@@ -56,11 +73,53 @@ invalid_api_key_format`) — the Streams screens show the resulting
 instead of calling `/translate/detect`.
 
 To ship them, route the call through your own server:
-browser → your backend (holds `hb_live_…`) → HyperBabel. The paths and
-payloads in `src/api/stream.js` and `src/api/translate.js` are accurate —
-implement them on your server and expose a thin endpoint to the browser.
+browser → your backend (holds `hb_live_…`) → HyperBabel. The paths,
+payloads and response shapes in `src/api/stream.js` and
+`src/api/translate.js` are accurate — implement them on your server and
+expose a thin endpoint to the browser. The stream screens already read
+the real responses: the host joins with `session.host.rtc_token` from
+`POST /stream/sessions`, and viewers join with the flat `token` from
+`…/viewer-token`.
 Chat-message translation does **not** need this: it uses the room-scoped
 batch-translate endpoint, which accepts the customer JWT.
+
+The same applies to `/video/*` (API-key video sessions) and `/chat/*`
+(which refuses customer JWTs with `403`). This demo calls neither: its
+video calls use the room-scoped `/unitedchat/rooms/:roomId/video-call*`
+endpoints, and its reactions use `/unitedchat/…/reactions`.
+
+### Push notifications
+
+HyperBabel delivers push through Firebase Cloud Messaging only, so the
+token you register with `POST /push/register` must be an **FCM
+registration token** — on iOS too (the token Firebase Messaging gives
+you, not a raw APNs device token). FCM rejects a made-up token at the
+first send and HyperBabel then deletes it, so never register a
+placeholder.
+
+This demo does not wire Firebase Messaging, so it registers no token. To
+add push to your web app:
+
+1. In Firebase Console → Project settings → Cloud Messaging, create a
+   Web Push certificate (VAPID key), and serve a
+   `firebase-messaging-sw.js` service worker.
+2. Connect the same Firebase project in HyperBabel Console → **Push
+   Settings**.
+3. Right after sign-in, get the token with Firebase Messaging
+   `getToken()` and pass it to `registerDeviceToken()` in
+   `src/api/push.js` (the file header has the snippet). It remembers the
+   token so that sign-out sends it to `POST /customer/logout`, which
+   deletes this device's registration.
+
+### Sign-out
+
+Settings → **Logout** calls `POST /customer/logout` with the refresh
+token (no Authorization header) **before** clearing anything locally.
+That ends this device's session on the server, so the 30-day refresh
+token stops working, and deletes the push tokens this device
+registered. It then closes the real-time connection and the
+incoming-call listener, so the next user who signs in to the same tab
+gets their own call invites — not the previous user's.
 
 ## Prerequisites
 
@@ -80,7 +139,9 @@ batch-translate endpoint, which accepts the customer JWT.
    - Paste your Firebase project ID (e.g. `your-app-prod`).
    - Paste a Firebase ID token to prove ownership.
    - Click *Verify and add*. This step tells HyperBabel "trust ID
-     tokens from this Firebase project."
+     tokens from this Firebase project." Without it, sign-in fails with
+     `401` and the login screen shows the server's message:
+     *Firebase project "…" is not registered with HyperBabel*.
 
 3. **Enable sign-in methods in Firebase Console**:
    - Authentication → Sign-in method → enable **Email/Password** (and
@@ -168,17 +229,16 @@ javascript/
     ├── main.js                    # hash router & app shell
     ├── styles.css                 # demo styling
     ├── api/
-    │   ├── client.js              # Customer JWT HTTP client (B1)
-    │   ├── firebaseAuth.js        # Firebase → /customer/auth/firebase-exchange
-    │   ├── auth.js                # /auth/usage
+    │   ├── client.js              # Customer JWT HTTP client (B1) + error-message parsing
+    │   ├── firebaseAuth.js        # Firebase → /customer/auth/firebase-exchange, display name, logout
     │   ├── chat.js                # room-scoped emoji reactions
     │   ├── unitedChat.js          # rooms / messages / translation / moderation / video-call
     │   ├── stream.js              # live stream session lifecycle (needs your backend)
     │   ├── storage.js             # 3-step presign upload (envelope-aware)
     │   ├── translate.js           # AI Translation text / detect / languages (needs your backend)
     │   ├── presence.js            # online status heartbeat + bulk lookup
-    │   ├── push.js                # token register / list / unregister
-    │   ├── users.js               # global block list
+    │   ├── push.js                # FCM token register / list / unregister (no token registered by the demo)
+    │   ├── users.js               # own profile (display name) + global block list
     │   └── rtm.js                 # token issuance for Real-Time + Video
     ├── realtime/
     │   └── hyperbabelRealtime.js  # Real-Time client (vendor SDK aliased)
@@ -189,22 +249,27 @@ javascript/
     └── pages/
         ├── login.js               # Firebase Email/Password + Anonymous
         ├── signup.js              # Firebase createUser → exchange
-        ├── home.js                # room list + create
+        ├── home.js                # room list + create (1:1 / group with other user IDs, open)
         ├── chat.js                # ChatScreen UX (typing / reactions / reply / translate / edit / delete / image / file / freeze / mute / members)
         ├── videoCall.js           # 1:1 video call surface (joined-rtc / heartbeat / token renewal / leave)
         ├── streams.js             # live stream discovery (needs your backend)
         ├── streamHost.js          # host broadcasts as publisher (needs your backend)
         ├── streamViewer.js        # viewer subscribes as audience (needs your backend)
         ├── blocks.js              # global block list management
-        └── settings.js            # API usage + push tokens + logout
+        └── settings.js            # profile + push tokens + logout
 ```
 
 ## Integrating into your own app
 
 1. **Auth.** Copy `src/api/firebaseAuth.js` and `src/api/client.js`.
-   The first owns Firebase sign-in / sign-up / exchange / sign-out;
-   the second owns the customer JWT lifecycle (proactive refresh +
-   401 fallback + org-key guard).
+   The first owns Firebase sign-in / sign-up / exchange, saving the
+   typed display name (`completeSignIn`), and sign-out
+   (`logoutAndClear` → `POST /customer/logout`); the second owns the
+   customer JWT lifecycle (proactive refresh + 401 fallback + org-key
+   guard) and reads the server's message from both error shapes
+   (`{ "error": { "code", "message" } }` and `{ "error": "…" }`). On
+   sign-out, also close the real-time connection and the incoming-call
+   listener, as `src/pages/settings.js` does.
 2. **HTTP services.** The modules in `src/api/` are pure `fetch` calls
    against the public HyperBabel API — copy whichever you need.
 3. **Real-Time push.** `src/realtime/hyperbabelRealtime.js` shows how
@@ -257,8 +322,11 @@ tier on every session-creation call:
 ### Always send `publish_resolution`
 
 Every session-creation call in this demo sends `publish_resolution` alongside
-`quality`, and **your app should too**. The API accepts a request without it,
-but leaving it out is how the most common billing surprise happens.
+`quality` (`POST /unitedchat/rooms/:roomId/video-call` and, through your
+backend, `POST /stream/sessions`), and **your app should too**. The API
+accepts a request without it, but leaving it out is how the most common
+billing surprise happens. The example below is the API-key video endpoint your
+backend would call:
 
 ```
 POST /api/v1/video/sessions

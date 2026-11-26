@@ -10,7 +10,11 @@
  *   client → relay : binary PCM 16 kHz · mono · 16-bit LE (~100 ms frames,
  *                    only after {"kind":"ready"}), text "EOS" to finish
  *   relay → client : partial / final (original) + partial_tr / final_tr
- *                    (translation), keepalive (ignore), error
+ *                    (translation), keepalive (ignore), and
+ *                    { kind: 'error', fatal, message }:
+ *                      fatal: false → a transient hiccup; the session stays
+ *                                     open, so keep streaming
+ *                      fatal: true  → the session is over (the relay closes)
  *
  * Billing: metered per minute of audio actually sent, against the org's
  * speech-translation plan allowance — keep it behind a user toggle.
@@ -58,7 +62,10 @@ function downsampleToS16(input, inRate) {
  * @param {string}   [opts.roomId]     Room id — pass at least one of the two.
  * @param {function} opts.onCaption    ({ kind, text, lang }).
  * @param {function} [opts.onStatus]   ('connecting'|'ready'|'closed').
- * @param {function} [opts.onError]    (message).
+ * @param {function} [opts.onError]    (message, { fatal }) — `fatal: false`
+ *                                      is transient: captions keep running.
+ *                                      After `fatal: true` they have stopped
+ *                                      (`onStatus('closed')` follows).
  * @returns {{ stop: () => void }}
  */
 export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCaption, onStatus, onError }) {
@@ -126,8 +133,12 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.kind === 'ready') { ready = true; emitStatus('ready'); return; }
         if (msg.kind === 'error') {
-          try { onError?.(String(msg.message ?? msg.code ?? 'captions error')); } catch { /* ignore */ }
-          stop();
+          // Stop ONLY on `fatal: true`. `fatal: false` reports a transient
+          // hiccup (e.g. one recognition error) — the relay keeps the session
+          // open, so keep streaming and let the next caption replace it.
+          const fatal = msg.fatal === true;
+          try { onError?.(String(msg.message ?? msg.code ?? 'captions error'), { fatal }); } catch { /* ignore */ }
+          if (fatal) stop();
           return;
         }
         if (['partial', 'final', 'partial_tr', 'final_tr'].includes(msg.kind)) {
@@ -137,8 +148,9 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
       };
       ws.onclose = () => { if (!stopped) stop(); };
       ws.onerror = () => {
-        try { onError?.('Could not reach the speech-translation service.'); } catch { /* ignore */ }
-        if (!stopped) stop();
+        if (stopped) return;
+        try { onError?.('Could not reach the speech-translation service.', { fatal: true }); } catch { /* ignore */ }
+        stop();
       };
 
       // Mic → worklet taps Float32 → batch ~100 ms → downsample → binary send.
@@ -182,7 +194,7 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
       }
     } catch (err) {
       if (stopped) return; // stale failure of an already-stopped session — silent
-      try { onError?.(err?.message || 'Failed to start live captions.'); } catch { /* ignore */ }
+      try { onError?.(err?.message || 'Failed to start live captions.', { fatal: true }); } catch { /* ignore */ }
       stop();
     }
   })();

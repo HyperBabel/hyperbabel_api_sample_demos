@@ -12,7 +12,16 @@
  *    See src/services/streamService.ts for the full explanation.
  *
  * Route: /live-stream/host
- * Params: sessionId (from createSession)
+ * Params:
+ *   sessionId   — `session.id` from createSession (streams.tsx)
+ *   chatRoomId  — (optional) an open United Chat room your backend created
+ *                 for this broadcast. A stream session has no chat room of
+ *                 its own, so without this param the chat overlay is hidden.
+ *
+ * The host publishes with the PUBLISHER credentials from the create
+ * response (`session.host.rtc_token` / `session.host.uid`), which
+ * streamService keeps in memory for this screen — never with a viewer
+ * token, which is subscribe-only.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -22,20 +31,16 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 
-import { useAuth }        from '@/context/AuthContext';
 import { usePermissions } from '@/hooks/usePermissions';
 import { StreamChat }     from '@/components/stream/StreamChat';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import { RtcClient, RtcSurfaceView, VideoSourceType } from '@/services/rtcService';
 import * as streamService from '@/services/streamService';
-import type { StreamSession } from '@/services/streamService';
 
 export default function LiveStreamHostScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
-  const { user }      = useAuth();
+  const { sessionId, chatRoomId } = useLocalSearchParams<{ sessionId: string; chatRoomId?: string }>();
   const { allGranted, checking, request } = usePermissions();
 
-  const [session,     setSession]    = useState<StreamSession | null>(null);
   const [isLive,      setIsLive]     = useState(false);
   const [muted,       setMuted]      = useState(false);
   const [showChat,    setShowChat]   = useState(false);
@@ -62,8 +67,10 @@ export default function LiveStreamHostScreen() {
   const initSession = async () => {
     if (!sessionId) return;
     try {
-      const { session: s } = await streamService.getViewerToken(sessionId, {});
-      setSession(s);
+      // The create response is the only source of the host's publisher
+      // token. If it is gone (e.g. the app restarted), create a new broadcast.
+      const s = streamService.getCreatedSession(sessionId);
+      if (!s) throw new Error('Host credentials for this broadcast are not available — create it again.');
       setTitle(s.title ?? '');
 
       const client = new RtcClient();
@@ -71,10 +78,10 @@ export default function LiveStreamHostScreen() {
 
       await client.join(
         {
-          appId:       s.app_id ?? '',
-          channelName: s.channel_name ?? '',
-          token:       s.rtc_token ?? '',
-          uid:         s.uid ?? 0,
+          appId:       s.app_id,
+          channelName: s.channel_name,
+          token:       s.host.rtc_token,
+          uid:         s.host.uid,
           role:        'publisher',
         },
         { onJoined: () => setLoading(false) },
@@ -158,10 +165,11 @@ export default function LiveStreamHostScreen() {
         )}
       </SafeAreaView>
 
-      {/* Stream chat overlay (visible after going live) */}
-      {isLive && showChat && session?.chat_room_id && (
+      {/* Stream chat overlay (visible after going live, when a chat room
+          was passed in — the stream session itself has none) */}
+      {isLive && showChat && !!chatRoomId && (
         <View style={styles.chatWrap}>
-          <StreamChat chatRoomId={session.chat_room_id} />
+          <StreamChat chatRoomId={chatRoomId} />
         </View>
       )}
 
@@ -179,7 +187,7 @@ export default function LiveStreamHostScreen() {
             <TouchableOpacity style={styles.ctrlBtn} onPress={() => rtcRef.current?.flipCamera()}>
               <Text style={styles.ctrlIcon}>🔄</Text>
             </TouchableOpacity>
-            {session?.chat_room_id && (
+            {!!chatRoomId && (
               <TouchableOpacity style={styles.ctrlBtn} onPress={() => setShowChat((v) => !v)}>
                 <Text style={styles.ctrlIcon}>💬</Text>
               </TouchableOpacity>

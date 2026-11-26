@@ -90,50 +90,93 @@ start so you don't have to dig through build logs.
 > translation is unaffected — it uses the room batch-translate endpoint, which
 > accepts the end-user token.
 
-### 1. Unified Chat
-- **Real-time pipeline**: `RealtimeContext` subscribes to messages,
-  typing indicators, and deleted-message events.
-- **Rich messaging**: media upload via `expo-image-picker` with presigned
-  URLs, emoji reactions (`ReactionPicker`), threaded replies (`ThreadPanel`).
-- **Room moderation**: sticky announcements (`PinBanner`), role-based
-  moderation — freeze room, ban/unban, promote/demote (`MembersSheet`).
-- **Auto-translation**: `useTranslation` hook with in-memory batch caching
-  renders global chats consistently across languages.
-- **Rich attachments**: the plus menu sends image / video / file / voice
+### 1. Sign-in & session
+- **Firebase Direct Exchange**: email/password, sign-up, or anonymous
+  sign-in, exchanged for a customer JWT pair stored in `SecureStore`.
+- **Display name**: a name typed on the login / sign-up screen is saved with
+  `PATCH /customer/users/me`, so other members see it rather than the email
+  address (or the anonymous UID) the account was named after.
+- **Token refresh**: proactive and on 401. If the server refuses the refresh
+  token (expired, revoked, signed out elsewhere), the app signs out to the
+  login screen.
+- **Logout**: sets presence `offline`, then `POST /customer/logout` with this
+  device's FCM token — the server revokes the session and stops push for
+  that user on this device — then clears local storage.
+- **Errors**: the server's own message is shown, whichever error shape it
+  uses (e.g. `Firebase project "<id>" is not registered with HyperBabel`).
+
+### 2. United Chat
+- **Rooms**: room list with unread counts and last message; create My Notes
+  (self-chat), 1:1, group or open rooms; join open rooms from the Open Rooms
+  tab or by invite code. Open-room descriptions show in your language when a
+  translation is available. A new group starts with just you — there is no
+  add-members screen. The search box filters the loaded room list on the
+  device (the message-search endpoint is wrapped in
+  `chatService.searchMessages` but no screen calls it).
+- **Real-time**: the room screen subscribes to new, edited and deleted
+  messages, reactions and typing indicators.
+- **Messages**: send text, reply, threads (`ThreadPanel`), delete your own
+  messages, add emoji reactions (`ReactionPicker`; removing a reaction is not
+  wired into the UI).
+- **Moderation**: freeze / unfreeze (owner / sub_admin — they can still post
+  in a frozen room), ban from the room and promote / demote sub_admin
+  (`MembersSheet`). Unban, pinning and mute are wrapped in
+  `unitedChatService` but not wired into a screen; `PinBanner` shows an
+  already-pinned message and lets allowed members unpin it.
+- **Auto-translation**: `useTranslation` batch-translates messages through
+  the room batch-translate endpoint (end-user token) and caches them in
+  memory.
+- **Attachments**: the plus menu sends image / video / file / voice
   message / location / contact — `expo-image-picker`, `expo-document-picker`,
   `expo-audio` (record + play), `expo-video` (inline playback), and
-  `expo-location` (Use my location autofill).
+  `expo-location` (Use my location autofill). Images show as a file chip,
+  not an inline preview.
+- **Blocked users**: Settings → Blocked Users lists and unblocks
+  (`blockUser` is wrapped but no screen calls it).
 
-### 2. Live Broadcasts
-- **Stream discovery**: `streams.tsx` map fetches live rooms dynamically.
-- **Chat overlay**: `StreamChat` floats over the host's video feed.
-- **Role isolation**: hosts publish (`publisher`); viewers join muted
-  (`subscriber`). Auto-leave when the host ends the broadcast.
+### 3. Live Broadcasts (⚠️ needs your backend — see above)
+- **Stream discovery**: `streams.tsx` lists live broadcasts and creates one.
+- **Host**: publishes with the publisher token from the create response
+  (`session.host.rtc_token` / `session.host.uid`).
+- **Viewer**: joins with a subscriber token from the viewer-token endpoint;
+  leaves automatically when the host does.
+- **Chat overlay**: `StreamChat` — a stream session has no chat room, so it
+  appears only when you pass the id of an open United Chat room you created
+  for the broadcast (`chatRoomId` route param).
 
-### 3. Video Calls
+### 4. Video Calls
+- **Rooms**: 1:1 and group rooms (open rooms cannot hold calls, so the call
+  button is hidden there). A room call holds at most 3 people (the caller
+  plus 2) on plans that include group video, otherwise 2 — above that the API
+  answers 400 `plan_upgrade_required` / `limit_exceeded`.
 - **In-call chat**: `InCallChat` keeps side-channel messaging visible
   without leaving the call.
 - **Rejoin & auto-reject**: a "Rejoin Call" banner reattaches to an active
-  call; an invitation left unanswered for 45 s is declined as missed.
+  call (accepting again first if you had left); an invitation left
+  unanswered for 45 s is declined as missed, and one that arrives while you
+  are already in a call is declined as busy.
 - **Call events**: the call screen and the ringing overlay follow the room's
   real-time channel — both close when the call ends. The caller stops ringing
   after 45 s with no answer (in a 1:1 call, also when the callee declines,
   misses or is busy), and hangs up when the last remote participant leaves.
-  In the chat, call events show as one-line notices. Room calls hold at most
-  3 people (the caller plus 2); some plans allow 1:1 calls only.
-- **Background incoming call**: `IncomingCallListener` detects invites on
-  both platforms, rings via `expo-audio`, and vibrates with native
-  `Vibration` loops. Invites arrive on the user's private channel with the
-  event name `signal` and `data.type === 'CALL_INVITE'`.
+  In the chat, call events show as one-line notices.
+- **Incoming calls (app in the foreground)**: `IncomingCallListener` picks up
+  invites on the user's private channel (event name `signal`,
+  `data.type === 'CALL_INVITE'`); the overlay rings via `expo-audio` and
+  vibrates with native `Vibration` loops. Ringing a closed or backgrounded
+  app needs push (VoIP / CallKit, high-priority FCM), which this demo does
+  not implement.
 - **Session upkeep**: every call action sends the call's `session_id`; the
   call screen reports the media join, sends a heartbeat once a minute, and
   renews the one-hour video token before it expires.
 
-### 4. Push Notifications & Presence
-- **Presence**: `usePresence` pulses a heartbeat every 30 s while the app
-  is foregrounded; pauses on background (`AppState` listener).
-- **Push services**: `usePushNotifications` exchanges Firebase FCM tokens
-  with HyperBabel's push APIs and persists them in `SecureStore`.
+### 5. Push Notifications & Presence
+- **Presence**: `usePresence` sends a heartbeat every 30 s, and one when the
+  app returns to the foreground (JS timers stop in the background).
+- **Push**: `usePushNotifications` registers the **FCM registration token**
+  from Firebase Messaging — on iOS too; HyperBabel delivers push to FCM
+  tokens only, never to raw APNs device tokens. The token is released at
+  logout. Foreground messages are only logged.
 
 ---
 
@@ -183,9 +226,10 @@ npm run android      # requires Android Studio + a connected device or emulator
 
 > 💡 **Multi-platform testing tip.** Sign in to the React web demo with
 > one account and to this React Native demo with a different account, then
-> place them side-by-side to see real-time multilingual chat, threaded
-> reactions, video calls, live broadcasting, and in-call chat
-> synchronizing across platforms.
+> place them side-by-side to see real-time multilingual chat, threads,
+> reactions, video calls and in-call chat synchronizing across platforms.
+> To open a 1:1 room, enter the other account's user ID (shown under
+> Settings → Profile). Live broadcasting additionally needs your backend.
 
 ---
 
@@ -318,7 +362,7 @@ sample_demos/react_native/
 │   │   ├── dashboard.tsx       # Sandbox Hub
 │   │   ├── chat/               # Chat Hub + Room Detail
 │   │   ├── streams.tsx         # Live stream discovery (⚠️ needs your backend)
-│   │   └── settings.tsx        # Settings + API usage
+│   │   └── settings.tsx        # Settings — profile, language, push tokens
 │   ├── video-call/             # Video call room
 │   └── live-stream/            # Host + Viewer screens (⚠️ needs your backend — see below)
 │
@@ -334,8 +378,7 @@ sample_demos/react_native/
 │   │   ├── storageService.ts
 │   │   ├── presenceService.ts
 │   │   ├── pushService.ts
-│   │   ├── streamService.ts
-│   │   └── authService.ts
+│   │   └── streamService.ts
 │   ├── theme/                  # Design tokens (colors, typography, spacing)
 │   └── utils/
 │       └── ringtone.ts         # expo-audio + Vibration ringtone controller

@@ -18,15 +18,30 @@
  *   key in a browser bundle), so these calls fail here by design.
  *
  *   Ship it as:  browser -> your backend (holds hb_live_…) -> HyperBabel /stream/*
- *   The paths, payloads and call order below are accurate — implement them
- *   on your server and expose a thin endpoint the browser can call.
+ *   The paths, payloads, response shapes and call order below are accurate —
+ *   implement them on your server and expose a thin endpoint the browser can
+ *   call.
  */
 
 import { api } from './client.js';
 import { declaredQuality, publishResolutionFor } from '../video/videoQuality.js';
 
+/**
+ * Live sessions (default `status=live`).
+ * Response: `{ sessions: [{ id, title, status, host: { user_id, display_name },
+ *   viewer_count, started_at, created_at }], total }`.
+ */
 export const listSessions = () => api.get('/stream/sessions');
 
+/**
+ * Create a broadcast. Response (201), wrapped in `session`:
+ *   { session: { id, channel_name, rtm_channel, title, status,
+ *                host: { user_id, display_name, profile_image_url,
+ *                        preferred_lang_cd, uid, rtc_token },
+ *                app_id, quality, quality_warning? } }
+ * The host publishes with `session.host.rtc_token` and `session.host.uid`
+ * (a 24-hour publisher token). Every later call takes `session.id`.
+ */
 export const createSession = ({ hostUserId, hostName, title }) =>
   api.post('/stream/sessions', {
     // Wire shape per the HyperBabel Stream API (POST /stream/sessions):
@@ -44,8 +59,9 @@ export const createSession = ({ hostUserId, hostName, title }) =>
     publish_resolution: publishResolutionFor(1),
   });
 
-export const startSession = (sessionId, hostUserId) =>
-  api.post(`/stream/sessions/${sessionId}/start`, { user_id: hostUserId });
+// Marks the session live once the host has joined. No body.
+export const startSession = (sessionId) =>
+  api.post(`/stream/sessions/${sessionId}/start`);
 
 // Heartbeat — POST every ~30s while broadcasting so the server can detect
 // a host crash within minutes (rather than 8h wall-clock) and bill only
@@ -53,8 +69,16 @@ export const startSession = (sessionId, hostUserId) =>
 export const heartbeat = (sessionId) =>
   api.post(`/stream/sessions/${sessionId}/heartbeat`);
 
-export const endSession = (sessionId, hostUserId) =>
-  api.post(`/stream/sessions/${sessionId}/end`, { user_id: hostUserId });
+// Ends the broadcast. No body.
+export const endSession = (sessionId) =>
+  api.post(`/stream/sessions/${sessionId}/end`);
 
+/**
+ * A viewer's subscriber token. The response is FLAT (not wrapped):
+ *   { channel_name, uid, token, app_id, title, display_name,
+ *     profile_image_url, preferred_lang_cd, host_user_id, host_display_name }
+ * Join with `token` + `uid` as audience. It cannot publish — a host never
+ * uses it.
+ */
 export const viewerToken = (sessionId, userId) =>
   api.post(`/stream/sessions/${sessionId}/viewer-token`, { user_id: userId });

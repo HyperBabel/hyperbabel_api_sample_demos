@@ -27,13 +27,13 @@ import retrofit2.http.POST
 import retrofit2.http.Path
 
 interface StreamService {
-    @GET("api/v1/stream/sessions")
+    @GET("stream/sessions")
     suspend fun listSessions(): JsonObject
 
-    @POST("api/v1/stream/sessions")
+    @POST("stream/sessions")
     suspend fun createSession(@Body body: JsonObject): JsonObject
 
-    @POST("api/v1/stream/sessions/{sessionId}/start")
+    @POST("stream/sessions/{sessionId}/start")
     suspend fun startSession(
         @Path("sessionId") sessionId: String,
         @Body body: Map<String, String>,
@@ -42,19 +42,19 @@ interface StreamService {
     // Heartbeat — POST every ~30s while broadcasting so the server can
     // detect a host crash within minutes (rather than the 8h wall-clock
     // fallback) and bill only actual stream time.
-    @POST("api/v1/stream/sessions/{sessionId}/heartbeat")
+    @POST("stream/sessions/{sessionId}/heartbeat")
     suspend fun heartbeat(
         @Path("sessionId") sessionId: String,
         @Body body: Map<String, String> = emptyMap(),
     )
 
-    @POST("api/v1/stream/sessions/{sessionId}/end")
+    @POST("stream/sessions/{sessionId}/end")
     suspend fun endSession(
         @Path("sessionId") sessionId: String,
         @Body body: Map<String, String>,
     )
 
-    @POST("api/v1/stream/sessions/{sessionId}/viewer-token")
+    @POST("stream/sessions/{sessionId}/viewer-token")
     suspend fun viewerToken(
         @Path("sessionId") sessionId: String,
         @Body body: Map<String, String>,

@@ -2,6 +2,8 @@ import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+import '../network/api_error.dart';
+
 /// HyperBabel Flutter Demo — Firebase Auth → Customer JWT bridge
 ///
 /// Implements pattern B1 from https://hyperbabel.com/docs#customer-auth (Firebase Direct
@@ -21,14 +23,15 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 /// verifying the signature against Google JWKS.
 ///
 /// Prerequisites:
-///   1. `firebase/google-services.json` (Android) and
-///      `firebase/GoogleService-Info.plist` (iOS) installed via your
-///      platform tooling (`flutterfire configure` or manual copy into
-///      android/app/ and ios/Runner/). See `firebase/README.md`.
+///   1. `google-services.json` in `android/app/` (with the Google Services
+///      Gradle plugin applied) and `GoogleService-Info.plist` added to the
+///      Runner target in Xcode. See `firebase/README.md`.
 ///   2. Email/Password (and Anonymous if you want kiosk mode) enabled
 ///      in Firebase Console → Authentication → Sign-in method.
 ///   3. Your Firebase project ID allow-listed in HyperBabel Console
-///      → Customer Auth → Add Firebase project.
+///      → Customer Auth → Add Firebase project. Without it the exchange
+///      answers 401 `Firebase project "<id>" is not registered with
+///      HyperBabel`.
 class FirebaseExchangeResult {
   final String accessToken;
   final String refreshToken;
@@ -109,20 +112,74 @@ class FirebaseAuthService {
     }
   }
 
+  /// Set the name other members see. On first sign-in HyperBabel names the
+  /// user after the Firebase profile — the display name, or the EMAIL when
+  /// there is none — so call this right after the exchange whenever the user
+  /// typed a name, or other members see their email address.
+  ///
+  /// `PATCH /customer/users/me { display_name }` (1–60 characters) with the
+  /// access token the exchange just returned.
+  Future<void> updateDisplayName({
+    required String accessToken,
+    required String displayName,
+  }) async {
+    try {
+      await _dio.patch<dynamic>(
+        '$_baseUrl/customer/users/me',
+        data: {'display_name': displayName},
+        options: Options(headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type':  'application/json',
+        }),
+      );
+    } on DioException catch (e) {
+      throw Exception('Could not save the display name: ${apiErrorMessage(e)}');
+    }
+  }
+
+  /// End the session on the server: `POST /customer/logout` revokes the
+  /// refresh token and deletes the push tokens this device registered, so
+  /// the next person to sign in here does not receive the previous user's
+  /// notifications. No Authorization header — the refresh token in the body
+  /// authenticates the call. Idempotent: an already-ended session answers 200.
+  Future<void> logoutSession({
+    required String refreshToken,
+    List<String> pushTokens = const [],
+  }) async {
+    try {
+      await _dio.post<dynamic>(
+        '$_baseUrl/customer/logout',
+        data: {
+          'refresh_token': refreshToken,
+          if (pushTokens.isNotEmpty) 'push_tokens': pushTokens,
+        },
+        options: Options(headers: {'Content-Type': 'application/json'}),
+      );
+    } on DioException catch (e) {
+      throw Exception('Server logout failed: ${apiErrorMessage(e)}');
+    }
+  }
+
   Future<FirebaseExchangeResult> _exchange(User user, String? lang) async {
     final idToken = await user.getIdToken(true);
-    final res = await _dio.post<Map<String, dynamic>>(
-      '$_baseUrl/customer/auth/firebase-exchange',
-      data: lang != null ? {'preferred_lang_cd': lang} : <String, dynamic>{},
-      options: Options(headers: {
-        'Authorization': 'Bearer $idToken',
-        'Content-Type':  'application/json',
-      }),
-    );
-    final data = res.data;
-    if (data == null) {
-      throw Exception('Exchange returned an empty body');
+    try {
+      final res = await _dio.post<Map<String, dynamic>>(
+        '$_baseUrl/customer/auth/firebase-exchange',
+        data: lang != null ? {'preferred_lang_cd': lang} : <String, dynamic>{},
+        options: Options(headers: {
+          'Authorization': 'Bearer $idToken',
+          'Content-Type':  'application/json',
+        }),
+      );
+      final data = res.data;
+      if (data == null) {
+        throw Exception('Exchange returned an empty body');
+      }
+      return FirebaseExchangeResult.fromJson(data);
+    } on DioException catch (e) {
+      // Keep the server's message — e.g. 401 "Firebase project … is not
+      // registered with HyperBabel" when the allow-list step was skipped.
+      throw Exception('HyperBabel sign-in failed: ${apiErrorMessage(e)}');
     }
-    return FirebaseExchangeResult.fromJson(data);
   }
 }

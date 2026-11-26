@@ -1,6 +1,10 @@
 /**
  * Stream viewer — exchanges a viewer token for a session, joins as audience,
  * and renders the host's video track in a remote tile.
+ *
+ * Needs your backend: `/stream/*` accepts only the organization API key, so
+ * from this browser demo the viewer-token call fails (see api/stream.js). The
+ * response handling below is what your app does with your backend's reply.
  */
 
 import * as stream from '../api/stream.js';
@@ -25,23 +29,39 @@ export async function renderStreamViewer(sessionId, navigate) {
   document.getElementById('back').onclick = leaveAndGoBack;
 
   try {
+    // FLAT response: { channel_name, uid, token, app_id, host_display_name, title, … }
     const tok = await stream.viewerToken(sessionId, user.user_id);
-    await videoEngine.joinCall({
-      channelName: tok.channel_name,
-      uid: tok.uid ?? Math.floor(Math.random() * 1_000_000),
-      role: 'subscriber',
-      sessionKind: 'broadcast',
-    });
+    if (!tok?.token || !tok.app_id) throw new Error('Server did not return a viewer token.');
+    const hostName = tok.host_display_name || tok.host_user_id || 'Host';
+
+    // Listen BEFORE joining: a host who is already publishing is announced
+    // right after the join, and an event that fires with no listener is lost.
+    // Only the host publishes (viewer tokens cannot), so the publisher is the host.
+    let hostUid = null;
     videoEngine.onRemoteUserPublished((remoteUser, mediaType) => {
+      hostUid = remoteUser.uid;
       if (mediaType === 'video' && remoteUser.videoTrack) {
         remoteUser.videoTrack.play('remote-tile');
         const tile = document.getElementById('remote-tile');
-        if (tile) tile.querySelector('.label').textContent = `Host (${remoteUser.uid})`;
+        if (tile) tile.querySelector('.label').textContent = hostName;
       }
       if (mediaType === 'audio' && remoteUser.audioTrack) remoteUser.audioTrack.play();
     });
-    videoEngine.onRemoteUserLeft(() => leaveAndGoBack());
-    document.getElementById('status').textContent = 'Connected.';
+    // Other viewers come and go in the same channel — leave only when the host does.
+    videoEngine.onRemoteUserLeft((remoteUser) => {
+      if (hostUid !== null && remoteUser.uid === hostUid) leaveAndGoBack();
+    });
+
+    // Join as audience with the subscriber token the server just issued.
+    await videoEngine.joinWithToken({
+      appId: tok.app_id,
+      channelName: tok.channel_name,
+      token: tok.token,
+      uid: tok.uid,
+      sessionKind: 'broadcast',
+    });
+    document.getElementById('status').textContent =
+      `Connected${tok.title ? ` — ${tok.title}` : ''} (host: ${hostName}).`;
   } catch (err) {
     document.getElementById('status').textContent = `Failed to watch: ${err.message}`;
   }

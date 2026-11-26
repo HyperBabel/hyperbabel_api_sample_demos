@@ -1,7 +1,7 @@
 /**
  * Global incoming-call overlay — subscribes to the user's HyperBabel private
  * channel after login and shows a fullscreen Accept / Reject prompt when a
- * call invite arrives. Mounted exactly once from main.js.
+ * call invite arrives. Set up from main.js once per sign-in.
  *
  * Invites are published under the real-time event name `signal` with
  * `data.type === 'CALL_INVITE'`. Other `signal` types (e.g. `CALL_BUSY`) share
@@ -11,6 +11,11 @@
  * While ringing, the overlay also watches the room (`roomSignalChannel`): it
  * closes when the caller hangs up (`call_ended`), and after 45 s it reports a
  * missed call and closes.
+ *
+ * The listener belongs to ONE signed-in user. Sign-out must call
+ * `teardownIncomingCallListener()` and close the real-time connection
+ * (`pages/settings.js`); the next sign-in sets up a fresh listener for the
+ * new user.
  */
 
 import * as realtime from './realtime/hyperbabelRealtime.js';
@@ -21,23 +26,33 @@ import { callEventOf } from './callEvents.js';
 const RING_TIMEOUT_MS = 45_000;
 
 let _unsubscribe = null;
+let _settingUp = false;
+/** Bumped on teardown, so a setup still in flight for the old user is dropped. */
+let _generation = 0;
 
 export async function ensureIncomingCallListener(navigate) {
-  if (_unsubscribe) return;
+  if (_unsubscribe || _settingUp) return;
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
   if (!user.user_id) return;
+  const generation = _generation;
+  _settingUp = true;
   try {
     await realtime.connect(user);
+    if (generation !== _generation) return; // signed out while connecting
     _unsubscribe = realtime.subscribePrivate(user.user_id, ({ event, data }) => {
       if (event !== 'signal' || data?.type !== 'CALL_INVITE') return;
       showOverlay(data, navigate, user);
     });
   } catch (err) {
     console.warn('[incoming-call] real-time not available:', err.message);
+  } finally {
+    if (generation === _generation) _settingUp = false;
   }
 }
 
 export function teardownIncomingCallListener() {
+  _generation += 1;
+  _settingUp = false;
   try { _unsubscribe?.(); } catch {}
   _unsubscribe = null;
 }

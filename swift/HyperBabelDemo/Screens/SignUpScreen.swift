@@ -3,8 +3,9 @@
  *
  * Creates a brand-new Firebase user with email + password, then
  * exchanges the resulting ID token for a HyperBabel customer JWT. The
- * matching `com_users` row is created server-side during exchange, so
- * no extra "create user" call is needed.
+ * HyperBabel user is created server-side during the exchange, so no
+ * extra "create user" call is needed. The typed display name is then
+ * saved to the profile (PATCH /customer/users/me).
  */
 import SwiftUI
 
@@ -117,9 +118,11 @@ struct SignUpScreen: View {
         defer { loading = false }
         do {
             let result = try await FirebaseAuthService.signUpWithEmail(
-                em, password: password, preferredLangCd: langCd,
+                em, password: password, preferredLangCd: langCd
             )
             session.persist(result, fallbackDisplayName: displayName, langCode: langCd)
+            // Without this the new user is shown to others by email address.
+            await session.publishDisplayName(displayName)
             await MainActor.run { dismiss() }
         } catch {
             errorMessage = error.localizedDescription

@@ -6,9 +6,11 @@
  * via `typealias` so the body of this file talks about HyperBabel Video,
  * not the raw vendor name.
  *
- * The vendor SDK ships as iOS-only binary frameworks, so the body is
- * gated on `canImport` to keep host-side tooling (`swift build` on macOS,
- * Linux CI lints) compiling cleanly.
+ * The vendor SDK ships as iOS-only binary frameworks, so every line that
+ * touches it is gated on `canImport`; without the SDK (a macOS host build)
+ * the stub below keeps the same API and the package still compiles. Plain
+ * Swift that does not need the SDK (the extension at the bottom, and
+ * VideoQuality's presets) stays outside the gate so both paths share it.
  */
 import Foundation
 
@@ -91,10 +93,6 @@ final class HyperBabelVideo: NSObject {
     func trackRemoteLeft(uid: UInt) {
         if remoteUids.remove(uid) != nil { applyEncoder() }
     }
-
-    /// The billing tier to declare when creating a session, derived from the
-    /// same presets this client publishes with.
-    func declaredQuality() -> String { VideoQuality.declaredQuality() }
 
     /// Join a 1:1 / group video call. Fetches its own RTC token via the
     /// HyperBabel RTM endpoint — used by the in-room video call surface.
@@ -235,6 +233,10 @@ struct VideoCanvasView: View {
 #endif
 
 extension HyperBabelVideo {
+    /// The billing tier to declare when creating a session, derived from the
+    /// same presets this client publishes with.
+    func declaredQuality() -> String { VideoQuality.declaredQuality() }
+
     /// Info.plist keys that must be present before the camera or microphone
     /// starts — iOS terminates the app on first capture without them.
     /// Returns the ones that are missing (empty when the app is set up).

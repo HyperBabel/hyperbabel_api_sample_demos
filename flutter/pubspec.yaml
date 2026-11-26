@@ -4,8 +4,9 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.5.0 <4.0.0'
-  flutter: '>=3.27.0'
+  # Matches the committed pubspec.lock (resolved with Flutter 3.38.4 / Dart 3.10.3).
+  sdk: '>=3.10.3 <4.0.0'
+  flutter: '>=3.38.4'
 
 dependencies:
   flutter:

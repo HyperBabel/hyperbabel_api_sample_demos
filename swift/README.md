@@ -25,25 +25,29 @@ the sibling `sample_demos/*` projects.
 
 | Feature              | APIs Used                                                  |
 | -------------------- | ---------------------------------------------------------- |
-| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
-| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
-| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped) + Real-Time push |
-| Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm` |
+| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`, then `PATCH /customer/users/me` with the typed display name (otherwise other members see the account's email) |
+| Sign out             | `POST /customer/logout` `{ refresh_token, push_tokens }` (no auth header) before the local session is cleared — revokes the session and deletes this device's push token |
+| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms` (group / open) |
+| Chat (send / receive / edit / delete / typing / add reaction / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped) + Real-Time events `message`, `message.updated`, `message.deleted`, `reaction` |
+| Attachments          | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm`, then sent as an `image` / `video` / `audio` / `file` message (the type confirm returns) with the file URL in `content` and `metadata.url` |
 | Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
-| Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
-| Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
-| Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
+| Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin, plus muting the room's notifications for yourself (`/mute`) |
+| Room freeze          | `POST` / `DELETE /unitedchat/rooms/:id/freeze` (owner / sub_admin); `is_frozen` from `GET /unitedchat/rooms/:id`, live changes from the `room.updated` event |
+| Block list           | `GET /users/:id/blocks`, `DELETE /users/block` (`POST /users/block` is wrapped in `UsersService` but has no screen) |
+| Presence heartbeat   | `POST /presence/heartbeat` every 30 s on the room list (`PresenceService.list` wraps `GET /presence?user_ids=…` → `{ presence: [...] }`; not shown in the UI) |
 | Incoming-call overlay | Subscribes to the user's private channel `user:{orgId}:{userId}` (event `signal`, `type: "CALL_INVITE"`) and POSTs `/video-call/accept` or `/reject` with the invite's `sessionId`; while ringing it closes on the room's `call_ended` event and after 45 s rejects with `reason: "missed"` |
-| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token`, `…/leave` (all with `session_id`) + HyperBabel Video; room `video_call` events close the call screen |
+| 1:1 Video call       | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token`, `…/leave` (all with `session_id`) + HyperBabel Video; room `video_call` events close the call screen. Not available in `open` rooms (the button is hidden). Room calls allow 3 people on a plan with group video and 2 otherwise (`plan_upgrade_required`); an unanswered call is closed by the server after 3 minutes |
 | Live stream (host) ⚠️ needs your backend | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) |
 | Live stream (viewer) ⚠️ needs your backend | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) |
-| Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
-| Usage stats          | `GET /auth/usage`                                          |
+| Push tokens          | `POST /push/register` with the device's **FCM registration token** from Firebase Messaging (iOS too — not the raw APNs token), `GET /push/tokens` — see *Push notifications* below |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+
+Organization usage and plan data are available to your backend with the
+organization API key, not to end-user apps, so the demo does not show them.
 
 ### ⚠️ Needs your backend
 
-Two API families accept **only your organization API key**, which must never
+Some API families accept **only your organization API key**, which must never
 ship in an app. Calls to them from this demo's customer JWT are rejected with
 401 by design:
 
@@ -57,6 +61,11 @@ ship in an app. Calls to them from this demo's customer JWT are rejected with
   never calls it. To translate chat messages from the app, use
   `POST /unitedchat/rooms/:roomId/messages/batch-translate`
   (`UnitedChatService.batchTranslateMessages`), which accepts the customer JWT.
+- **Standalone video sessions** (`/video/sessions`) and the server-to-server
+  **chat API** (`/chat`, which answers a customer JWT with 403). The demo uses
+  the room-scoped `/unitedchat/rooms/:roomId/video-call*` and
+  `/unitedchat/rooms/:roomId/messages*` endpoints instead, which accept the
+  customer JWT.
 
 ## Prerequisites
 
@@ -114,7 +123,11 @@ ship in an app. Calls to them from this demo's customer JWT are rejected with
    5. **Drag `firebase/GoogleService-Info.plist`** into Xcode (uncheck
       "Copy items if needed" so the file stays in `firebase/`; tick the
       app target so it's bundled). See `firebase/README.md`.
-   6. **Set Info.plist usage descriptions** for camera + microphone
+   6. **(Optional) Push notifications.** Add the *Push Notifications*
+      capability (target → Signing & Capabilities) and upload your APNs
+      authentication key in Firebase Console → Project Settings → Cloud
+      Messaging. See *Push notifications* below.
+   7. **Set Info.plist usage descriptions** for camera + microphone
       (target → Info, or `INFOPLIST_KEY_…` build settings):
       - `NSCameraUsageDescription` — "Used for video calls."
       - `NSMicrophoneUsageDescription` — "Used for voice and video calls."
@@ -123,13 +136,27 @@ ship in an app. Calls to them from this demo's customer JWT are rejected with
       microphone starts if either key is missing. The call and go-live
       screens check for both and show a message instead of starting
       capture.
-   7. **Build and run** on a simulator or device. Sign in (or sign up)
+   8. **Build and run** on a simulator or device. Sign in (or sign up)
       with Firebase, and the demo will exchange the ID token for a
       customer JWT and route you into the room list.
 
 That's the whole setup. If `GoogleService-Info.plist` isn't bundled
 the app still builds — the sign-in screen renders a "Firebase config
 missing" hint instead of the form.
+
+### Push notifications
+
+HyperBabel delivers push **only to FCM registration tokens — on iOS too**.
+Firebase Messaging maps the APNs device token to an FCM registration token,
+and that FCM token is what you register with `POST /push/register`; a raw
+APNs device token or a placeholder never receives anything (tokens FCM
+rejects are pruned). `API/PushRegistration.swift` does this after sign-in:
+it asks for notification permission, registers for remote notifications,
+reads `Messaging.messaging().token()` and registers it — and registers again
+whenever Firebase reports a new token. `PushAppDelegate` hands the APNs
+device token to Firebase Messaging. If push is not set up, nothing is
+registered and the rest of the demo works as before. On logout the
+registered token goes to `POST /customer/logout`, which deletes it.
 
 ### Token storage
 
@@ -148,11 +175,11 @@ To target a different HyperBabel API base URL, assign it in `Session` at
 launch:
 
 ```swift
-Session.shared.setApiUrl("http://localhost:8787/api/v1")
+Session.shared.setApiUrl("https://api.example.com/api/v1")
 ```
 
-(The iOS Simulator can reach the host's `localhost` directly; physical
-devices need the host machine's LAN IP.)
+(Use this when you route the app through your own proxy or gateway in front
+of the HyperBabel API.)
 
 ### CORS & Allowed Origins
 
@@ -177,15 +204,15 @@ swift/
     ├── API/
     │   ├── ApiClient.swift            # Customer JWT HTTP client (B1) — proactive refresh + 401 fallback + org-key guard
     │   ├── FirebaseAuthService.swift  # Firebase → /customer/auth/firebase-exchange
-    │   ├── AuthService.swift          # /auth/usage
     │   ├── ChatService.swift          # reactions (room-scoped)
     │   ├── UnitedChatService.swift    # rooms / messages / moderation / video-call lifecycle
     │   ├── StreamService.swift        # live stream session lifecycle (needs your backend)
     │   ├── StorageService.swift       # 3-step presign upload
     │   ├── TranslateService.swift     # AI Translation reference (needs your backend)
-    │   ├── PresenceService.swift      # online status heartbeat
+    │   ├── PresenceService.swift      # heartbeat / status / bulk read
     │   ├── PushService.swift          # token register / list
-    │   ├── UsersService.swift         # global block list
+    │   ├── PushRegistration.swift     # FCM token → /push/register (+ APNs hand-off)
+    │   ├── UsersService.swift         # own display name + global block list
     │   └── RtmService.swift           # token issuance for Real-Time + Video
     ├── Models/
     │   ├── Models.swift               # Codable wire types
@@ -194,7 +221,8 @@ swift/
     ├── Realtime/
     │   └── HyperBabelRealtime.swift   # Real-Time client (vendor SDK aliased)
     ├── Video/
-    │   └── HyperBabelVideo.swift      # Video client (vendor SDK aliased)
+    │   ├── HyperBabelVideo.swift      # Video client (vendor SDK aliased; stub without the SDK)
+    │   └── VideoQuality.swift         # resolution presets + declared billing tier
     └── Screens/
         ├── LoginScreen.swift          # Firebase Email/Password + Anonymous
         ├── SignUpScreen.swift         # Firebase createUser → exchange
@@ -205,7 +233,7 @@ swift/
         ├── StreamScreen.swift
         ├── IncomingCallOverlay.swift  # Global Accept / Reject prompt
         ├── BlocksScreen.swift
-        └── SettingsScreen.swift       # usage / push tokens / logout
+        └── SettingsScreen.swift       # profile / push tokens / logout
 ```
 
 ## Integrating into your own app

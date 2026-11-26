@@ -9,24 +9,37 @@
  *      customer JWT via POST /customer/auth/firebase-exchange.
  *   3. The JWT pair is persisted to localStorage by AuthContext and
  *      attached to every subsequent API request.
+ *   4. If a display name was typed, PATCH /customer/users/me saves it — the
+ *      server otherwise names a new user after the Firebase account (its
+ *      email when it has no name), which other members would then see.
+ *
+ * A page that sent the user here to sign in (e.g. an invite link) passes
+ * `state.from`; the user is sent back there afterwards.
  *
  * If VITE_FIREBASE_* env vars are missing the page renders a setup-help
  * banner instead of the sign-in form. See README → Quickstart.
  */
 
 import { useMemo, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   isFirebaseConfigured,
   signInWithEmailAndExchange,
   signInAnonymouslyAndExchange,
+  saveDisplayName,
 } from '../services/firebaseAuthService';
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
   const firebaseReady = useMemo(() => isFirebaseConfigured(), []);
+  // Only same-app paths are honoured as a return target.
+  const from = location.state?.from;
+  const returnTo = typeof from === 'string' && from.startsWith('/') && !from.startsWith('//')
+    ? from
+    : '/dashboard';
 
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -35,9 +48,9 @@ export default function LoginPage() {
   const [loading,  setLoading]  = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const finishLogin = async (result, fallbackName) => {
-    const resolvedName = (fallbackName || '').trim()
-      || result.external_user_id.slice(0, 8);
+  const finishLogin = async (result, typedName) => {
+    const enteredName = (typedName || '').trim().slice(0, 60);
+    const resolvedName = enteredName || result.external_user_id.slice(0, 8);
     await login({
       userId:       result.external_user_id,
       userName:     resolvedName,
@@ -46,7 +59,13 @@ export default function LoginPage() {
       refreshToken: result.refresh_token,
       expiresAt:    result.expires_at,
     });
-    navigate('/dashboard');
+    // Runs after login() stored the customer JWT — the PATCH needs it.
+    if (enteredName) {
+      await saveDisplayName(enteredName).catch((err) => {
+        console.warn('Could not save the display name:', err?.message);
+      });
+    }
+    navigate(returnTo, { replace: true });
   };
 
   const handleEmailSignIn = async (e) => {
@@ -165,6 +184,7 @@ export default function LoginPage() {
                   type="text"
                   className="input-field"
                   placeholder="Alice (optional)"
+                  maxLength={60}
                   value={userName}
                   onChange={(e) => setUserName(e.target.value)}
                 />

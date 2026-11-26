@@ -108,8 +108,12 @@ class _IncomingCallListenerState extends State<IncomingCallListener> {
 
   void _onSignal(RealtimeMessage event) {
     // Every call signal shares the name `signal`; `data.type` says which one
-    // it is. Only CALL_INVITE rings this device — others (e.g. CALL_BUSY) are
-    // meant for the caller's screen.
+    // it is. Only CALL_INVITE rings this device. CALL_BUSY lands on this
+    // channel too — on the CALLER's device, one per group-call target that
+    // was skipped because they were already in another call
+    // (`{ type, target_user_id, target_user_name, reason: 'busy', room_id }`).
+    // This demo does not display it. A 1:1 call to a busy user never starts:
+    // the start request itself fails with 409 `targets_busy`.
     if (event.name != 'signal') return;
     final raw = event.data;
     if (raw is! Map) return;

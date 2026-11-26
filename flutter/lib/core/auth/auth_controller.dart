@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -48,6 +49,14 @@ const _kExpiresAt    = 'hb_expires_at';
 const _kUserId       = 'hb_user_id';
 const _kUserName     = 'hb_user_name';
 const _kLangCode     = 'hb_lang';
+
+/// The FCM token this device registered with `POST /push/register` (written
+/// by `PushRegistration` in push_repository.dart). Sent to
+/// `POST /customer/logout` so the server deletes it on logout.
+const kPushTokenPrefKey = 'hb_push_token';
+
+/// HyperBabel accepts display names of 1–60 characters.
+const _kMaxDisplayNameLength = 60;
 
 const _secure = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -113,16 +122,40 @@ class AuthController extends StateNotifier<AuthState> {
     await _persist(result, displayName: null, langCode: langCode);
   }
 
-  Future<void> logout() async {
+  /// Sign out. With [notifyServer] (the default) this first calls
+  /// `POST /customer/logout { refresh_token, push_tokens }` so the server
+  /// revokes the session and deletes this device's push token — BEFORE the
+  /// tokens are cleared locally, because the call needs the refresh token. A
+  /// failed server call never blocks the logout; local state is cleared
+  /// either way.
+  ///
+  /// Pass `notifyServer: false` when the server already ended the session
+  /// (the refresh token was rejected) — there is nothing left to revoke.
+  Future<void> logout({bool notifyServer = true}) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (notifyServer) {
+      final refreshToken = await _secure.read(key: _kRefreshToken);
+      final pushToken = prefs.getString(kPushTokenPrefKey);
+      if (refreshToken != null && refreshToken.isNotEmpty) {
+        try {
+          await _auth.logoutSession(
+            refreshToken: refreshToken,
+            pushTokens: [if (pushToken != null && pushToken.isNotEmpty) pushToken],
+          );
+        } catch (e) {
+          debugPrint('[HyperBabel] $e — continuing with the local logout.');
+        }
+      }
+    }
     await Future.wait([
       _secure.delete(key: _kAccessToken),
       _secure.delete(key: _kRefreshToken),
       _secure.delete(key: _kExpiresAt),
     ]);
-    final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kUserId);
     await prefs.remove(_kUserName);
     await prefs.remove(_kLangCode);
+    await prefs.remove(kPushTokenPrefKey);
     await _auth.signOut();
     state = state.copyWith(clearUser: true);
   }
@@ -150,9 +183,22 @@ class AuthController extends StateNotifier<AuthState> {
       _secure.write(key: _kRefreshToken, value: result.refreshToken),
       _secure.write(key: _kExpiresAt,    value: result.expiresAt.toString()),
     ]);
-    final resolvedName = (displayName?.trim().isNotEmpty ?? false)
-        ? displayName!.trim()
-        : result.externalUserId.substring(0, result.externalUserId.length.clamp(0, 8));
+    final typedName = _trimDisplayName(displayName);
+    if (typedName != null) {
+      // Save the typed name on the server too. Until this lands, other
+      // members see the name HyperBabel took from the Firebase profile — for
+      // an email sign-up that is the email address.
+      try {
+        await _auth.updateDisplayName(
+          accessToken: result.accessToken,
+          displayName: typedName,
+        );
+      } catch (e) {
+        debugPrint('[HyperBabel] $e');
+      }
+    }
+    final resolvedName = typedName ??
+        result.externalUserId.substring(0, result.externalUserId.length.clamp(0, 8));
     final resolvedLang = result.preferredLangCd ?? langCode;
 
     final prefs = await SharedPreferences.getInstance();
@@ -168,6 +214,16 @@ class AuthController extends StateNotifier<AuthState> {
       ),
       isReady: true,
     );
+  }
+
+  /// The typed display name, trimmed and capped at the server's limit, or
+  /// null when nothing was typed.
+  static String? _trimDisplayName(String? raw) {
+    final name = raw?.trim() ?? '';
+    if (name.isEmpty) return null;
+    return name.length > _kMaxDisplayNameLength
+        ? name.substring(0, _kMaxDisplayNameLength)
+        : name;
   }
 }
 

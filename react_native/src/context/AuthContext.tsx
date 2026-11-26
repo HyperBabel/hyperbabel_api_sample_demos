@@ -11,13 +11,18 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
+import { router } from 'expo-router';
 import {
   STORAGE_KEY_BASE_URL,
   STORAGE_KEY_ACCESS_TOKEN,
   STORAGE_KEY_REFRESH_TOKEN,
   STORAGE_KEY_EXPIRES_AT,
+  logoutCustomerSession,
+  setSessionExpiredHandler,
 } from '@/services/api';
 import { firebaseSignOut } from '@/services/firebaseAuthService';
+import { PUSH_TOKEN_CACHE_KEY } from '@/services/pushService';
+import * as presenceService from '@/services/presenceService';
 
 // ── Storage keys (identity-only) ─────────────────────────────────────────
 
@@ -112,7 +117,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const logout = useCallback(async () => {
+  /** Forget the session on this device (no server calls). */
+  const clearLocalSession = useCallback(async () => {
     await Promise.all([
       SecureStore.deleteItemAsync(STORAGE_KEY_USER_ID),
       SecureStore.deleteItemAsync(STORAGE_KEY_USERNAME),
@@ -121,11 +127,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       SecureStore.deleteItemAsync(STORAGE_KEY_ACCESS_TOKEN),
       SecureStore.deleteItemAsync(STORAGE_KEY_REFRESH_TOKEN),
       SecureStore.deleteItemAsync(STORAGE_KEY_EXPIRES_AT),
+      // Forget the registered push token too, so the next account that signs
+      // in on this device registers it again.
+      SecureStore.deleteItemAsync(PUSH_TOKEN_CACHE_KEY),
     ]);
     // Also drop the Firebase session so the next sign-in flows fresh.
     await firebaseSignOut();
     setUser(null);
   }, []);
+
+  /**
+   * Sign out. Order matters — both server calls need the session that the
+   * last step deletes:
+   *   1. presence 'offline' (a customer-JWT call — after step 3 it is a 401);
+   *   2. POST /customer/logout with this device's push token: revokes the
+   *      refresh token and stops push for this user on this device;
+   *   3. clear local storage + Firebase.
+   * Server failures are ignored — the user is still signed out locally.
+   */
+  const logout = useCallback(async () => {
+    const userId = await SecureStore.getItemAsync(STORAGE_KEY_USER_ID);
+    if (userId) await presenceService.setStatus(userId, 'offline').catch(() => {});
+
+    // Read the refresh token only now: the call above may have refreshed —
+    // and so rotated — it.
+    const [refreshToken, pushToken] = await Promise.all([
+      SecureStore.getItemAsync(STORAGE_KEY_REFRESH_TOKEN),
+      SecureStore.getItemAsync(PUSH_TOKEN_CACHE_KEY),
+    ]);
+    if (refreshToken) {
+      await logoutCustomerSession(refreshToken, pushToken ? [pushToken] : []).catch(() => {});
+    }
+
+    await clearLocalSession();
+  }, [clearLocalSession]);
+
+  // The server refused the refresh token (expired, revoked, signed out on
+  // another device…): sign out here and go to the login screen, instead of
+  // leaving every screen failing with 401.
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      clearLocalSession()
+        .catch(() => {})
+        .finally(() => router.replace('/(auth)/login'));
+    });
+    return () => setSessionExpiredHandler(null);
+  }, [clearLocalSession]);
 
   const updateLang = useCallback(async (langCode: string) => {
     await SecureStore.setItemAsync(STORAGE_KEY_LANG, langCode);

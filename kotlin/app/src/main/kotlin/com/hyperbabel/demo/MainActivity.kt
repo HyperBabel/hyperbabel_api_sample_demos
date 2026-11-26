@@ -8,7 +8,7 @@
  *   chat/{roomId}   — chat in a room (text + real-time push)
  *   video/{roomId}  — 1:1 / group video call
  *   stream          — live stream list / host / viewer (needs your backend)
- *   settings        — usage / push tokens / logout
+ *   settings        — profile / push tokens / logout (server-side logout first)
  *   blocks          — global block list
  *
  * Incoming calls: while someone is signed in, the app keeps the real-time
@@ -31,7 +31,10 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
@@ -41,6 +44,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.hyperbabel.demo.api.ApiClient
+import com.hyperbabel.demo.api.PushRegistration
 import com.hyperbabel.demo.data.SecureStore
 import com.hyperbabel.demo.data.Session
 import com.hyperbabel.demo.realtime.HyperBabelRealtime
@@ -91,11 +95,15 @@ private fun AppNavigation() {
     val scope = rememberCoroutineScope()
     val start = if (Session.isSignedIn) "home" else "login"
 
-    // Keep the real-time client up while someone is signed in. Re-checked on
-    // every navigation, which covers both app start and a fresh sign-in.
+    // Keep the real-time client up while someone is signed in, and register
+    // this device's FCM token once per launch. Re-checked on every
+    // navigation, which covers both app start and a fresh sign-in / sign-up.
     val backStackEntry by nav.currentBackStackEntryAsState()
     LaunchedEffect(backStackEntry?.destination?.route) {
-        if (Session.isSignedIn) HyperBabelRealtime.connect()
+        if (Session.isSignedIn) {
+            HyperBabelRealtime.connect()
+            PushRegistration.registerThisDevice()
+        }
     }
 
     // Incoming calls arrive on the user's private channel as event `signal`
@@ -115,12 +123,27 @@ private fun AppNavigation() {
         onDispose { unsub() }
     }
 
-    // Sign-out also drops the real-time connection: the private channel and
-    // token belong to the user who is leaving.
+    // Sign-out, in this order:
+    //   1. POST /customer/logout { refresh_token, push_tokens } — revokes the
+    //      server session and deletes this device's push token. It needs the
+    //      stored refresh token, so it runs BEFORE local state is cleared.
+    //      Failures are ignored; sign-out still completes locally.
+    //   2. Drop the real-time connection (its private channel and token
+    //      belong to the user who is leaving), then clear local state.
+    var signingOut by remember { mutableStateOf(false) }
     val signOut: () -> Unit = {
-        IncomingCallBus.clear()
-        HyperBabelRealtime.disconnect()
-        Session.signOut()
+        if (!signingOut) {
+            signingOut = true
+            scope.launch {
+                ApiClient.logout(pushTokens = listOfNotNull(Session.pushToken))
+                IncomingCallBus.clear()
+                HyperBabelRealtime.disconnect()
+                PushRegistration.reset()
+                Session.signOut()
+                signingOut = false
+                nav.navigate("login") { popUpTo("home") { inclusive = true } }
+            }
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -144,10 +167,7 @@ private fun AppNavigation() {
             composable("home") {
                 HomeScreen(
                     onOpenRoom = { roomId -> nav.navigate("chat/$roomId") },
-                    onLogout = {
-                        signOut()
-                        nav.navigate("login") { popUpTo("home") { inclusive = true } }
-                    },
+                    onLogout = signOut,
                     onOpenStreams  = { nav.navigate("stream") },
                     onOpenSettings = { nav.navigate("settings") },
                 )
@@ -177,10 +197,7 @@ private fun AppNavigation() {
                 SettingsScreen(
                     onBack = { nav.popBackStack() },
                     onOpenBlocks = { nav.navigate("blocks") },
-                    onLogout = {
-                        signOut()
-                        nav.navigate("login") { popUpTo("home") { inclusive = true } }
-                    },
+                    onLogout = signOut,
                 )
             }
             composable("blocks") {

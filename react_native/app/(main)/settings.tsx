@@ -5,10 +5,13 @@
  *  - Profile info (userId, base URL)
  *  - Language preference update
  *  - Privacy → Blocked Users link
- *  - API usage statistics (current month vs. plan allowance)
  *  - Push notification token list
  *  - Language detection note — `/translate/*` needs your backend
  *  - Logout
+ *
+ * Organization usage and plan data are not shown: they are business data for
+ * your backend, read with the organization API key, and are not available to
+ * end-user apps.
  *
  * Webhooks are managed in the HyperBabel Console (https://console.hyperbabel.com),
  * not from this demo, because webhook CRUD is a tenant-admin operation that
@@ -26,31 +29,9 @@ import { useAuth } from '@/context/AuthContext';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
-import * as authService from '@/services/authService';
 import * as pushService from '@/services/pushService';
-import { usageNumber, usageLimit } from '@/services/authService';
-import type { UsageStats } from '@/services/authService';
 
-type PushTokenRow = { token: string; platform: 'ios' | 'android' | 'web'; created_at: string };
-
-// ── Usage stat row ────────────────────────────────────────────────────────
-
-function UsageRow({ label, value, limit }: { label: string; value: number; limit?: number }) {
-  const pct = limit ? Math.min(100, Math.round((value / limit) * 100)) : 0;
-  return (
-    <View style={styles.usageRow}>
-      <View style={styles.usageRowHeader}>
-        <Text style={styles.usageLabel}>{label}</Text>
-        <Text style={styles.usageValue}>{value.toLocaleString()}{limit ? ` / ${limit.toLocaleString()}` : ''}</Text>
-      </View>
-      {!!limit && (
-        <View style={styles.usageBar}>
-          <View style={[styles.usageBarFill, { width: `${pct}%` as any, backgroundColor: pct > 80 ? colors.error : colors.primary }]} />
-        </View>
-      )}
-    </View>
-  );
-}
+type PushTokenRow = { token: string; platform: 'ios' | 'android' | 'web'; updated_at: string };
 
 // ── Push token row ────────────────────────────────────────────────────────
 
@@ -78,18 +59,13 @@ const LANGUAGES = [
 
 export default function SettingsScreen() {
   const { user, logout, updateLang } = useAuth();
-  const [usage,         setUsage]         = useState<UsageStats | null>(null);
   const [pushTokens,    setPushTokens]    = useState<PushTokenRow[]>([]);
   const [loading,       setLoading]       = useState(true);
 
   const loadData = useCallback(async () => {
     if (!user) return;
     try {
-      const [u, t] = await Promise.all([
-        authService.getUsage().catch(() => null),
-        pushService.getTokens(user.userId).catch(() => ({ tokens: [] })),
-      ]);
-      setUsage(u);
+      const t = await pushService.getTokens(user.userId).catch(() => ({ tokens: [] }));
       setPushTokens(t.tokens ?? []);
     } finally {
       setLoading(false);
@@ -147,24 +123,6 @@ export default function SettingsScreen() {
           </Card>
         </TouchableOpacity>
 
-        {/* Usage stats */}
-        <Text style={styles.sectionTitle}>API Usage</Text>
-        <Card style={styles.card}>
-          {loading ? (
-            <ActivityIndicator color={colors.primary} />
-          ) : usage ? (
-            <>
-              {/* Large counters arrive as strings and -1 means unlimited — see usageNumber / usageLimit. */}
-              <UsageRow label="Chat Messages"         value={usageNumber(usage.messages_sent)}   limit={usageLimit(usage.monthly_messages)} />
-              <UsageRow label="Video Minutes (HD)"    value={usageNumber(usage.hd_video_mins)}   limit={usageLimit(usage.monthly_hd_video_mins)} />
-              <UsageRow label="Stream Minutes (HD)"   value={usageNumber(usage.hd_stream_mins)}  limit={usageLimit(usage.monthly_hd_stream_mins)} />
-              <UsageRow label="Translated Characters" value={usageNumber(usage.translate_chars)} limit={usageLimit(usage.monthly_translate_chars)} />
-            </>
-          ) : (
-            <Text style={styles.errorText}>Unable to load usage stats.</Text>
-          )}
-        </Card>
-
         {/* Push tokens */}
         <Text style={styles.sectionTitle}>Push Tokens</Text>
         <Card style={styles.card}>
@@ -218,13 +176,6 @@ const styles = StyleSheet.create({
   linkLabel:      { ...textPresets.label, color: colors.text, fontWeight: '600' },
   linkArrow:      { ...textPresets.h3, color: colors.textMuted },
 
-  usageRow:       { paddingVertical: spacing[3], borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-  usageRowHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: spacing[2] },
-  usageLabel:     { ...textPresets.label, color: colors.textSecondary },
-  usageValue:     { ...textPresets.label, color: colors.text, fontWeight: '600' },
-  usageBar:       { height: 4, backgroundColor: colors.surface, borderRadius: 2, overflow: 'hidden' },
-  usageBarFill:   { height: '100%', borderRadius: 2 },
-
   pushRow:        { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing[3], borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, gap: spacing[3] },
   pushPlatformPill: { paddingHorizontal: spacing[2], paddingVertical: 2, borderRadius: borderRadius.sm, backgroundColor: colors.primary },
   pushPlatformText: { ...textPresets.caption, color: colors.white, fontWeight: '700', textTransform: 'uppercase' },
@@ -233,5 +184,4 @@ const styles = StyleSheet.create({
   helperText:     { ...textPresets.caption, color: colors.textMuted },
 
   emptyText:      { ...textPresets.label, color: colors.textMuted, paddingVertical: spacing[4], textAlign: 'center' },
-  errorText:      { ...textPresets.label, color: colors.error, textAlign: 'center', padding: spacing[4] },
 });

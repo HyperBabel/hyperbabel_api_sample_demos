@@ -10,15 +10,28 @@
  * Reused across chat rooms, video call chat, and live stream chat.
  */
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+
+/**
+ * At most one "typing" notification per this many ms while the user keeps
+ * typing. Each one is an API call (POST …/typing) that counts against the
+ * per-user, per-minute rate limit — firing per keystroke exhausts it within
+ * seconds and the user's next message send is then rejected with 429.
+ */
+const TYPING_THROTTLE_MS = 3000;
 
 /**
  * @param {object} props
  * @param {function} props.onSendMessage   — Called with message text
  * @param {function} [props.onFileUpload]  — Called with File object
- * @param {function} [props.onTyping]      — Called with boolean (typing state)
+ * @param {function} [props.onTyping]      — Called with `true` at most once
+ *   every 3 s while the user types (send the typing event then), and with
+ *   `false` when typing stops (on send, or after 3 s of no input). `false`
+ *   is a local signal only — there is no "stopped typing" API call.
  * @param {string}   [props.typingText]    — Text showing who is typing
  * @param {string}   [props.placeholder]   — Input placeholder text
+ * @param {string}   [props.fileInputId]   — id for the hidden file input, so
+ *   another control (e.g. a "+" menu) can open the file picker
  */
 export default function ChatInput({
   onSendMessage,
@@ -26,29 +39,41 @@ export default function ChatInput({
   onTyping,
   typingText = '',
   placeholder = 'Type a message...',
+  fileInputId,
 }) {
   const [text, setText] = useState('');
   const inputRef = useRef(null);
-  const typingTimeoutRef = useRef(null);
+  const idleTimerRef = useRef(null);
+  const lastTypingSentRef = useRef(0); // time of the last onTyping(true)
+
+  // Clear the idle timer on unmount (e.g. switching rooms remounts this).
+  useEffect(() => () => clearTimeout(idleTimerRef.current), []);
+
+  /** Typing stopped — reset the throttle so the next keystroke notifies at once. */
+  const stopTyping = () => {
+    clearTimeout(idleTimerRef.current);
+    if (lastTypingSentRef.current !== 0) {
+      lastTypingSentRef.current = 0;
+      onTyping?.(false);
+    }
+  };
 
   /**
-   * Handle text input changes and broadcast typing indicators.
-   * A 2-second debounce is used: typing=true on keystroke,
-   * typing=false after 2 seconds of inactivity.
+   * Handle text input changes and broadcast typing indicators, throttled:
+   * typing=true at most once per TYPING_THROTTLE_MS, typing=false after
+   * TYPING_THROTTLE_MS of inactivity.
    */
   const handleChange = (e) => {
     setText(e.target.value);
+    if (!onTyping) return;
 
-    // Notify typing start
-    if (onTyping) {
+    const now = Date.now();
+    if (e.target.value && now - lastTypingSentRef.current >= TYPING_THROTTLE_MS) {
+      lastTypingSentRef.current = now;
       onTyping(true);
-
-      // Clear previous timeout and set a new one
-      clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => {
-        onTyping(false);
-      }, 2000);
     }
+    clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(stopTyping, TYPING_THROTTLE_MS);
   };
 
   /**
@@ -72,11 +97,9 @@ export default function ChatInput({
     onSendMessage(trimmed);
     setText('');
 
-    // Stop typing indicator immediately after sending
-    if (onTyping) {
-      clearTimeout(typingTimeoutRef.current);
-      onTyping(false);
-    }
+    // Sending ends this typing burst (receivers clear the indicator when the
+    // message arrives); the next keystroke starts a new one immediately.
+    stopTyping();
 
     // Re-focus the input after sending
     inputRef.current?.focus();
@@ -108,6 +131,7 @@ export default function ChatInput({
         {onFileUpload && (
           <label style={{ cursor: 'pointer', flexShrink: 0 }}>
             <input
+              id={fileInputId}
               type="file"
               style={{ display: 'none' }}
               onChange={handleFileSelect}

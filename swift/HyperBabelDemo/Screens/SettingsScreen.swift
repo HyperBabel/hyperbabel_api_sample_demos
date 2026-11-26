@@ -1,8 +1,10 @@
 /*
- * Settings — Profile / Privacy(Blocked Users) / API Usage / Push Tokens /
- * Logout.
+ * Settings — Profile / Privacy(Blocked Users) / Push Tokens / Logout.
  *
  * Webhooks are explicitly excluded — manage them in the HyperBabel Console.
+ * Organization usage and plan data are not shown either: they are business
+ * data for your backend, read with the organization API key, and are not
+ * available to end-user apps.
  * There is no language-detection playground: the `/translate` endpoints take
  * an organization API key, which an end-user app must never hold (see
  * API/TranslateService.swift).
@@ -14,7 +16,6 @@ struct SettingsScreen: View {
     let onOpenBlocks: () -> Void
     @EnvironmentObject var session: Session
 
-    @State private var usage: UsageStats?
     @State private var tokens: [PushToken] = []
     @State private var loading = true
 
@@ -38,20 +39,9 @@ struct SettingsScreen: View {
                     }.padding(.vertical, 8)
                 }.buttonStyle(.plain)
 
-                section("API Usage")
-                if loading { Text("Loading…").foregroundStyle(.secondary) }
-                else if let u = usage {
-                    row("Plan",           u.planName ?? "—")
-                    row("Chat Messages",  "\(u.messagesSent ?? 0)")
-                    row("Video Minutes",  "\(u.videoMinutes)")
-                    row("Stream Minutes", "\(u.streamMinutes)")
-                    row("Translate Chars", "\(u.translateChars ?? 0)")
-                } else {
-                    Text("Unable to load usage stats.").foregroundStyle(.red)
-                }
-
                 section("Push Tokens")
-                if tokens.isEmpty && !loading {
+                if loading { Text("Loading…").foregroundStyle(.secondary) }
+                else if tokens.isEmpty {
                     Text("No push tokens registered for this user yet.")
                         .foregroundStyle(.secondary)
                 } else {
@@ -72,8 +62,12 @@ struct SettingsScreen: View {
                 }
 
                 Button(role: .destructive, action: {
-                    session.signOut()
-                    onBack()
+                    // Server-side logout (POST /customer/logout) runs first,
+                    // then the local session is cleared — see Session.signOut.
+                    Task {
+                        await session.signOut()
+                        onBack()
+                    }
                 }) {
                     Text("Logout").frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).padding(.top, 16)
@@ -107,11 +101,7 @@ struct SettingsScreen: View {
     private func load() async {
         loading = true
         let userId = session.userId
-        // Fetch both in parallel; assign state back here on the main actor.
-        async let usageResult = try? AuthService.getUsage()
-        async let tokensResult = try? PushService.getTokens(userId: userId)
-        usage = await usageResult
-        tokens = await tokensResult?.tokens ?? []
+        tokens = (try? await PushService.getTokens(userId: userId))?.tokens ?? []
         loading = false
     }
 }

@@ -20,15 +20,15 @@
  * Room objects from GET /unitedchat/rooms and GET /unitedchat/rooms/{roomId}
  * carry the room type in `channel_type` ('1to1' | 'group' | 'open').
  * `room_type` is only the request field of POST /unitedchat/rooms.
+ *
+ * Message order: GET …/messages returns NEWEST FIRST. Every page is reversed
+ * before it is stored, so `messages` is always oldest → newest — real-time
+ * messages are appended at the end and older pages ("Load earlier messages",
+ * `next_cursor`) are prepended.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-
-// Sample demo is English-only; this stub keeps the locale-aware lookup at
-// line ~1071 (raw[isKo ? 'ko' : 'en']) compiling without a localisation
-// dependency.
-const isKo = false;
 
 import Header from '../components/Header';
 import ChatMessageList from '../components/ChatMessageList';
@@ -37,6 +37,29 @@ import * as unitedChat from '../services/unitedChatService';
 import * as storageService from '../services/storageService';
 import * as presenceService from '../services/presenceService';
 import realtimeService from '../services/realtimeService';
+
+/** Hide "X is typing…" this long after the last typing event (senders repeat it every ~3 s). */
+const TYPING_DISPLAY_MS = 4500;
+/** Messages per history page. */
+const PAGE_SIZE = 50;
+
+/** One history page from GET …/messages (newest first) → oldest → newest. */
+const chronological = (page) => [...(page || [])].reverse();
+
+/**
+ * Merge fetched messages into the list by id (the fetched copy wins, a
+ * translation already shown is kept) and keep it in chronological order.
+ */
+const mergeMessages = (prev, incoming) => {
+  const byId = new Map(prev.map((m) => [m.id, m]));
+  for (const m of incoming) {
+    const old = byId.get(m.id);
+    byId.set(m.id, old
+      ? { ...old, ...m, translated_content: m.translated_content || old.translated_content }
+      : m);
+  }
+  return [...byId.values()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+};
 
 export default function ChatHubPage() {
   const navigate = useNavigate();
@@ -47,7 +70,11 @@ export default function ChatHubPage() {
   const [rooms, setRooms] = useState([]);
   const [openRooms, setOpenRooms] = useState([]);
   const [activeRoom, setActiveRoom] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState([]);   // oldest → newest
+  // Cursor pagination for older history (`next_cursor` / `has_more`)
+  const [nextCursor, setNextCursor] = useState(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [readStatuses, setReadStatuses] = useState({}); // { userId: { last_read_message_id, read_at } }
   const [members, setMembers] = useState([]);
   const [bans, setBans] = useState([]);
@@ -116,7 +143,7 @@ export default function ChatHubPage() {
   const [editingContent, setEditingContent] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
   const [savingPrefs, setSavingPrefs] = useState(false);
-  // C1: Open room member management state
+  // Open room member management state
   const [showMembersModal, setShowMembersModal] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
   // If user has no DB row yet, default to BOTH enabled (fail-open) so typing works out-of-the-box
@@ -311,6 +338,8 @@ export default function ChatHubPage() {
   // from the first render (null) forever.
   const activeRoomRef = useRef(activeRoom);
   const typingTimeoutRef = useRef(null);
+  // Who the "is typing…" line is about — cleared as soon as their message lands.
+  const typingUserRef = useRef(null);
   const readStatusRefreshTimer = useRef(null);
 
   // Lightweight re-fetch of readStatuses from API (backup for HyperBabel Real-Time read_receipt events)
@@ -424,16 +453,54 @@ export default function ChatHubPage() {
     }
   };
 
+  // Polling fallback (no real-time connection): fetch the newest page and
+  // MERGE it, so older pages the user already loaded stay in the list.
   const loadMessages = async (id) => {
     try {
-      const data = await unitedChat.getMessages(id, { limit: 50 });
-      setMessages(data.messages || data || []);
+      const data = await unitedChat.getMessages(id, { limit: PAGE_SIZE });
+      if (activeRoomRef.current?.id !== id) return; // switched rooms meanwhile
+      setMessages((prev) => mergeMessages(prev, chronological(data.messages)));
       // Merge reply snapshots from the API response for rendering reply quote boxes
       if (data.reply_snapshots && Object.keys(data.reply_snapshots).length > 0) {
         setReplySnapshots(prev => ({ ...prev, ...data.reply_snapshots }));
       }
     } catch (err) {
       console.error('Failed to load messages:', err);
+    }
+  };
+
+  // "Load earlier messages": the next older page via `next_cursor`,
+  // reversed and prepended. ChatMessageList keeps the scroll position.
+  const loadOlderMessages = async () => {
+    const id = activeRoom?.id;
+    if (!id || !nextCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const data = await unitedChat.getMessages(id, { limit: PAGE_SIZE, cursor: nextCursor });
+      if (activeRoomRef.current?.id !== id) return; // switched rooms meanwhile
+      const older = chronological(data.messages);
+      setMessages((prev) => mergeMessages(prev, older));
+      setNextCursor(data.next_cursor || null);
+      setHasMore(Boolean(data.has_more));
+      if (data.reply_snapshots && Object.keys(data.reply_snapshots).length > 0) {
+        setReplySnapshots(prev => ({ ...prev, ...data.reply_snapshots }));
+      }
+      // Translate the older page too (others' text messages, ≤ 100 ids per call)
+      if (user.preferred_lang_cd) {
+        const othersIds = older
+          .filter((m) => m.sender_id !== user.user_id && m.message_type === 'text')
+          .map((m) => m.id);
+        if (othersIds.length > 0) {
+          unitedChat
+            .batchTranslateMessages(id, othersIds, user.preferred_lang_cd)
+            .then(applyTranslations)
+            .catch(() => {});
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load older messages:', err);
+    } finally {
+      setLoadingOlder(false);
     }
   };
 
@@ -451,15 +518,22 @@ export default function ChatHubPage() {
   const loadRoom = async (id) => {
     try {
       const [roomData, msgData, memberData] = await Promise.all([
-        unitedChat.getRoom(id),
-        unitedChat.getMessages(id, { limit: 50 }),
+        // user_id → the server resolves the 1:1 peer's name and your own
+        // custom room name (otherwise a 1:1 header shows the channel name).
+        unitedChat.getRoom(id, user.user_id),
+        unitedChat.getMessages(id, { limit: PAGE_SIZE }),
         unitedChat.getMembers(id),
       ]);
 
       const room = roomData.room || roomData;
       setActiveRoom(room);
-      const messageList = msgData.messages || msgData || [];
+      // Newest-first page → oldest → newest (latest message at the bottom).
+      const messageList = chronological(msgData.messages);
       setMessages(messageList);
+      setNextCursor(msgData.next_cursor || null);
+      setHasMore(Boolean(msgData.has_more));
+      setTypingText('');
+      typingUserRef.current = null;
       // Populate initial read statuses
       if (msgData.read_statuses?.length) {
         const map = {};
@@ -492,8 +566,10 @@ export default function ChatHubPage() {
         })
         .catch(() => {});
 
-      // Immediately update presence to 'online' on room entry (avoids appearing offline until next heartbeat)
-      presenceService.updateStatus(user.user_id, 'online').catch(() => {});
+      // Presence needs nothing here: this page sends a heartbeat on mount and
+      // every 30 s. A heartbeat flips `offline` back to `online` but keeps an
+      // `away` / `dnd` the user chose in the header — so do NOT post
+      // status 'online' on room entry, that would overwrite their choice.
 
       // For 1:1 rooms: check if the counterpart is currently online
       if (room.channel_type === '1to1') {
@@ -566,12 +642,18 @@ export default function ChatHubPage() {
 
     // Typing event: backend sends via publishToChannel with eventName 'message'
     // and payload { type: 'typing', userId, userName }
+    // Senders repeat it every ~3 s while typing; there is no "stopped" event,
+    // so hide the line a little after the last one (or when their message lands).
     if (type === 'message' && message?.type === 'typing') {
       const { userId: typingUserId, userName } = message;
       if (typingUserId && typingUserId !== user.user_id && myTypingPrefsRef.current.recv) {
+        typingUserRef.current = typingUserId;
         setTypingText(`${userName || typingUserId} is typing...`);
         clearTimeout(typingTimeoutRef.current);
-        typingTimeoutRef.current = setTimeout(() => setTypingText(''), 3000);
+        typingTimeoutRef.current = setTimeout(() => {
+          typingUserRef.current = null;
+          setTypingText('');
+        }, TYPING_DISPLAY_MS);
       }
       return;
     }
@@ -635,6 +717,13 @@ export default function ChatHubPage() {
     // them appear live and vanish on reload.
     if (chatMsg.message_type === 'caption') return;
 
+    // The person shown as typing has sent their message — drop the line now.
+    if (typingUserRef.current && chatMsg.sender_id === typingUserRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingUserRef.current = null;
+      setTypingText('');
+    }
+
     // Call events are `video_call` system messages with
     // metadata = { event: 'call_started' | 'call_accepted' | 'call_ended' | …, session_id }.
     // Keep the "video call in progress" banner in step, then fall through so the
@@ -693,6 +782,25 @@ export default function ChatHubPage() {
 
   // ── Message Actions ────────────────────────────────────────────────────
 
+  // A send succeeded: replace the optimistic placeholder with the stored
+  // message (POST …/messages answers { message }). The same message also
+  // arrives on the room channel — for the sender too — and is de-duplicated
+  // by id, whichever of the two lands first.
+  const settleSent = (optId, res) => {
+    const stored = res?.message;
+    setMessages((prev) => {
+      if (!stored?.id) {
+        return prev.map((m) => (m.id === optId ? { ...m, sendStatus: 'sent' } : m));
+      }
+      if (prev.some((m) => m.id === stored.id)) {
+        return prev.filter((m) => m.id !== optId); // the real-time copy is already shown
+      }
+      return prev.map((m) => (m.id === optId
+        ? { ...stored, sender_name: stored.sender_name || m.sender_name, sendStatus: 'sent' }
+        : m));
+    });
+  };
+
   const handleSendMessage = async (content) => {
     if (!activeRoom) return;
     const optId = `opt-${Date.now()}`;
@@ -734,8 +842,8 @@ export default function ChatHubPage() {
     setReplyTo(null);  // Clear reply state after capturing in payload
     setMessages(prev => [...prev, optMsg]);
     try {
-      await unitedChat.sendMessage(activeRoom.id, retryPayload);
-      setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'sent' } : m));
+      const res = await unitedChat.sendMessage(activeRoom.id, retryPayload);
+      settleSent(optId, res);
       refreshReadStatuses();
     } catch (err) {
       console.error('Send failed:', err);
@@ -745,21 +853,29 @@ export default function ChatHubPage() {
   };
 
   // ── Room name editing ─────────────────────────────────────────────────
+  // The name is per user (only you see it). The server returns it as
+  // `custom_name` from GET /rooms/{roomId}?user_id=… and already resolved in
+  // `room_name` from GET /rooms — so it survives a reload.
   const handleSaveRoomName = async () => {
-    if (!activeRoom || !customRoomName.trim()) return;
+    const name = customRoomName.trim();
+    if (!activeRoom || !name) return;
     try {
-      await unitedChat.updateRoomName(activeRoom.id, user.user_id, customRoomName.trim());
+      await unitedChat.updateRoomName(activeRoom.id, user.user_id, name);
       // Update local state so the header reflects the new name immediately
-      setActiveRoom(prev => ({ ...prev, room_name: customRoomName.trim() }));
-      setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, room_name: customRoomName.trim() } : r));
+      setActiveRoom(prev => ({ ...prev, custom_name: name }));
+      setRooms(prev => prev.map(r => r.id === activeRoom.id ? { ...r, room_name: name, custom_name: name } : r));
       setEditingRoomName(false);
     } catch (err) {
       console.error('Failed to update room name:', err);
     }
   };
 
-  const handleTyping = async (_isTypingNow) => {
-    if (!activeRoom) return;
+  // Called by ChatInput with `true` at most once every ~3 s while typing (it
+  // throttles — the typing call shares the per-minute rate limit with message
+  // sends), and with `false` when typing stops. There is no "stopped typing"
+  // API call, so `false` needs nothing here.
+  const handleTyping = async (isTypingNow) => {
+    if (!isTypingNow || !activeRoom) return;
     const isSelfChat = activeRoom.channel_type === '1to1' && (activeRoom.members?.length ?? 0) === 1;
     if (isSelfChat) return;                        // self-chat room — no counterpart, publish unnecessary
     // For 1:1 rooms: skip publish if counterpart is offline (reduces API cost)
@@ -812,8 +928,8 @@ export default function ChatHubPage() {
     setShowPlusMenu(false);
     setLocationForm({ name: '', address: '', latitude: '', longitude: '' });
     try {
-      await unitedChat.sendMessage(activeRoom.id, payload);
-      setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'sent' } : m));
+      const res = await unitedChat.sendMessage(activeRoom.id, payload);
+      settleSent(optId, res);
       refreshReadStatuses();
     } catch {
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'failed' } : m));
@@ -846,8 +962,8 @@ export default function ChatHubPage() {
     setShowPlusMenu(false);
     setContactForm({ name: '', phone: '', email: '' });
     try {
-      await unitedChat.sendMessage(activeRoom.id, payload);
-      setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'sent' } : m));
+      const res = await unitedChat.sendMessage(activeRoom.id, payload);
+      settleSent(optId, res);
       refreshReadStatuses();
     } catch {
       setMessages(prev => prev.map(m => m.id === optId ? { ...m, sendStatus: 'failed' } : m));
@@ -859,8 +975,8 @@ export default function ChatHubPage() {
     if (!msg._retryPayload || !activeRoom) return;
     setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, sendStatus: 'sending' } : m));
     try {
-      await unitedChat.sendMessage(activeRoom.id, msg._retryPayload);
-      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, sendStatus: 'sent' } : m));
+      const res = await unitedChat.sendMessage(activeRoom.id, msg._retryPayload);
+      settleSent(msg.id, res);
       refreshReadStatuses();
     } catch {
       setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, sendStatus: 'failed' } : m));
@@ -899,7 +1015,7 @@ export default function ChatHubPage() {
         const activeSession = existing?.session || existing;
 
         if (activeSession?.id && activeSession.status === 'active') {
-          // Gap 2: check if I am an invited participant
+          // Only invited participants of the running call may rejoin it
           const amParticipant = (activeSession.participants || [])
             .some((p) => p.user_id === user.user_id);
 
@@ -917,7 +1033,7 @@ export default function ChatHubPage() {
               state: {
                 session: activeSession,
                 roomType: activeRoom.channel_type,
-                roomName: activeRoom.room_name || activeRoom.display_name,
+                roomName: getRoomDisplayName(activeRoom),
                 realtimeChannel: activeRoom.realtime_channel,
                 rejoin: true,
               },
@@ -930,7 +1046,7 @@ export default function ChatHubPage() {
         // 404 or error: no active call, proceed to start
       }
 
-      // Group room: open member selection modal (Gap 1 fix)
+      // Group room: pick who to ring (target_user_ids) in the selection modal
       setGroupCallTargets([]);
       setCallMemberSearch('');
       setShowGroupCallModal(true);
@@ -944,7 +1060,7 @@ export default function ChatHubPage() {
         state: {
           session: result.session || result,
           roomType: activeRoom.channel_type,
-          roomName: activeRoom.room_name || activeRoom.display_name,
+          roomName: getRoomDisplayName(activeRoom),
           // Room channel where call events (declined, ended, …) arrive
           realtimeChannel: activeRoom.realtime_channel,
           rejoin: false,
@@ -963,13 +1079,13 @@ export default function ChatHubPage() {
       const result = await unitedChat.startVideoCall(
         activeRoom.id,
         user.user_id,
-        groupCallTargets  // target_user_ids (Gap 1 fix)
+        groupCallTargets  // target_user_ids — who to ring
       );
       navigate(`/video-call/${activeRoom.id}`, {
         state: {
           session: result.session || result,
           roomType: 'group',
-          roomName: activeRoom.room_name || activeRoom.display_name,
+          roomName: getRoomDisplayName(activeRoom),
           realtimeChannel: activeRoom.realtime_channel,
           rejoin: false,
         },
@@ -1015,7 +1131,7 @@ export default function ChatHubPage() {
     }
   };
 
-  // C1: Load bans for open rooms
+  // Load bans for open rooms
   const loadBans = async (roomId) => {
     try {
       // Response: { bans: [...] } — includes lifted bans; the list below shows `is_active` ones.
@@ -1035,10 +1151,20 @@ export default function ChatHubPage() {
   const isSelfChatRoom = (room) =>
     room?.channel_type === '1to1' && memberCountOf(room) <= 1;
 
-  // Display name for a room (returns 'Me' / language-localised equivalent for self-chat)
+  // Display name for a room ('Me' for self-chat). Works for both shapes:
+  //  - GET /rooms rows: `room_name` is already resolved for you (your custom
+  //    name → the 1:1 peer's name → the room name).
+  //  - GET /rooms/{roomId}?user_id=…: `custom_name` (yours, if set), then the
+  //    1:1 peer's live name from `members`, then `room_name` (group/open
+  //    name; null for 1:1), then `display_name` (the server's fallback).
   const getRoomDisplayName = (room) => {
     if (!room) return 'Chat';
     if (isSelfChatRoom(room)) return 'Me';
+    if (room.custom_name) return room.custom_name;
+    if (room.channel_type === '1to1' && Array.isArray(room.members)) {
+      const peer = room.members.find((m) => m.user_id !== user.user_id);
+      if (peer?.user_name) return peer.user_name;
+    }
     return room.room_name || room.display_name || room.id?.slice(0, 8) || 'Chat';
   };
 
@@ -1141,7 +1267,7 @@ export default function ChatHubPage() {
                         if (room.last_message?.message_type === 'video_call') return '📹 Video call';
                         const raw = room.last_message?.content;
                         const text = raw && typeof raw === 'object'
-                          ? (raw[isKo ? 'ko' : 'en'] || raw['en'] || Object.values(raw)[0])
+                          ? (raw['en'] || Object.values(raw)[0])
                           : raw;
                         return text || (isSelfChatRoom(room)
                           ? ('📝 My Notes')
@@ -1191,34 +1317,6 @@ export default function ChatHubPage() {
                 <div className="empty-state-desc">Create your first chat room!</div>
               </div>
             )}
-          </div>
-
-          {/* ── Block Management sidebar button ── */}
-          <div style={{ padding: '8px 12px 4px', borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 'auto' }}>
-            <button
-              onClick={() => {
-                setShowBlockMgmt(true);
-                setBlockMgmtSearch('');
-                setBlockMgmtPage(1);
-              }}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                padding: '8px 10px', borderRadius: '10px', border: 'none', cursor: 'pointer',
-                background: showBlockMgmt ? 'rgba(239,68,68,0.15)' : 'transparent',
-                color: showBlockMgmt ? '#f87171' : 'var(--hb-text-dim)',
-                fontSize: '13px', fontWeight: 500, transition: 'background 0.15s, color 0.15s',
-              }}
-              onMouseEnter={e => { if (!showBlockMgmt) { e.currentTarget.style.background='rgba(255,255,255,0.05)'; e.currentTarget.style.color='var(--hb-text)'; }}}
-              onMouseLeave={e => { if (!showBlockMgmt) { e.currentTarget.style.background='transparent'; e.currentTarget.style.color='var(--hb-text-dim)'; }}}
-            >
-              <span style={{ fontSize: '15px', flexShrink: 0 }}>🚫</span>
-              <span>{'Block Management'}</span>
-              {blockedUsers.length > 0 && (
-                <span style={{ marginLeft: 'auto', fontSize: '10px', fontWeight: 700, padding: '2px 7px', borderRadius: '12px', background: 'rgba(239,68,68,0.25)', color: '#f87171' }}>
-                  {blockedUsers.length}
-                </span>
-              )}
-            </button>
           </div>
 
           {/* ── Block Management sidebar button ── */}
@@ -1407,7 +1505,7 @@ export default function ChatHubPage() {
                               {getRoomDisplayName(activeRoom)}
                               {(activeRoom.channel_type === '1to1' || activeRoom.channel_type === 'group') && (
                                 <button
-                                  onClick={() => { setCustomRoomName(activeRoom.room_name || activeRoom.display_name || ''); setEditingRoomName(true); }}
+                                  onClick={() => { setCustomRoomName(activeRoom.custom_name || getRoomDisplayName(activeRoom)); setEditingRoomName(true); }}
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '12px', opacity: 0.5 }}
                                   title="Edit room name"
                                 >✏️</button>
@@ -1582,6 +1680,9 @@ export default function ChatHubPage() {
                 replySnapshots={replySnapshots}
                 onReply={(msg) => setReplyTo(msg)}
                 userLang={user?.preferred_lang_cd || 'en'}
+                hasMore={hasMore}
+                onLoadOlder={loadOlderMessages}
+                loadingOlder={loadingOlder}
               />
 
               {/* ── Reply preview bar (shown when replying to a message) ── */}
@@ -1683,6 +1784,7 @@ export default function ChatHubPage() {
 
                 <div style={{ flex: 1 }}>
                   <ChatInput
+                    key={activeRoom.id}   // fresh draft + typing throttle per room
                     onSendMessage={handleSendMessage}
                     onFileUpload={(file) => { setShowPlusMenu(false); handleFileUpload(file); }}
                     onTyping={handleTyping}
@@ -2159,7 +2261,7 @@ export default function ChatHubPage() {
         </div>
       )}
 
-      {/* ── Open Room Members Modal (C1) ───────────────────────────────────── */}
+      {/* ── Open Room Members Modal ───────────────────────────────────── */}
       {showMembersModal && activeRoom && (
         <div
           style={{ position: 'fixed', inset: 0, zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
@@ -2181,7 +2283,7 @@ export default function ChatHubPage() {
 
             {/* Body */}
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {/* Invite Code Box (C4) */}
+              {/* Invite Code Box */}
               {activeRoom.invite_code && (
                 <div style={{ background: '#0f172a', border: '1px solid #334155', borderRadius: '10px', padding: '12px' }}>
                   <p style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>Invite Code</p>
@@ -2189,7 +2291,8 @@ export default function ChatHubPage() {
                     <code style={{ flex: 1, fontFamily: 'monospace', fontSize: '14px', color: '#fbbf24', letterSpacing: '0.15em', background: '#1e293b', borderRadius: '6px', padding: '4px 8px' }}>{activeRoom.invite_code}</code>
                     <button
                       onClick={() => {
-                        navigator.clipboard.writeText(`${window.location.origin}/join?code=${activeRoom.invite_code}`);
+                        // Opens pages/JoinByCodePage.jsx (POST /unitedchat/rooms/join-by-code)
+                        navigator.clipboard.writeText(`${window.location.origin}/join?code=${encodeURIComponent(activeRoom.invite_code)}`);
                         setCopiedInvite(true);
                         setTimeout(() => setCopiedInvite(false), 2000);
                       }}
@@ -2202,7 +2305,7 @@ export default function ChatHubPage() {
                 </div>
               )}
 
-              {/* Description (C3) */}
+              {/* Description */}
               {activeRoom.description && (
                 <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: '10px', padding: '12px' }}>
                   <p style={{ fontSize: '10px', fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>About this room</p>
@@ -2363,72 +2466,6 @@ export default function ChatHubPage() {
                 </div>
               </div>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* ── Unblock Confirm Modal ── */}
-      {unblockTarget && (
-        <div
-          style={{ position: 'fixed', inset: 0, zIndex: 500, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          onClick={e => { if (e.target === e.currentTarget) setUnblockTarget(null); }}
-        >
-          {/* Backdrop */}
-          <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)' }} onClick={() => setUnblockTarget(null)} />
-          {/* Card */}
-          <div style={{ position: 'relative', width: '340px', borderRadius: '20px', background: 'var(--hb-surface, #1e293b)', boxShadow: '0 24px 64px rgba(0,0,0,0.5)', overflow: 'hidden' }}
-            onClick={e => e.stopPropagation()}>
-            {/* Red accent bar */}
-            <div style={{ height: '4px', background: 'linear-gradient(90deg, #f87171, #ef4444)' }} />
-            <div style={{ padding: '24px' }}>
-              {/* User avatar + title */}
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', marginBottom: '18px' }}>
-                <div style={{ position: 'relative', flexShrink: 0 }}>
-                  <div style={{ width: '52px', height: '52px', borderRadius: '50%', background: 'linear-gradient(135deg, #475569, #334155)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 700, color: '#fff', boxShadow: '0 4px 12px rgba(0,0,0,0.3)' }}>
-                    {(unblockTarget.user_name || unblockTarget.user_id).substring(0, 2).toUpperCase()}
-                  </div>
-                  <div style={{ position: 'absolute', bottom: '-2px', right: '-2px', width: '20px', height: '20px', borderRadius: '50%', background: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', border: '2px solid var(--hb-surface, #1e293b)' }}>
-                    🚫
-                  </div>
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 700, color: 'var(--hb-text, #f1f5f9)' }}>
-                    {'Confirm Unblock'}
-                  </h3>
-                  <p style={{ margin: '4px 0 0', fontSize: '13px', fontWeight: 600, color: 'var(--hb-text, #cbd5e1)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {unblockTarget.user_name || unblockTarget.user_id}
-                  </p>
-                </div>
-              </div>
-
-              {/* Warning box */}
-              <div style={{ display: 'flex', gap: '10px', padding: '12px 14px', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', marginBottom: '20px' }}>
-                <span style={{ fontSize: '15px', flexShrink: 0, marginTop: '1px' }}>⚠️</span>
-                <p style={{ margin: 0, fontSize: '12px', color: '#f59e0b', lineHeight: 1.6 }}>
-                  {'Unblocking this user will allow them to message you in all chat rooms again.'}
-                </p>
-              </div>
-
-              {/* Buttons */}
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button
-                  onClick={() => setUnblockTarget(null)}
-                  style={{ flex: 1, padding: '11px', borderRadius: '12px', border: '1px solid var(--hb-border, #334155)', background: 'transparent', color: 'var(--hb-text, #cbd5e1)', fontSize: '13px', fontWeight: 500, cursor: 'pointer' }}
-                >
-                  {'Cancel'}
-                </button>
-                <button
-                  onClick={() => handleUnblockUser(unblockTarget.user_id)}
-                  disabled={isBlockLoading}
-                  style={{ flex: 1, padding: '11px', borderRadius: '12px', border: 'none', background: '#ef4444', color: '#fff', fontSize: '13px', fontWeight: 700, cursor: isBlockLoading ? 'not-allowed' : 'pointer', opacity: isBlockLoading ? 0.7 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}
-                >
-                  {isBlockLoading
-                    ? <><span style={{ width: '13px', height: '13px', border: '2px solid rgba(255,255,255,0.4)', borderTop: '2px solid #fff', borderRadius: '50%', animation: 'spin 0.7s linear infinite', display: 'inline-block' }} />{'Unblocking...'}</>
-                    : ('Unblock User')
-                  }
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       )}

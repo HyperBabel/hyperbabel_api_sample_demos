@@ -37,6 +37,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final ScrollController _scrollController = ScrollController();
 
   String? _userId;
+  String? _userName;
   String _currentRole = 'member';
   bool _isFrozen = false;
   List<Map<String, dynamic>> _messages = [];
@@ -52,6 +53,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _typingClear;
 
   // Outgoing typing throttle so we don't ping the server on every keystroke.
+  // Every typing call counts against the per-user per-minute rate limit.
+  static const _typingPingInterval = Duration(seconds: 3);
   DateTime? _lastTypingPing;
 
   // Reply mode — when set, the next sendText is published with `reply_to`
@@ -82,6 +85,7 @@ class _ChatScreenState extends State<ChatScreen> {
       return;
     }
     _userId = userId;
+    _userName = prefs.getString('hb_user_name');
     await _refresh();
   }
 
@@ -129,7 +133,8 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       // The channel name comes from the API and is used verbatim — it cannot
       // be rebuilt from the room id (see HyperBabelRealtimeClient's doc).
-      final room = await _repo.getRoom(widget.roomId);
+      final room = await _repo.getRoom(widget.roomId, userId: _userId);
+      if (mounted) setState(() => _isFrozen = room['is_frozen'] == true);
       final realtimeChannel = room['realtime_channel'] as String?;
       if (realtimeChannel == null || realtimeChannel.isEmpty) return;
 
@@ -344,17 +349,17 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Throttled typing notifier — fires at most once per 2 seconds while the
-  /// user is actively typing.
+  /// Throttled typing notifier — fires at most once per
+  /// [_typingPingInterval] while the user is actively typing.
   void _onTyping() {
     if (_userId == null) return;
     final now = DateTime.now();
     if (_lastTypingPing != null &&
-        now.difference(_lastTypingPing!) < const Duration(seconds: 2)) {
+        now.difference(_lastTypingPing!) < _typingPingInterval) {
       return;
     }
     _lastTypingPing = now;
-    _repo.sendTypingIndicator(widget.roomId, _userId!, _userId);
+    _repo.sendTypingIndicator(widget.roomId, _userId!, _userName);
   }
 
   Future<void> _addReaction(Map<String, dynamic> msg, String emoji) async {
@@ -404,7 +409,7 @@ class _ChatScreenState extends State<ChatScreen> {
         mimeType: mime,
         channelId: widget.roomId,
       );
-      final url = (confirmed['url'] ?? confirmed['cdn_url'] ?? '') as String;
+      final url = (confirmed['url'] ?? '') as String;
       final saved = await _repo.sendMessage(
         widget.roomId,
         senderId: _userId!,
@@ -515,7 +520,7 @@ class _ChatScreenState extends State<ChatScreen> {
         mimeType: mime,
         channelId: widget.roomId,
       );
-      final url = (confirmed['url'] ?? confirmed['cdn_url'] ?? '') as String;
+      final url = (confirmed['url'] ?? '') as String;
       final saved = await _repo.sendMessage(
         widget.roomId,
         senderId: _userId!,
@@ -556,7 +561,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// A call holds at most 3 people, so a group call rings up to 2 others.
+  /// A room call holds at most 3 people, so a group call rings up to 2
+  /// others — and only on a plan that includes group video (otherwise the
+  /// server answers 400 `plan_upgrade_required` for more than 2 people).
   static const _maxCallTargets = 2;
 
   Future<void> _startVideoCall() async {
@@ -564,7 +571,7 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       // 1:1 room: the server rings the other member — send no targets.
       // Group room: `target_user_ids` is required, so ask whom to call.
-      final room = await _repo.getRoom(widget.roomId);
+      final room = await _repo.getRoom(widget.roomId, userId: _userId);
       if (!mounted) return;
       final type = room['channel_type'] as String?;
       List<String>? targets;

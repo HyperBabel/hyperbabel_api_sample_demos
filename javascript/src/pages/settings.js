@@ -1,12 +1,17 @@
 /**
- * Settings page — profile, language, API usage, push tokens, a note on
- * language detection (it needs your backend), and a link to the Block
- * management screen.
+ * Settings page — profile, language, push tokens, a note on language
+ * detection (it needs your backend), a link to the Block management
+ * screen, and sign-out.
+ *
+ * Organization usage and plan data are not shown: they are business data for
+ * your backend, read with the organization API key, and are not available to
+ * end-user apps.
  */
 
-import * as auth from '../api/auth.js';
 import * as push from '../api/push.js';
+import * as realtime from '../realtime/hyperbabelRealtime.js';
 import { logoutAndClear } from '../api/firebaseAuth.js';
+import { teardownIncomingCallListener } from '../incomingCall.js';
 
 export async function renderSettings(navigate) {
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
@@ -32,11 +37,6 @@ export async function renderSettings(navigate) {
     </div>
 
     <div class="card">
-      <h3 style="margin-top: 0;">API Usage</h3>
-      <div id="usage">Loading…</div>
-    </div>
-
-    <div class="card">
       <h3 style="margin-top: 0;">Push Tokens</h3>
       <div id="tokens">Loading…</div>
     </div>
@@ -59,37 +59,19 @@ export async function renderSettings(navigate) {
 
   document.getElementById('back').onclick = () => navigate('#/home');
   document.getElementById('open-blocks').onclick = () => navigate('#/blocks');
-  document.getElementById('logout').onclick = async () => {
+  document.getElementById('logout').onclick = async (e) => {
+    e.currentTarget.disabled = true;
+    // Revokes the session (and this device's push tokens) on the server, then
+    // clears local state — see logoutAndClear().
     await logoutAndClear();
+    // Close the previous user's live connection. Left open, this tab would
+    // keep showing THEIR call invites, and the next user to sign in here would
+    // never subscribe to their own (the listener and the connection are
+    // created once per sign-in). main.js sets both up again on the next login.
+    teardownIncomingCallListener();
+    await realtime.disconnect();
     navigate('#/login');
   };
-
-  // Usage stats.
-  auth.getUsage()
-    .then((u) => {
-      const box = document.getElementById('usage');
-      if (!u) { box.textContent = 'Unable to load usage.'; return; }
-      box.innerHTML = '';
-      // GET /auth/usage returns your organization's totals for this month next
-      // to the plan allowance (`monthly_*`, where -1 means unlimited). 64-bit
-      // counters arrive as strings.
-      const rows = [
-        ['Plan',                       u.plan_name,       null],
-        ['Chat messages',              u.messages_sent,   u.monthly_messages],
-        ['HD video minutes',           u.hd_video_mins,   u.monthly_hd_video_mins],
-        ['HD stream minutes',          u.hd_stream_mins,  u.monthly_hd_stream_mins],
-        ['Translated characters',      u.translate_chars, u.monthly_translate_chars],
-        ['Speech translation minutes', u.stt_mins,        u.monthly_stt_mins],
-      ];
-      for (const [label, value, limit] of rows) {
-        const limitText = limit == null ? '' : Number(limit) < 0 ? ' / unlimited' : ` / ${limit}`;
-        const row = document.createElement('div');
-        row.className = 'row';
-        row.innerHTML = `<div>${escapeHtml(label)}</div><div style="text-align: right;">${escapeHtml(value ?? '—')}${escapeHtml(limitText)}</div>`;
-        box.appendChild(row);
-      }
-    })
-    .catch(() => { document.getElementById('usage').textContent = 'Unable to load usage.'; });
 
   // Push tokens.
   push.getTokens(user.user_id)
@@ -97,7 +79,9 @@ export async function renderSettings(navigate) {
       const box = document.getElementById('tokens');
       const list = data?.tokens || [];
       if (list.length === 0) {
-        box.innerHTML = '<span class="muted">No push tokens registered for this user yet.</span>';
+        box.innerHTML = '<span class="muted">No push tokens registered for this user. ' +
+          'This demo does not wire Firebase Messaging — see <code>src/api/push.js</code> ' +
+          'for registering a real FCM token.</span>';
         return;
       }
       box.innerHTML = '';

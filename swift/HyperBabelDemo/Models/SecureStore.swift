@@ -60,7 +60,7 @@ enum SecureStore {
         // Try update first; if it doesn't exist, add it.
         let updateStatus = SecItemUpdate(
             baseQuery as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
         )
         if updateStatus == errSecSuccess { return true }
         var addQuery = baseQuery

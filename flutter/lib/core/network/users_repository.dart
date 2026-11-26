@@ -1,9 +1,13 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import 'api_error.dart';
 
 /// Repository for the global block list endpoints.
 ///
-/// Blocks are scoped per (blocker, blocked) pair and apply across every room.
+/// Blocks are scoped per (blocker, blocked) pair and apply across every room
+/// of your organization. With an end-user session you can only block, unblock
+/// and list as yourself. The demo's Blocked Users screen lists and unblocks;
+/// [blockUser] is here for your own UI.
 class UsersRepository {
   final ApiClient _apiClient = ApiClient();
 
@@ -14,7 +18,7 @@ class UsersRepository {
         data: {'blocker_id': blockerId, 'blocked_id': blockedId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to block user: ${e.message}');
+      throw Exception('Failed to block user: ${apiErrorMessage(e)}');
     }
   }
 
@@ -25,7 +29,7 @@ class UsersRepository {
         data: {'blocker_id': blockerId, 'blocked_id': blockedId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to unblock user: ${e.message}');
+      throw Exception('Failed to unblock user: ${apiErrorMessage(e)}');
     }
   }
 
@@ -36,7 +40,7 @@ class UsersRepository {
       final list = (data['blocked_users'] ?? []) as List<dynamic>;
       return list.cast<Map<String, dynamic>>();
     } on DioException catch (e) {
-      throw Exception('Failed to fetch block list: ${e.message}');
+      throw Exception('Failed to fetch block list: ${apiErrorMessage(e)}');
     }
   }
 }

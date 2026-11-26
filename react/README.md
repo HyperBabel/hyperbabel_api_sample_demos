@@ -20,67 +20,82 @@ The per-org Firebase project allow-list is configured in the
 
 | Feature | APIs Used |
 |---|---|
-| **1:1 Chat** | United Chat — Rooms, Messages, Batch-Translate |
-| **Group Chat** | United Chat — Rooms, Messages, Members, Sub-Admins, Ban/Unban |
-| **Open Chat** | United Chat — Rooms, Join, Leave |
-| **1:1 Video Call** | United Chat — Video Call (start, accept, reject, joined-rtc, heartbeat, renew-token, end) |
-| **Group Video Call** | United Chat — Video Call (start, accept, joined-rtc, heartbeat, renew-token, leave, end) — up to 3 participants including the caller |
+| **Sign-in / Sign-up** | Firebase Auth → `POST /customer/auth/firebase-exchange`; a typed display name is saved with `PATCH /customer/users/me` |
+| **Sign-out** | `POST /customer/logout` `{ refresh_token, push_tokens }` (revokes this device's session and push token), then local cleanup |
+| **1:1 Chat** | United Chat — Rooms (`members: [peerUserId]`), Messages, Batch-Translate; header shows the peer's name (`GET /rooms/{id}?user_id=`) |
+| **Group Chat** | United Chat — Rooms, Messages, Members |
+| **Open Chat** | United Chat — Rooms, Join, invite link (`/join?code=` → `POST /rooms/join-by-code`), owner / sub-admin member panel (Ban/Unban, Sub-Admins) |
+| **Room Names** | United Chat — per-user custom name for 1:1 and group rooms (`PUT /rooms/{id}/name`) |
+| **Message History** | United Chat — Messages (newest first; reversed for display, "Load earlier messages" via `next_cursor`) |
+| **Edit / Delete / Reply** | United Chat — Edit, Delete, `reply_to` with reply snapshots |
+| **Location & Contact Messages** | United Chat — Messages with `message_type: 'location'` / `'contact'` |
+| **1:1 Video Call** | United Chat — Video Call (start, accept, reject, joined-rtc, heartbeat, renew-token, end; leave when not allowed to end) |
+| **Group Video Call** | United Chat — Video Call (start, accept, joined-rtc, heartbeat, renew-token, leave, end) — up to 3 participants including the caller on plans with group video (otherwise 1:1 only) |
+| **Rejoin a Call** | United Chat — `video-call/accept` again, then media join, joined-rtc, heartbeat |
 | **Incoming Call Popup** | Real-Time private channel — `CALL_INVITE` signal (works on every page) |
-| **Live Stream (Host)** ⚠️ | Stream — Create, Start, End — **needs your backend**, see note below |
+| **Live Stream (Host)** ⚠️ | Stream — Create, Start, Heartbeat, End — **needs your backend**, see note below |
 | **Live Stream (Viewer)** ⚠️ | Stream — Viewer Token — **needs your backend**, see note below |
+| **Live Stream Chat** ⚠️ | Chat — Channels, Messages, Batch-Translate — **needs your backend** (`/chat/*` rejects end-user tokens with 403) |
 | **Auto-Translation** | United Chat — `messages/batch-translate` (chat rooms and in-call chat) |
 | **Standalone Translation / Language Detection** ⚠️ | Translation — Text, Batch, Detect, Languages — **needs your backend**, see note below |
 | **In-Call Chat** | United Chat — Messages with auto-translation |
 | **In-Call Live Captions** | Speech Translation — `wss /stt-relay` (live STT + translation subtitles), `GET /stt/languages` |
-| **Live Stream Chat** ⚠️ | Chat — Channels, Messages — **needs your backend** (rides on the stream page above) |
 | **File Upload** | Storage — Presign → Upload → Confirm (3-step) |
-| **Typing Indicators** | United Chat — Typing endpoint |
-| **Reactions** (display only) | Rendered from `message.reactions` + realtime deltas. Adding/removing is **not wired** in this demo — see `unitedChatService` for the end-user endpoint |
+| **Typing Indicators** | United Chat — Typing endpoint, throttled to one call per ~3 s while typing |
+| **Reactions** (display only) | Rendered from `message.reactions` + realtime deltas. Adding/removing is **not wired** in the UI — `addReaction` / `removeReaction` in `unitedChatService.js` are the end-user calls |
 | **Message Threads** | Not wired in this demo — a reply is a message with `reply_to`; see the React Native demo for a working panel |
 | **Full-Text Search** | Not wired in this demo — the search box filters the room list client-side. Server search is `GET /unitedchat/rooms/:id/search` |
-| **Read Receipts** | United Chat — Mark as Read |
+| **Read Receipts** | United Chat — Mark as Read, `read_receipt` real-time events |
 | **Pin Messages** | United Chat — Pin/Unpin |
 | **Mute/Unmute Rooms** | United Chat — Mute/Unmute |
-| **Freeze/Unfreeze** | United Chat — Freeze/Unfreeze |
-| **Presence (Online/Offline)** | Presence — Heartbeat, Status, Bulk Query |
-| **Push Notifications** | Push — Register/Unregister Token |
-| **API Usage Monitoring** | Auth — Usage |
+| **Block Users** | Users — Block, Unblock, Block list |
+| **Freeze/Unfreeze** | Not wired in the UI — `freezeRoom` / `unfreezeRoom` in `unitedChatService.js` |
+| **Presence** | Presence — Heartbeat (every 30 s), Status (online / away / dnd from the header), Bulk Query |
+| **Push Notifications** | Push — Register (browser FCM token), List tokens; removed at sign-out by `POST /customer/logout`. Browser tokens get chat-message pushes only — calls ring through the real-time channel |
 
 > Webhook CRUD, billing, and other tenant-admin endpoints aren't in the
 > demo — they require a console-session JWT (not an API key) and are
 > managed in the [HyperBabel Console](https://console.hyperbabel.com).
+> Organization usage and plan data are available to your backend with the
+> organization API key, not to end-user apps.
 
-### ⚠️ Live streaming and standalone translation need your backend
+### ⚠️ Live streaming, its chat, and standalone translation need your backend
 
 The rows marked ⚠️ above are the only ones that do **not** run from this demo,
 and that is by design rather than a gap.
 
-Every `/stream/*` and `/translate/*` endpoint authenticates with your
-**organization API key** (`Authorization: Bearer hb_live_…`). A request
-carrying anything else is rejected before it reaches the handler:
+These endpoint groups authenticate with your **organization API key**
+(`Authorization: Bearer hb_live_…`) and do not accept the end-user token this
+demo holds:
 
-```
-POST /api/v1/stream/sessions
-→ 401 { "error": { "code": "invalid_api_key_format" } }
-```
+| Endpoints | With an end-user token |
+|---|---|
+| `/stream/*` (live streaming) | `401 { "error": { "code": "invalid_api_key_format" } }` |
+| `/translate/*` (standalone translation) | `401 invalid_api_key_format` |
+| `/video/*` (standalone video sessions — `src/services/videoService.js`) | `401 invalid_api_key_format` |
+| `/chat/*` (low-level chat — `src/services/chatService.js`, used by the live-stream chat) | `403 { "error": { "code": "forbidden" } }` |
 
 Creating a broadcast allocates paid capacity and is metered against your
 organization, so the caller has to be **you**, not a signed-in end user. This
 demo holds only a customer JWT — `src/services/api.js` refuses to put an org
-key in a browser bundle — so the demo does not call these endpoints at all.
-(Calling them anyway would also be wasteful: the client answers every 401 by
-refreshing the customer JWT, so a polling loop would churn refreshes.)
+key in a browser bundle — so these calls cannot succeed here. The dashboard
+and settings pages never call them. The live-stream page does call `/stream/*`
+and `/chat/*` when you press its buttons, so you can see the request payloads
+— those requests fail by design, and the page says so in a banner. (Never poll
+them from a browser: the client answers every 401 by refreshing the customer
+JWT, so a polling loop would churn refreshes.)
 
 Run them as:
 
 ```
-browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*, /translate/*
+browser  →  your backend (holds hb_live_…)  →  HyperBabel /stream/*, /chat/*, /translate/*, /video/*
 ```
 
-`src/pages/LiveStreamPage.jsx` still documents the exact live-stream call
-sequence and payloads, and `src/services/translateService.js` the translation
-requests; implement them on your server and expose a thin endpoint the browser
-can call.
+`src/pages/LiveStreamPage.jsx` documents the exact live-stream call sequence
+and payloads (including the chat channel: create it with `POST /chat/channels`
+and address every later call by the returned `channel.id`, not its name), and
+`src/services/translateService.js` the translation requests; implement them on
+your server and expose a thin endpoint the browser can call.
 
 Chat translation is **not** affected: chat rooms and the in-call chat use
 `POST /unitedchat/rooms/{roomId}/messages/batch-translate`, which accepts the
@@ -181,16 +196,16 @@ react/
 │   │   ├── api.js                  # Customer JWT HTTP client (B1)
 │   │   ├── firebaseAuthService.js  # Firebase → /customer/auth/firebase-exchange
 │   │   ├── firebaseService.js      # FCM web push registration (optional)
-│   │   ├── authService.js          # Auth — Usage
 │   │   ├── unitedChatService.js    # United Chat — Rooms, Messages, Video Call, Ban, Mute, Freeze
-│   │   ├── chatService.js          # Chat — Low-level channels, messages, reactions, threads
-│   │   ├── videoService.js         # Video — Standalone session management
+│   │   ├── chatService.js          # Chat — Low-level channels, messages (org API key — backend only)
+│   │   ├── videoService.js         # Video — Standalone sessions (org API key — backend only)
 │   │   ├── streamService.js        # Stream — Live broadcast sessions (org API key — backend only)
 │   │   ├── translateService.js     # Translation — Text, Batch, Detect, Languages (org API key — backend only)
 │   │   ├── storageService.js       # Storage — 3-step presigned-URL upload
 │   │   ├── realtimeService.js      # Real-Time channel subscriptions
 │   │   ├── rtcService.js           # Video / Live Stream engine wrapper
 │   │   ├── presenceService.js      # Presence — Heartbeat, Status, Bulk query
+│   │   ├── captionsService.js      # Live captions — speech-translation WebSocket client
 │   │   └── pushService.js          # Push — FCM token management
 │   │
 │   ├── components/                 # Reusable UI components
@@ -201,7 +216,7 @@ react/
 │   │   └── ChatInput.jsx           # Message input with file attach & typing
 │   │
 │   ├── context/
-│   │   ├── AuthContext.jsx         # Customer JWT lifecycle (sign-in, refresh, logout)
+│   │   ├── AuthContext.jsx         # Customer JWT lifecycle (sign-in, logout via /customer/logout)
 │   │   └── CallContext.jsx         # Global video call state
 │   │
 │   ├── pages/                      # Page-level components
@@ -209,9 +224,10 @@ react/
 │   │   ├── SignUpPage.jsx          # Firebase createUser → exchange
 │   │   ├── DashboardPage.jsx       # Sandbox Hub
 │   │   ├── ChatHubPage.jsx         # Unified Chat Hub
+│   │   ├── JoinByCodePage.jsx      # /join?code= invite link → join-by-code
 │   │   ├── VideoCallPage.jsx       # Video call with in-call chat
-│   │   ├── LiveStreamPage.jsx      # Live stream (host/viewer) with chat
-│   │   └── SettingsPage.jsx        # Usage, Push tokens
+│   │   ├── LiveStreamPage.jsx      # Live stream (host/viewer) with chat — backend required
+│   │   └── SettingsPage.jsx        # Push tokens, language detection note
 │   │
 │   ├── utils/
 │   │   └── ringtone.js             # Incoming call ringtone via Web Audio API
@@ -333,10 +349,15 @@ const open = await unitedChat.createRoom({
 });
 ```
 
-### 3. Auto-Translation
+### 3. Message History & Auto-Translation
 
 ```javascript
-const { messages } = await unitedChat.getMessages(roomId, { limit: 50 });
+// History comes NEWEST FIRST — reverse each page to show oldest → newest,
+// append real-time messages at the end, prepend older pages.
+const page = await unitedChat.getMessages(roomId, { limit: 50 });
+const messages = [...page.messages].reverse();
+// Older history: getMessages(roomId, { limit: 50, cursor: page.next_cursor })
+// while page.has_more is true.
 
 const otherMsgIds = messages
   .filter((m) => m.sender_id !== myUserId)
@@ -368,6 +389,10 @@ const { rtc_token } = await unitedChat.renewVideoCallToken(roomId, myUserId, ses
 // Hang up
 await unitedChat.leaveVideoCall(roomId, myUserId, session.id); // just me
 await unitedChat.endVideoCall(roomId, myUserId, session.id);   // everyone (caller, room owner or sub-admin only)
+
+// Rejoin a call you left: accept again FIRST (puts you back to active),
+// then join media, joined-rtc and the heartbeat as above. 410 = it ended.
+await unitedChat.acceptVideoCall(roomId, myUserId, session.id);
 ```
 
 ### 5. File Upload (3-step presign)
@@ -395,6 +420,37 @@ import * as presence from './services/presenceService';
 
 setInterval(() => presence.heartbeat(myUserId, 'web'), 30000);
 const { presence: statuses } = await presence.getPresence(['alice', 'bob']);
+
+// The heartbeat keeps a chosen 'away' / 'dnd' (it only turns 'offline' back
+// to 'online'). Change the status explicitly with:
+await presence.updateStatus(myUserId, 'away');
+```
+
+### 7. Typing Indicator (throttled)
+
+```javascript
+// The typing call shares the per-user, per-minute rate limit with message
+// sends (Free plan: 60/min) — never send it per keystroke.
+let lastSent = 0;
+const onKeystroke = () => {
+  if (Date.now() - lastSent < 3000) return; // at most one call per ~3 s
+  lastSent = Date.now();
+  unitedChat.sendTypingIndicator(roomId, myUserId, myName).catch(() => {});
+};
+const onSend = () => { lastSent = 0; };      // next keystroke notifies at once
+// No "stopped typing" call exists: receivers hide the indicator a few seconds
+// after the last event, or when that user's message arrives.
+```
+
+### 8. Sign-out
+
+```javascript
+// Before clearing local storage: revoke this device's session and push token.
+await fetch(`${API}/customer/logout`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },   // no Authorization header
+  body: JSON.stringify({ refresh_token, push_tokens: [myFcmToken] }),
+});
 ```
 
 ---
@@ -436,8 +492,9 @@ tier on every session-creation call:
 - 1280 × 720 when a participant receives at most one remote stream
   (live-stream host, 1:1 call); 640 × 480 from three participants up. Chat-room
   calls (the ones this demo starts) allow at most 3 participants including the
-  caller; the standalone `/video/sessions` API allows 4, and even a four-way
-  call still totals 3 × 307,200 = 921,600 px.
+  caller on plans with group video (1:1 only otherwise — the server answers
+  `plan_upgrade_required`); the standalone `/video/sessions` API allows 4, and
+  even a four-way call still totals 3 × 307,200 = 921,600 px.
 - `quality` is sent as `"hd"`. If you publish above these presets, change the
   preset **and** the declared tier together in that one file — the declared
   value is what your invoice is calculated from (Terms §5.1 / §5.2).

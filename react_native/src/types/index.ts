@@ -9,10 +9,9 @@ export type {
   Room, RoomType, RoomMember, Message, MessageType, MemberRole,
   VideoCallSession, VideoCallParticipant, StartVideoCallResponse, ActiveVideoCallResponse,
 } from '@/services/unitedChatService';
-export type { StreamSession } from '@/services/streamService';
+export type { CreatedStreamSession, StreamListItem, ViewerToken } from '@/services/streamService';
 export type { PresenceEntry, PresenceStatus } from '@/services/presenceService';
 export type { PushPlatform } from '@/services/pushService';
-export type { UsageStats } from '@/services/authService';
 export type { RealtimeChannelService } from '@/services/realtimeService';
 
 /** Navigation param list for typed routing */
@@ -30,5 +29,7 @@ export interface VideoCallParams {
 }
 
 export interface LiveStreamParams {
-  sessionId: string;
+  sessionId:   string;
+  /** Optional open United Chat room for the broadcast's chat (your backend creates it). */
+  chatRoomId?: string;
 }

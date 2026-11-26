@@ -5,6 +5,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/auth/auth_controller.dart';
+import 'core/network/api_client.dart';
+import 'core/network/push_repository.dart';
 import 'core/theme/app_theme.dart';
 import 'features/auth/presentation/login_screen.dart';
 import 'features/auth/presentation/signup_screen.dart';
@@ -38,9 +40,22 @@ Future<void> main() async {
     // No native Firebase config — sign-in screen surfaces a setup hint.
   }
 
+  final container = ProviderContainer();
+
+  // The server rejected the refresh token (revoked, expired, signed out
+  // elsewhere): no request can succeed any more, so sign out locally. The
+  // auth state change routes back to /login and closes the real-time
+  // connection. The session is already gone on the server, so there is
+  // nothing to revoke there.
+  ApiClient().onSessionExpired = () {
+    PushRegistration.reset();
+    container.read(authControllerProvider.notifier).logout(notifyServer: false);
+  };
+
   runApp(
-    const ProviderScope(
-      child: HyperBabelDemoApp(),
+    UncontrolledProviderScope(
+      container: container,
+      child: const HyperBabelDemoApp(),
     ),
   );
 }

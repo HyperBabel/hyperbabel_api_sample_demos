@@ -5,19 +5,20 @@
  *      a one-tap "Anonymous" button is exposed for kiosk-style use).
  *   2. We exchange the resulting Firebase ID token for a HyperBabel
  *      customer JWT via POST /customer/auth/firebase-exchange.
- *   3. The JWT pair is persisted to localStorage by `persistSession()`
- *      and attached to every subsequent API request by `api/client.js`.
+ *   3. `completeSignIn()` persists the JWT pair to localStorage (attached
+ *      to every subsequent API request by `api/client.js`) and, if a
+ *      display name was typed, saves it with PATCH /customer/users/me so
+ *      other members see that name instead of the email address.
  *
  * If VITE_FIREBASE_* env vars are missing the page renders a setup-help
  * banner instead of the form. See README → Quickstart.
  */
 
-import * as push from '../api/push.js';
 import {
   isFirebaseConfigured,
   signInWithEmailAndExchange,
   signInAnonymouslyAndExchange,
-  persistSession,
+  completeSignIn,
 } from '../api/firebaseAuth.js';
 
 export function renderLogin(navigate) {
@@ -137,21 +138,9 @@ export function renderLogin(navigate) {
 }
 
 async function finishSignIn(exchange, displayName, langCode, navigate) {
-  persistSession(exchange, displayName, langCode);
-  // Best-effort web-push token registration. Failures don't block sign-in
-  // and don't surface to the user — the demo continues without push if
-  // FCM isn't configured.
-  autoRegisterPushToken(exchange.external_user_id).catch(() => {});
+  await completeSignIn(exchange, displayName, langCode);
+  // No push token is registered here: this demo does not wire Firebase
+  // Messaging. A real app registers its FCM registration token at this
+  // point — see `registerDeviceToken` in src/api/push.js.
   navigate('#/home');
-}
-
-async function autoRegisterPushToken(userId) {
-  let token = localStorage.getItem('hb_push_token');
-  if (!token) {
-    // Synthetic placeholder. Production apps swap this for the real
-    // ServiceWorker push subscription endpoint.
-    token = `demo-web-${Date.now()}`;
-    localStorage.setItem('hb_push_token', token);
-  }
-  await push.registerToken(userId, token, 'web');
 }

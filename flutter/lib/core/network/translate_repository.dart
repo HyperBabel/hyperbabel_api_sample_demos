@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import 'api_error.dart';
 
 /// Subset of the HyperBabel AI Translation API (`/translate/*`).
 ///
@@ -34,7 +35,7 @@ class TranslateRepository {
       );
       return response.data as Map<String, dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to detect language: ${e.message}');
+      throw Exception('Failed to detect language: ${apiErrorMessage(e)}');
     }
   }
 
@@ -56,7 +57,7 @@ class TranslateRepository {
       );
       return response.data as Map<String, dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to translate text: ${e.message}');
+      throw Exception('Failed to translate text: ${apiErrorMessage(e)}');
     }
   }
 }

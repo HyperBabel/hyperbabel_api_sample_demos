@@ -12,7 +12,10 @@ import '../auth/auth_controller.dart';
 /// short-lived customer JWT. The customer JWT pair lives in
 /// flutter_secure_storage (Keychain / KeyStore); this client reads the
 /// access token on every request and transparently refreshes via
-/// POST /customer/refresh on 401.
+/// POST /customer/refresh on 401. When the server rejects the refresh token
+/// itself (revoked, expired, or the user was signed out elsewhere) the
+/// session is over: [onSessionExpired] fires and the app returns to the
+/// sign-in screen (wired in `main.dart`).
 ///
 /// The integrator's organization API key (`hb_live_…` / `hb_test_…`)
 /// MUST NOT ship in the application binary. The client throws at
@@ -31,6 +34,12 @@ class ApiClient {
   /// Shared inflight future so a burst of expirations only triggers a
   /// single POST /customer/refresh round-trip.
   Future<String?>? _refreshInflight;
+
+  /// Called once when `POST /customer/refresh` answers with a 4xx — the
+  /// refresh token is no longer valid, so no request can succeed until the
+  /// user signs in again. Network failures and 5xx answers do NOT end the
+  /// session; the next request simply tries again.
+  void Function()? onSessionExpired;
 
   ApiClient._internal() {
     _guardEnvKey();
@@ -165,6 +174,14 @@ class ApiClient {
           expiresAt:    data['expires_at']    as int,
         );
         return data['access_token'] as String;
+      } on DioException catch (e) {
+        final status = e.response?.statusCode;
+        // 401 = invalid / revoked / expired refresh token. Any other 4xx is
+        // just as final; 429 is only a rate limit, so it is retried later.
+        if (status != null && status >= 400 && status < 500 && status != 429) {
+          onSessionExpired?.call();
+        }
+        return null;
       } catch (_) {
         return null;
       } finally {

@@ -2,15 +2,16 @@
  * Sign-up page — Customer Auth pattern B1.
  *
  * Creates a new Firebase user with email + password, then exchanges the
- * resulting ID token for a HyperBabel customer JWT. The matching
- * `com_users` row is created server-side on first exchange, so no extra
- * "create user" call is needed.
+ * resulting ID token for a HyperBabel customer JWT. HyperBabel creates the
+ * matching user on that first exchange, so no extra "create user" call is
+ * needed. A typed display name is then saved to the new profile
+ * (`completeSignIn()` → PATCH /customer/users/me).
  */
 
 import {
   isFirebaseConfigured,
   signUpWithEmailAndExchange,
-  persistSession,
+  completeSignIn,
 } from '../api/firebaseAuth.js';
 
 const isValidEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
@@ -98,7 +99,7 @@ export function renderSignup(navigate) {
       const lang     = document.getElementById('preferred_lang_cd').value;
       const display  = document.getElementById('display_name').value;
       const exchange = await signUpWithEmailAndExchange(email, pass, lang);
-      persistSession(exchange, display, lang);
+      await completeSignIn(exchange, display, lang);
       navigate('#/home');
     } catch (err) {
       errorEl.textContent = err?.message || 'Sign-up failed.';

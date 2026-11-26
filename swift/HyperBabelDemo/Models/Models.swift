@@ -9,7 +9,7 @@ import Foundation
 
 extension KeyedDecodingContainer {
     /// Decodes an integer the API may send either as a JSON number or as a
-    /// numeric STRING. 64-bit database integers (counts, usage totals) are
+    /// numeric STRING. 64-bit database integers (counts such as COUNT(*)) are
     /// serialized as strings (`"3"`), and a plain `decode(Int.self, …)` throws
     /// on them — failing the whole response.
     func decodeLossyIntIfPresent(forKey key: Key) -> Int? {
@@ -39,6 +39,13 @@ struct Room: Codable, Hashable, Identifiable {
     /// client does not have, so a hand-built name subscribes to a channel
     /// nobody publishes on.
     let realtimeChannel: String?
+    /// True while an owner / sub_admin has frozen the room — only they can
+    /// post. `GET /unitedchat/rooms/:roomId` carries it; live changes arrive as
+    /// the room channel's `room.updated` event (`data.is_frozen`).
+    let isFrozen: Bool?
+    /// True for `open` (public) rooms. Video calls are not available there —
+    /// the server answers 400, so the chat screen hides the call button.
+    let isOpen: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -46,6 +53,8 @@ struct Room: Codable, Hashable, Identifiable {
         case roomName = "room_name"
         case memberCount = "member_count"
         case realtimeChannel = "realtime_channel"
+        case isFrozen = "is_frozen"
+        case isOpen = "is_open"
     }
 
     /// Keys that are read but never written back.
@@ -64,7 +73,12 @@ extension Room {
         roomName = try c.decodeIfPresent(String.self, forKey: .roomName)
         memberCount = c.decodeLossyIntIfPresent(forKey: .memberCount)
         realtimeChannel = try c.decodeIfPresent(String.self, forKey: .realtimeChannel)
+        isFrozen = try? c.decodeIfPresent(Bool.self, forKey: .isFrozen)
+        isOpen = try? c.decodeIfPresent(Bool.self, forKey: .isOpen)
     }
+
+    /// Video calls can be placed from 1:1 and group rooms, never from `open` ones.
+    var allowsVideoCall: Bool { roomType != "open" && isOpen != true }
 }
 
 /// Single-room endpoints answer with the room WRAPPED — `{ "room": { … } }`.
@@ -99,10 +113,13 @@ struct CreateRoomRequest: Codable {
 typealias ReactionMap = [String: [String]]
 
 struct MessageMetadata: Codable, Hashable {
+    /// Attachment URL (from `POST /storage/confirm`). Attachments also carry
+    /// it as the message `content`.
     let url: String?
     let filename: String?
     let mimeType: String?
     let size: Int?
+    let sizeBytes: Int?
     /// Read only as a fallback — replies are linked by the top-level
     /// `Message.replyTo` (`reply_to`). Some clients also copy it here.
     let replyTo: String?
@@ -113,11 +130,41 @@ struct MessageMetadata: Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case url, filename, size, event
         case mimeType = "mime_type"
+        case sizeBytes = "size_bytes"
         case replyTo = "reply_to"
     }
 }
 
+/// `metadata` sent with an attachment message — the same shape the other
+/// HyperBabel sample demos send, so every client can render the others' files.
+struct AttachmentMetadata: Codable {
+    let url: String
+    let filename: String
+    let mimeType: String
+    let sizeBytes: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case url, filename
+        case mimeType = "mime_type"
+        case sizeBytes = "size_bytes"
+    }
+}
+
 extension MessageMetadata {
+    /// Lenient: `metadata` is free-form and written by every client, so a field
+    /// of an unexpected type is dropped instead of failing the whole message
+    /// list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try? c.decodeIfPresent(String.self, forKey: .url)
+        filename = try? c.decodeIfPresent(String.self, forKey: .filename)
+        mimeType = try? c.decodeIfPresent(String.self, forKey: .mimeType)
+        size = c.decodeLossyIntIfPresent(forKey: .size)
+        sizeBytes = c.decodeLossyIntIfPresent(forKey: .sizeBytes)
+        replyTo = try? c.decodeIfPresent(String.self, forKey: .replyTo)
+        event = try? c.decodeIfPresent(String.self, forKey: .event)
+    }
+
     /// Builds metadata from a real-time payload's `metadata` object. Nil when
     /// it is missing or does not decode — the message itself still shows.
     init?(json: Any?) {
@@ -168,12 +215,19 @@ struct MessageListResponse: Codable {
 
 struct SendMessageRequest: Codable {
     let senderId: String
+    /// Not used by the server for signed-in end users: the name other members
+    /// see is the sender's profile `display_name` (set with
+    /// `UsersService.updateMyDisplayName`).
     let senderName: String?
+    /// Text for `text` messages; the uploaded file's URL for attachments.
     let content: String
+    /// `text`, or for attachments `image` | `video` | `audio` | `file`.
     let messageType: String
     /// Id of the message being replied to. Omitted from the body when nil —
     /// the server rejects `reply_to: null`.
     var replyTo: String? = nil
+    /// Attachment details (URL, file name, MIME type, size). Omitted when nil.
+    var metadata: AttachmentMetadata? = nil
 
     enum CodingKeys: String, CodingKey {
         case senderId = "sender_id"
@@ -181,6 +235,7 @@ struct SendMessageRequest: Codable {
         case content
         case messageType = "message_type"
         case replyTo = "reply_to"
+        case metadata
     }
 }
 

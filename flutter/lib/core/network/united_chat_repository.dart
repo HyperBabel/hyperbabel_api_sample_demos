@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import 'api_error.dart';
 import '../video/video_quality.dart';
 
 /// Repository for HyperBabel United Chat REST APIs.
@@ -19,11 +20,20 @@ class UnitedChatRepository {
       // `{ rooms, open_rooms }` — `open_rooms` (public rooms to join) is not used here.
       return (data['rooms'] ?? []) as List<dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to fetch rooms: ${e.message}');
+      throw Exception('Failed to fetch rooms: ${apiErrorMessage(e)}');
     }
   }
 
-  /// Create a new chat room (1to1, group, open).
+  /// Create a new chat room (1to1, group, open) and return the room object.
+  ///
+  /// The API wraps it: `{ room: { id, channel_type, realtime_channel, … } }`.
+  /// When an identical room already exists (same 1:1 peer, or a group with
+  /// exactly the same members) it answers `{ room: { id, already_exists: true } }`
+  /// — only the id, so open the room by id either way.
+  ///
+  /// For `1to1`, [members] is `[peerUserId]` — the server treats `members[0]`
+  /// as the peer and [creatorId] as you; `[me, peer]` would create a chat
+  /// with yourself.
   Future<Map<String, dynamic>> createRoom({
     required String roomType,
     required String creatorId,
@@ -39,13 +49,18 @@ class UnitedChatRepository {
       };
       final response =
           await _apiClient.client.post('/unitedchat/rooms', data: data);
-      return response.data as Map<String, dynamic>;
+      final room = (response.data as Map)['room'];
+      if (room is! Map || room['id'] == null) {
+        throw Exception('Create room: the response carried no room id.');
+      }
+      return Map<String, dynamic>.from(room);
     } on DioException catch (e) {
-      throw Exception('Failed to create room: ${e.message}');
+      throw Exception('Failed to create room: ${apiErrorMessage(e)}');
     }
   }
 
-  /// Leave a room. Owners must transfer ownership before they can leave.
+  /// Leave a room. Any member may leave, the owner included — the server
+  /// does not hand the owner role to anyone else.
   Future<void> leaveRoom(String roomId, String userId) async {
     try {
       await _apiClient.client.post(
@@ -53,7 +68,7 @@ class UnitedChatRepository {
         data: {'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to leave room: ${e.message}');
+      throw Exception('Failed to leave room: ${apiErrorMessage(e)}');
     }
   }
 
@@ -61,14 +76,19 @@ class UnitedChatRepository {
   ///
   /// The real-time channel name CANNOT be derived from the room id — always
   /// read it from this endpoint and pass it to `subscribeRoom()` verbatim.
-  Future<Map<String, dynamic>> getRoom(String roomId) async {
+  /// Pass [userId] (the signed-in user) so a 1:1 room resolves the peer's
+  /// name instead of the internal channel name. The API wraps the room:
+  /// `{ room: { id, channel_type, is_frozen, realtime_channel, members, … } }`.
+  Future<Map<String, dynamic>> getRoom(String roomId, {String? userId}) async {
     try {
-      final response =
-          await _apiClient.client.get('/unitedchat/rooms/$roomId');
+      final response = await _apiClient.client.get(
+        '/unitedchat/rooms/$roomId',
+        queryParameters: {if (userId != null) 'user_id': userId},
+      );
       final data = response.data as Map<String, dynamic>;
-      return (data['room'] ?? data) as Map<String, dynamic>;
+      return Map<String, dynamic>.from(data['room'] as Map);
     } on DioException catch (e) {
-      throw Exception('Failed to fetch room: ${e.message}');
+      throw Exception('Failed to fetch room: ${apiErrorMessage(e)}');
     }
   }
 
@@ -80,7 +100,7 @@ class UnitedChatRepository {
       final data = response.data as Map<String, dynamic>;
       return (data['members'] ?? []) as List<dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to fetch members: ${e.message}');
+      throw Exception('Failed to fetch members: ${apiErrorMessage(e)}');
     }
   }
 
@@ -100,7 +120,7 @@ class UnitedChatRepository {
       final data = response.data as Map<String, dynamic>;
       return (data['messages'] ?? []) as List<dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to fetch messages: ${e.message}');
+      throw Exception('Failed to fetch messages: ${apiErrorMessage(e)}');
     }
   }
 
@@ -132,7 +152,7 @@ class UnitedChatRepository {
       final data = response.data as Map<String, dynamic>;
       return Map<String, dynamic>.from((data['message'] ?? data) as Map);
     } on DioException catch (e) {
-      throw Exception('Failed to send message: ${e.message}');
+      throw Exception('Failed to send message: ${apiErrorMessage(e)}');
     }
   }
 
@@ -146,7 +166,7 @@ class UnitedChatRepository {
         data: {'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to delete message: ${e.message}');
+      throw Exception('Failed to delete message: ${apiErrorMessage(e)}');
     }
   }
 
@@ -163,7 +183,7 @@ class UnitedChatRepository {
         data: {'user_id': userId, 'content': content},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to edit message: ${e.message}');
+      throw Exception('Failed to edit message: ${apiErrorMessage(e)}');
     }
   }
 
@@ -186,7 +206,8 @@ class UnitedChatRepository {
   /// Returns `{ messageId: translatedText }`. Messages that need no
   /// translation (already in the target language, media, …) are absent. The
   /// response's `limited: true` flag — set when the daily translation limit
-  /// stopped new translations — is not surfaced by this helper.
+  /// stopped new translations — is not surfaced by this helper. No screen in
+  /// this demo calls it; it is here for your own UI.
   Future<Map<String, String>> batchTranslateMessages(
       String roomId, List<String> messageIds, String targetLang) async {
     try {
@@ -201,7 +222,7 @@ class UnitedChatRepository {
       if (raw is! Map) return const {};
       return raw.map((k, v) => MapEntry('$k', '$v'));
     } on DioException catch (e) {
-      throw Exception('Failed to translate messages: ${e.message}');
+      throw Exception('Failed to translate messages: ${apiErrorMessage(e)}');
     }
   }
 
@@ -210,7 +231,11 @@ class UnitedChatRepository {
   /// Start a video call in this room. The server sends a `CALL_INVITE`
   /// signal to each callee's private channel. In a 1:1 room the other member
   /// is rung — send no targets. A group room REQUIRES [targetUserIds] (400
-  /// without them), at most 2 of them: a call holds 3 people at most.
+  /// without them). A group call needs a plan that includes group video —
+  /// otherwise anything above 2 people is rejected with 400
+  /// `plan_upgrade_required` — and holds at most 3 people, the caller plus
+  /// 2 targets (more → 400 `limit_exceeded`). Open rooms cannot start calls.
+  /// A call nobody answers is ended by the server after 3 minutes.
   Future<Map<String, dynamic>?> startVideoCall(
     String roomId,
     String callerId, {
@@ -238,7 +263,7 @@ class UnitedChatRepository {
       );
       return response.data is Map ? Map<String, dynamic>.from(response.data) : null;
     } on DioException catch (e) {
-      throw Exception('Failed to start call: ${e.message}');
+      throw Exception('Failed to start call: ${apiErrorMessage(e)}');
     }
   }
 
@@ -259,7 +284,7 @@ class UnitedChatRepository {
       if (e.response?.statusCode == 410) {
         throw Exception('This call has already ended.');
       }
-      throw Exception('Failed to accept call: ${e.message}');
+      throw Exception('Failed to accept call: ${apiErrorMessage(e)}');
     }
   }
 
@@ -284,7 +309,7 @@ class UnitedChatRepository {
         },
       );
     } on DioException catch (e) {
-      throw Exception('Failed to reject call: ${e.message}');
+      throw Exception('Failed to reject call: ${apiErrorMessage(e)}');
     }
   }
 
@@ -304,7 +329,7 @@ class UnitedChatRepository {
       );
       return (response.data as Map)['matched'] == true;
     } on DioException catch (e) {
-      throw Exception('Failed to mark RTC join: ${e.message}');
+      throw Exception('Failed to mark RTC join: ${apiErrorMessage(e)}');
     }
   }
 
@@ -322,7 +347,7 @@ class UnitedChatRepository {
         data: {'user_id': userId, 'session_id': sessionId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to send call heartbeat: ${e.message}');
+      throw Exception('Failed to send call heartbeat: ${apiErrorMessage(e)}');
     }
   }
 
@@ -341,13 +366,15 @@ class UnitedChatRepository {
       );
       return Map<String, dynamic>.from(response.data as Map);
     } on DioException catch (e) {
-      throw Exception('Failed to renew call token: ${e.message}');
+      throw Exception('Failed to renew call token: ${apiErrorMessage(e)}');
     }
   }
 
   /// Hang up: leave the CALL (not the chat room — that is [leaveRoom]).
-  /// Any participant may leave; once at most one active participant remains,
-  /// the server ends the session for everyone.
+  /// Any participant may leave; once at most one ACTIVE participant remains,
+  /// the server ends the session for everyone. Only people who answered
+  /// count as active — a callee who is still being rung does not keep the
+  /// call alive.
   Future<void> leaveVideoCall(
     String roomId, {
     required String userId,
@@ -359,7 +386,7 @@ class UnitedChatRepository {
         data: {'user_id': userId, 'session_id': sessionId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to leave call: ${e.message}');
+      throw Exception('Failed to leave call: ${apiErrorMessage(e)}');
     }
   }
 
@@ -368,22 +395,25 @@ class UnitedChatRepository {
     try {
       final response = await _apiClient.client
           .get('/unitedchat/rooms/$roomId/video-call/active');
-      final data = response.data;
-      if (data is Map) {
-        final m = Map<String, dynamic>.from(data);
-        // Server sometimes returns { session: null } when nothing's active.
-        return (m['session'] is Map) ? m : null;
-      }
-      return null;
+      // `{ active: true, session: { id, channel_name, call_type,
+      // participants, … } }`, or `{ active: false, session: null }` when no
+      // call is live in this room.
+      final m = Map<String, dynamic>.from(response.data as Map);
+      return (m['session'] is Map) ? m : null;
     } on DioException catch (e) {
-      throw Exception('Failed to fetch active call: ${e.message}');
+      throw Exception('Failed to fetch active call: ${apiErrorMessage(e)}');
     }
   }
 
   // ── Moderation: Ban ──────────────────────────────────────────────────────
 
-  /// Ban a user from the room (owner / sub_admin only). [bannedBy] is the
-  /// moderator acting — the signed-in user.
+  /// Ban a user from this room. The owner can ban anyone except the owner; a
+  /// sub_admin can ban plain members only (403 otherwise). The banned user
+  /// is removed from the room and cannot come back — by joining, invite
+  /// code or being added — until the ban is lifted with [unbanUser]. A ban
+  /// covers this one room; to stop someone reaching you everywhere, block
+  /// them (`UsersRepository.blockUser`). [bannedBy] is the moderator acting
+  /// — the signed-in user.
   Future<void> banUser(String roomId, String bannedBy, String userId) async {
     try {
       await _apiClient.client.post(
@@ -391,12 +421,13 @@ class UnitedChatRepository {
         data: {'banned_by': bannedBy, 'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to ban user: ${e.message}');
+      throw Exception('Failed to ban user: ${apiErrorMessage(e)}');
     }
   }
 
   /// Lift a ban — the user can rejoin afterwards. [unbannedBy] is the
-  /// moderator acting (owner / sub_admin), sent in a JSON body.
+  /// moderator acting (owner / sub_admin), sent in a JSON body. The demo has
+  /// no unban screen; this is here for your own UI.
   Future<void> unbanUser(
       String roomId, String unbannedBy, String userId) async {
     try {
@@ -405,7 +436,7 @@ class UnitedChatRepository {
         data: {'unbanned_by': unbannedBy},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to unban user: ${e.message}');
+      throw Exception('Failed to unban user: ${apiErrorMessage(e)}');
     }
   }
 
@@ -424,7 +455,7 @@ class UnitedChatRepository {
         },
       );
     } on DioException catch (e) {
-      throw Exception('Failed to mute room: ${e.message}');
+      throw Exception('Failed to mute room: ${apiErrorMessage(e)}');
     }
   }
 
@@ -436,7 +467,7 @@ class UnitedChatRepository {
         data: {'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to unmute room: ${e.message}');
+      throw Exception('Failed to unmute room: ${apiErrorMessage(e)}');
     }
   }
 
@@ -448,7 +479,7 @@ class UnitedChatRepository {
           .get('/unitedchat/rooms/$roomId/mute/$userId');
       return response.data as Map<String, dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to get mute status: ${e.message}');
+      throw Exception('Failed to get mute status: ${apiErrorMessage(e)}');
     }
   }
 
@@ -456,7 +487,9 @@ class UnitedChatRepository {
 
   /// Tell the server the user is typing in [roomId]. The server fans out a
   /// `typing` event on the room's real-time channel, throttled per the
-  /// receiver's typing prefs.
+  /// receiver's typing prefs. Each call counts against the same per-user
+  /// per-minute rate limit as every other request (60/min on the Free plan),
+  /// so send at most one every few seconds — never one per keystroke.
   Future<void> sendTypingIndicator(
       String roomId, String userId, String? userName) async {
     try {
@@ -503,7 +536,7 @@ class UnitedChatRepository {
         data: {'owner_id': ownerId, 'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to promote: ${e.message}');
+      throw Exception('Failed to promote: ${apiErrorMessage(e)}');
     }
   }
 
@@ -517,7 +550,7 @@ class UnitedChatRepository {
         data: {'owner_id': ownerId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to demote: ${e.message}');
+      throw Exception('Failed to demote: ${apiErrorMessage(e)}');
     }
   }
 
@@ -531,7 +564,7 @@ class UnitedChatRepository {
         data: {'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to freeze room: ${e.message}');
+      throw Exception('Failed to freeze room: ${apiErrorMessage(e)}');
     }
   }
 
@@ -543,7 +576,7 @@ class UnitedChatRepository {
         data: {'user_id': userId},
       );
     } on DioException catch (e) {
-      throw Exception('Failed to unfreeze room: ${e.message}');
+      throw Exception('Failed to unfreeze room: ${apiErrorMessage(e)}');
     }
   }
 }

@@ -2,10 +2,9 @@
 sdk.dir=/Users/<you>/Library/Android/sdk
 
 # Optional: override the HyperBabel API base URL. Defaults to production
-# (https://api.hyperbabel.com/api/v1). Use a private deployment URL only
-# if you operate one. The Android emulator reaches the host machine's
-# localhost as 10.0.2.2, so a server on the host's port 8787 is:
-#   HB_API_URL=http://10.0.2.2:8787/api/v1
+# (https://api.hyperbabel.com/api/v1). Use a different URL only if you
+# operate a private deployment — keep the trailing /api/v1, e.g.
+#   HB_API_URL=https://your-api-base-url.example.com/api/v1
 HB_API_URL=https://api.hyperbabel.com/api/v1
 
 # Note on Firebase: there are no FIREBASE_* keys in local.properties.

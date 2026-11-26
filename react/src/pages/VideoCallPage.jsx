@@ -68,7 +68,10 @@
  *    caller, the room owner or a sub-admin may; anyone else falls back to
  *    leaving, which ends the call once one participant or fewer remain.
  *  - Pass `rejoin: true` in navigation state to re-enter an existing session
- *    without starting a new call (e.g. after accidentally leaving).
+ *    without starting a new call (e.g. after accidentally leaving). The page
+ *    then calls POST …/video-call/accept before joining media again — that
+ *    is what makes the server count you as active once more — followed by
+ *    joined-rtc and the heartbeat as usual. 410 = the call already ended.
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -216,6 +219,7 @@ export default function VideoCallPage() {
   // ── Step 2: Join RTC once permission is confirmed ───────────────────────
   useEffect(() => {
     if (permStatus !== PERM.GRANTED) return;
+    let cancelled = false;
 
     /*
      * The session carries the channel name the server actually allocated —
@@ -227,12 +231,35 @@ export default function VideoCallPage() {
     const channelName = session?.channel_name;
     const uid = Math.abs(hashCode(user.user_id)) % 100000;
 
-    joinRtcSession(channelName, uid, sessionId);
+    if (rejoin && sessionId) {
+      // Re-entering a call you left: POST …/video-call/accept FIRST. It puts
+      // you back to `active` in the session; without it the server still
+      // counts you as `left` (and ends the call when the last other active
+      // participant goes). joined-rtc + heartbeat follow once media is up
+      // (Step 3), exactly as for a first join.
+      (async () => {
+        try {
+          await unitedChat.acceptVideoCall(roomId, user.user_id, sessionId);
+        } catch (err) {
+          if (cancelled) return;
+          if (err.status === 410) {
+            exitCallRef.current({ notice: 'This call has already ended' });
+          } else {
+            setStatusText(`Could not rejoin the call: ${err.message}`);
+          }
+          return;
+        }
+        if (!cancelled) joinRtcSession(channelName, uid, sessionId);
+      })();
+    } else {
+      joinRtcSession(channelName, uid, sessionId);
+    }
     loadChatMessages();
 
     chatPollRef.current = setInterval(loadChatMessages, 5000);
 
     return () => {
+      cancelled = true;
       clearInterval(chatPollRef.current);
       // Invalidate any in-flight startCaptions BEFORE stopping the handle —
       // otherwise a pending language fetch would resolve after unmount and
@@ -291,7 +318,7 @@ export default function VideoCallPage() {
       let channel = roomChannel;
       if (!channel) {
         try {
-          const res = await unitedChat.getRoom(roomId);
+          const res = await unitedChat.getRoom(roomId, user.user_id);
           channel = (res.room || res)?.realtime_channel;
         } catch { /* no channel — the polling safety net below still applies */ }
       }
@@ -430,7 +457,9 @@ export default function VideoCallPage() {
   const loadChatMessages = async () => {
     try {
       const data = await unitedChat.getMessages(roomId, { limit: 50 });
-      const msgs = data.messages || data || [];
+      // History comes newest first — reverse it so the list reads top-down
+      // (oldest → newest) like every chat, with the latest at the bottom.
+      const msgs = [...(data.messages || [])].reverse();
 
       // Auto-translate messages from other users into my preferred language.
       // HyperBabel stores each translation on the message (`translated_content`
@@ -558,6 +587,7 @@ export default function VideoCallPage() {
         roomId,
         onCaption: (msg) => {
           if (seq !== ccSeqRef.current) return; // stale session — ignore
+          setCcError(''); // captions are flowing again — drop a transient notice
           // partial replaces the live line; final stays until the next
           // utterance's partial arrives — classic subtitle behavior.
           if (msg.kind === 'partial' || msg.kind === 'final') setCcOrig(msg.text || '');
@@ -568,19 +598,21 @@ export default function VideoCallPage() {
           if (st === 'ready') setCcStatus('live');
           if (st === 'closed') setCcStatus('off');
         },
-        onError: (message) => {
+        onError: (message, { fatal } = {}) => {
           if (seq !== ccSeqRef.current) return; // stale session — ignore
-          console.error('Live captions error:', message);
+          console.error('Live captions error:', message, fatal ? '(fatal)' : '(transient)');
           // Surface in a visible banner — statusText only renders pre-connect,
           // so mid-call failures (e.g. limit_exceeded) would be invisible.
-          setCcError(message);
+          // A transient error (`fatal: false`) leaves captions running; the
+          // notice clears itself when the next caption arrives.
+          setCcError(fatal ? `Live captions stopped: ${message}` : `Live captions: ${message} — still listening`);
         },
       });
     } catch (err) {
       console.error('Failed to start live captions:', err);
       if (seq === ccSeqRef.current) {
         setCcStatus('off');
-        setCcError(err?.message || 'Failed to start live captions.');
+        setCcError(`Live captions stopped: ${err?.message || 'Failed to start live captions.'}`);
       }
     }
   };
@@ -794,7 +826,8 @@ export default function VideoCallPage() {
           </div>
         )}
 
-        {/* Captions failure banner — persists until the next CC start */}
+        {/* Captions error banner — a fatal one persists until the next CC
+            start; a transient one clears when captions flow again */}
         {ccError && (
           <div style={{
             padding: '6px 16px',
@@ -803,7 +836,7 @@ export default function VideoCallPage() {
             fontSize: '0.8rem',
             textAlign: 'center',
           }}>
-            Live captions stopped: {ccError}
+            {ccError}
           </div>
         )}
 

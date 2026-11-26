@@ -2,11 +2,15 @@
  * HyperBabel Demo — Chat Hub (Room List)
  *
  * Shows:
- *  - My Rooms (1:1, group, open) with unread count, last message, presence
- *  - Open Rooms discovery list with auto-translated descriptions
- *  - Create Room bottom sheet (1:1, group, open)
- *  - Join by invite code
- *  - Full-text search (toggled from header)
+ *  - My Rooms (1:1, group, open) with unread count and last message
+ *  - Open Rooms discovery list with descriptions in your language
+ *    (`description_translated`, falling back to the original)
+ *  - Create Room sheet (My Notes, 1:1, group, open). A group starts with
+ *    just you — this demo has no add-members screen
+ *    (POST /unitedchat/rooms/:roomId/members)
+ *  - Join an open room, or join by invite code
+ *  - Search box (header) — filters the loaded room list by room name / last
+ *    message on the device; it does not call the message search API
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -47,8 +51,8 @@ dayjs.extend(relativeTime);
 
 function RoomItem({ room, onPress }: { room: Room; onPress: () => void }) {
   const lastMsg = room.last_message;
-  const memberCount = room.members?.length ?? 0;
-  const displayName = room.room_name ?? (room.members?.[0]?.user_name ?? room.id);
+  // The room list already names a 1:1 room after the PEER (not you).
+  const displayName = room.room_name ?? room.id;
 
   return (
     <TouchableOpacity style={styles.roomItem} onPress={onPress} activeOpacity={0.75}>
@@ -84,8 +88,10 @@ function OpenRoomCard({ room, onJoin }: { room: Room; onJoin: () => void }) {
   return (
     <View style={styles.openCard}>
       <Text style={styles.openCardName} numberOfLines={1}>{room.room_name}</Text>
-      {room.description && (
-        <Text style={styles.openCardDesc} numberOfLines={2}>{room.description}</Text>
+      {!!(room.description_translated || room.description) && (
+        <Text style={styles.openCardDesc} numberOfLines={2}>
+          {room.description_translated || room.description}
+        </Text>
       )}
       <View style={styles.openCardFooter}>
         {/* The room list carries a count, not a member array — and it is a string. */}
@@ -101,8 +107,8 @@ function OpenRoomCard({ room, onJoin }: { room: Room; onJoin: () => void }) {
 // ── Create Room modal ─────────────────────────────────────────────────────
 
 // Extra "self" option exposed to the modal so users can enter the My Notes
-// room without typing their own user ID. The service still creates a 1:1
-// room — see handleCreateRoom for the special-cased member array.
+// room without typing their own user ID. It is still a 1:1 room — one whose
+// peer is you; see handleCreateRoom for the member array.
 type ModalRoomType = RoomType | 'self';
 
 interface CreateRoomModalProps {
@@ -238,19 +244,28 @@ export default function ChatHubScreen() {
 
   const handleCreateRoom = async (type: 'self' | RoomType, name: string, memberId: string) => {
     if (!user) return;
-    // Self-chat is a 1:1 room with only the creator on the member list — the
-    // server treats the duplicate ID as a self-chat and surfaces it as
-    // "My Notes" in the demo UI.
     const isSelf = type === 'self';
     const apiType: RoomType = isSelf ? '1to1' : type;
+    if (apiType === '1to1' && !isSelf && !memberId) {
+      throw new Error('Enter the user ID of the person to chat with.');
+    }
+    // `members` lists the OTHER people; the creator is `creator_id`.
+    //  - 1:1 → exactly [peer]: the server takes members[0] as the peer, so
+    //    [me, peer] would open a chat with yourself and none with the peer.
+    //  - My Notes → [me]: a 1:1 room whose peer is you (a self-chat).
+    //  - group → the server needs at least one id; [me] starts the group
+    //    with just you (this demo has no add-members screen).
+    //  - open → anyone can join later.
     const members = isSelf
       ? [user.userId]
-      : (apiType === '1to1' ? [user.userId, memberId] : [user.userId]);
+      : (apiType === '1to1' ? [memberId] : [user.userId]);
     // The response is wrapped — `{ room: { id, … } }`.
     const { room: created } = await unitedChat.createRoom({
       room_type:  apiType,
       creator_id: user.userId,
-      room_name:  isSelf ? 'My Notes' : (name || undefined),
+      // 1:1 rooms have no name of their own: the room list names them after
+      // the peer (your self-chat shows as "me").
+      room_name:  apiType === '1to1' ? undefined : (name || undefined),
       members,
     });
     await loadRooms();

@@ -1,20 +1,25 @@
 /**
  * HyperBabel Demo — Chat Room Detail Screen (Enhanced)
  *
- * Full-featured real-time chat with:
- *  - Message history (paginated, reverse-scroll FlatList)
- *  - Real-time subscription (messages, typing, read receipts)
+ * Real-time chat with:
+ *  - Message history (paginated with `next_cursor`)
+ *  - Real-time subscription (new / edited / deleted messages, reactions,
+ *    typing)
  *  - Send text (multi-line input)
- *  - Long-press menu: Reply, React, Delete, Thread
- *  - ReactionPicker (emoji reactions via chatService)
+ *  - Long-press menu: Reply, React, Thread, Delete (own messages)
+ *  - ReactionPicker (add an emoji reaction via chatService)
  *  - ThreadPanel (replies)
- *  - PinBanner (tap to show pinned, owner can unpin)
- *  - MembersSheet (role management)
+ *  - PinBanner — shows the pinned message once it is loaded; unpin where
+ *    allowed (pinning itself is not wired into this screen —
+ *    see unitedChat.pinMessage)
+ *  - MembersSheet (ban, promote / demote sub_admin)
+ *  - Freeze / unfreeze (owner / sub_admin)
  *  - Typing indicator
- *  - Mark as read on focus
+ *  - Mark as read on open and on each new message
  *  - Auto-translation (useTranslation hook)
- *  - Start Video Call
- *  - File attachment (image picker → storageService presign upload)
+ *  - Start Video Call (1:1 and group rooms — open rooms cannot hold calls)
+ *  - Attachments: image / video / file / voice message / location / contact
+ *    (uploads go through storageService's presign flow)
  *
  * Route: app/(main)/chat/[roomId].tsx
  */
@@ -235,12 +240,8 @@ function MessageBubble({ msg, isSelf, translated, onDelete, onReply, onOpenThrea
             </View>
           )}
 
-          {/* Thread count */}
-          {msg.reply_count && msg.reply_count > 0 && (
-            <TouchableOpacity onPress={onOpenThread} style={styles.threadHint}>
-              <Text style={styles.threadHintText}>↩ {msg.reply_count} replies</Text>
-            </TouchableOpacity>
-          )}
+          {/* No reply count here: messages carry no such field. Open the
+              thread from the long-press menu to see the replies. */}
 
           <Text style={styles.bubbleTime}>{dayjs(msg.created_at).format('HH:mm')}</Text>
         </View>
@@ -291,12 +292,14 @@ export default function ChatRoomScreen() {
   const [reactTarget,    setReactTarget]= useState<Message | null>(null);
   const [showMembers,    setShowMembers]= useState(false);
   const [uploading,      setUploading]  = useState(false);
-  // Group call member selector (group / open rooms with 2+ peers)
+  // Group call member selector (group rooms with 2+ other members)
   const [showCallSelector, setShowCallSelector] = useState(false);
   const [callTargets,    setCallTargets] = useState<string[]>([]);
   const [memberSearch,   setMemberSearch] = useState('');
-  // The API allows at most 3 people in a room call — the caller plus 2
-  // (more is rejected with 400 `limit_exceeded`).
+  // A room call holds at most 3 people — the caller plus 2 — and only on
+  // plans that include group video; other plans allow 1:1 calls only. Above
+  // the cap the start call answers 400 (`plan_upgrade_required` /
+  // `limit_exceeded`), shown to the user by the call screen.
   const MAX_CALL_TARGETS = 2;
   // Plus menu (location / contact / file)
   const [showPlusMenu,    setShowPlusMenu]    = useState(false);
@@ -322,6 +325,10 @@ export default function ChatRoomScreen() {
 
   // Current user's role in the room
   const myRole = room?.members?.find((m: RoomMember) => m.user_id === user?.userId)?.role ?? 'member';
+  const isAdmin = myRole === 'owner' || myRole === 'sub_admin';
+  // A frozen room refuses regular members' messages; the owner and
+  // sub_admins can still post.
+  const canPost = !room?.is_frozen || isAdmin;
 
   // The pinned message. The room carries only its id (there is no
   // get-message-by-id route), so resolve it against the loaded history: the
@@ -336,16 +343,18 @@ export default function ChatRoomScreen() {
   const load = useCallback(async () => {
     if (!roomId) return;
     const [r, m] = await Promise.all([
-      unitedChat.getRoom(roomId),
+      // Pass your own id so a 1:1 room resolves the peer's name.
+      unitedChat.getRoom(roomId, user?.userId),
       unitedChat.getMessages(roomId, { limit: 30 }),
     ]);
     setRoom(r);
+    // The API returns newest first — reverse to render oldest → newest.
     const msgs = [...(m.messages ?? [])].reverse();
     setMessages(msgs);
     setNextCursor(m.next_cursor ?? null);
     // Trigger translation in background
     translateMessages(msgs.map((x) => x.id));
-  }, [roomId]);
+  }, [roomId, user?.userId]);
 
   useEffect(() => {
     setLoading(true);
@@ -366,25 +375,27 @@ export default function ChatRoomScreen() {
     const realtimeChannel = room?.realtime_channel;
     if (!channelService || !realtimeChannel || !user) return;
 
-    // The HyperBabel Real-Time backend wraps every per-room broadcast as
-    //   { type: 'message' | 'typing' | …, data: <payload>, timestamp: … }
-    // and publishes it under event-name 'message'. Other event names
-    // ('message.deleted', 'message.updated', …) carry an un-wrapped payload.
+    // Room events arrive under these event names:
+    //   'message'          { type: 'message', data: <Message>, timestamp }
+    //                      { type: 'typing', userId, userName }
+    //   'message.deleted'  { type: 'message.deleted', data: { message_id, deleted_by }, timestamp }
+    //   'message.updated'  { type: 'message.updated', data: { message_id, content, edited_at }, timestamp }
+    //   'reaction'         { type: 'reaction', data: { message_id, emoji, user_id, action }, timestamp }
+    // Call events are ordinary 'message' deliveries with message_type 'video_call'.
     const unsubRoom = channelService.subscribeToRoom(realtimeChannel, ({ message, type }) => {
       const envelope = (message ?? {}) as Record<string, any>;
 
       if (type === 'message' && envelope?.type === 'typing') {
         const fromId = envelope.userId as string | undefined;
         if (!fromId || fromId === user.userId) return;
-        setTyping(fromId);
+        setTyping((envelope.userName as string | undefined) || fromId);
         if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
         typingTimerRef.current = setTimeout(() => setTyping(null), 4000);
         return;
       }
 
-      if (type === 'message.deleted' || (type === 'message' && envelope?.type === 'message.deleted')) {
-        const payload = (envelope?.data ?? envelope) as Record<string, any>;
-        const id = (payload?.message_id ?? payload?.id) as string | undefined;
+      if (type === 'message.deleted') {
+        const id = envelope?.data?.message_id as string | undefined;
         if (!id) return;
         setMessages((prev) =>
           prev.map((m) => m.id === id ? { ...m, deleted_at: new Date().toISOString() } : m),
@@ -392,10 +403,10 @@ export default function ChatRoomScreen() {
         return;
       }
 
-      if (type === 'message.updated' || (type === 'message' && envelope?.type === 'message.updated')) {
-        const payload = (envelope?.data ?? envelope) as Record<string, any>;
-        const id = (payload?.message_id ?? payload?.id) as string | undefined;
-        const content = payload?.content as string | undefined;
+      if (type === 'message.updated') {
+        const payload = (envelope?.data ?? {}) as Record<string, any>;
+        const id = payload.message_id as string | undefined;
+        const content = payload.content as string | undefined;
         if (!id || !content) return;
         setMessages((prev) =>
           prev.map((m) => m.id === id
@@ -410,11 +421,11 @@ export default function ChatRoomScreen() {
       // not the whole map, so apply it to the local map. Reacting yourself
       // already replaced the map with the server's copy from the REST call;
       // this branch is what makes OTHER people's reactions show up live.
-      if (type === 'reaction' || (type === 'message' && envelope?.type === 'reaction')) {
-        const payload = (envelope?.data ?? envelope) as Record<string, any>;
-        const id     = payload?.message_id as string | undefined;
-        const emoji  = payload?.emoji as string | undefined;
-        const uid    = payload?.user_id as string | undefined;
+      if (type === 'reaction') {
+        const payload = (envelope?.data ?? {}) as Record<string, any>;
+        const id     = payload.message_id as string | undefined;
+        const emoji  = payload.emoji as string | undefined;
+        const uid    = payload.user_id as string | undefined;
         if (!id || !emoji || !uid) return;
         const removing = payload?.action === 'remove';
         setMessages((prev) => prev.map((m) => {
@@ -434,15 +445,10 @@ export default function ChatRoomScreen() {
         return;
       }
 
-      // Real chat message — the server wraps it as { type: 'message', data: <Message> }.
-      // Older backends publish the message object directly. Either way the
-      // message's key is `id` (there is no `message_id` on a message).
+      // Chat message — { type: 'message', data: <Message> }. The message's
+      // key is `id` (there is no `message_id` on a message).
       const msg = (
-        type === 'message' && envelope?.type === 'message' && envelope?.data
-          ? envelope.data
-          : envelope?.id
-            ? envelope
-            : null
+        type === 'message' && envelope?.type === 'message' ? envelope.data : null
       ) as Message | null;
       if (!msg || !msg.id || !msg.created_at) return;
       // Live-call captions share this channel, but the message list API never
@@ -517,11 +523,14 @@ export default function ChatRoomScreen() {
 
   // ── Typing ────────────────────────────────────────────────────────────────
 
+  // Typing calls count against the same per-minute request limit as sending
+  // messages, so send at most one every TYPING_THROTTLE_MS while typing.
+  const TYPING_THROTTLE_MS = 3000;
   const handleInputChange = (text: string) => {
     setInputText(text);
-    if (!user || !roomId) return;
+    if (!user || !roomId || !text) return;
     const now = Date.now();
-    if (now - lastTypingAt.current > 1000) {
+    if (now - lastTypingAt.current > TYPING_THROTTLE_MS) {
       lastTypingAt.current = now;
       unitedChat.sendTypingIndicator(roomId, user.userId, user.userName).catch(() => {});
     }
@@ -657,9 +666,10 @@ export default function ChatRoomScreen() {
 
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
-        // The confirm response field is `url` (a signed CDN GET).
-        // Older API versions called it `cdn_url`; fall back for compat.
-        content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
+        // `url` from the confirm response: a public CDN URL behind an
+        // unguessable key (anyone holding the link can open it — treat it
+        // like the message itself).
+        content:      confirmed.url,
         message_type: 'image',
         metadata:     { url: confirmed.url, filename },
       });
@@ -701,7 +711,7 @@ export default function ChatRoomScreen() {
       const confirmed = await uploadFile({ uri: asset.uri, filename, mimeType, fileSize, channelId: roomId });
       await unitedChat.sendMessage(roomId, {
         sender_id:    user.userId,
-        content:      confirmed.url ?? (confirmed as any).cdn_url ?? '',
+        content:      confirmed.url,
         message_type: 'video',
         metadata:     { url: confirmed.url, filename, size_bytes: fileSize },
       });
@@ -873,6 +883,9 @@ export default function ChatRoomScreen() {
   // comma-separated `targets` route param.
   const handleStartCall = () => {
     if (!user || !roomId || !room) return;
+    // Open rooms cannot hold calls (the API answers 400) — the button is
+    // hidden there; this guard is belt and braces.
+    if (room.channel_type === 'open') return;
     // 1:1 rooms ring the other member — no targets needed.
     if (room.channel_type === '1to1') {
       router.push({ pathname: '/video-call/[roomId]', params: { roomId } });
@@ -939,7 +952,15 @@ export default function ChatRoomScreen() {
     );
   }
 
-  const displayName = room?.room_name ?? room?.members?.[0]?.user_name ?? roomId;
+  // Room title. A 1:1 room is named after the PEER — never `members[0]`,
+  // which is whoever joined first (often you). `display_name` (resolved for
+  // the `user_id` passed to getRoom) covers a peer who has left.
+  const peer = room?.channel_type === '1to1'
+    ? room.members?.find((m) => m.user_id !== user?.userId)
+    : undefined;
+  const displayName = room?.channel_type === '1to1'
+    ? (peer?.user_name || room.display_name || peer?.user_id || roomId)
+    : (room?.room_name || room?.display_name || roomId);
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -953,13 +974,16 @@ export default function ChatRoomScreen() {
             <Text style={styles.headerName} numberOfLines={1}>{displayName}</Text>
             {room?.is_frozen && <Text style={styles.frozenBadge}>🔒 Frozen</Text>}
           </View>
-          <TouchableOpacity onPress={handleStartCall} style={styles.headerAction}>
-            <Text style={styles.headerActionIcon}>📹</Text>
-          </TouchableOpacity>
+          {/* Video calls exist in 1:1 and group rooms only — not in open rooms. */}
+          {room && room.channel_type !== 'open' && (
+            <TouchableOpacity onPress={handleStartCall} style={styles.headerAction}>
+              <Text style={styles.headerActionIcon}>📹</Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity onPress={() => setShowMembers(true)} style={styles.headerAction}>
             <Text style={styles.headerActionIcon}>👥</Text>
           </TouchableOpacity>
-          {(myRole === 'owner' || myRole === 'sub_admin') && (
+          {isAdmin && (
             <TouchableOpacity onPress={handleToggleFreeze} style={styles.headerAction}>
               <Text style={styles.headerActionIcon}>{room?.is_frozen ? '🔓' : '🔒'}</Text>
             </TouchableOpacity>
@@ -971,7 +995,7 @@ export default function ChatRoomScreen() {
           <PinBanner
             message={pinnedMessage}
             // Any member may unpin in a 1:1 room; elsewhere owner / sub_admin only.
-            showUnpin={room?.channel_type === '1to1' || myRole === 'owner' || myRole === 'sub_admin'}
+            showUnpin={room?.channel_type === '1to1' || isAdmin}
             onUnpin={async () => {
               if (!user) return;
               try {
@@ -1037,7 +1061,7 @@ export default function ChatRoomScreen() {
         )}
 
         {/* Plus popover (anchored above the input bar) */}
-        {showPlusMenu && !room?.is_frozen && (
+        {showPlusMenu && canPost && (
           <View style={styles.plusMenu}>
             <TouchableOpacity
               style={styles.plusItem}
@@ -1086,7 +1110,7 @@ export default function ChatRoomScreen() {
 
         {/* Input bar */}
         <View style={styles.inputBar}>
-          {!room?.is_frozen && (
+          {canPost && (
             <TouchableOpacity
               onPress={() => setShowPlusMenu((v) => !v)}
               style={styles.attachBtn}
@@ -1097,13 +1121,13 @@ export default function ChatRoomScreen() {
           )}
           <TextInput
             style={styles.input}
-            placeholder={room?.is_frozen ? '🔒 Room is frozen' : 'Message…'}
+            placeholder={canPost ? 'Message…' : '🔒 Room is frozen'}
             placeholderTextColor={colors.textMuted}
             value={inputText}
             onChangeText={handleInputChange}
             multiline
             maxLength={2000}
-            editable={!room?.is_frozen}
+            editable={canPost}
           />
           <TouchableOpacity
             style={[styles.sendBtn, (!inputText.trim() || sending) && styles.sendBtnDisabled]}
@@ -1144,7 +1168,7 @@ export default function ChatRoomScreen() {
         onClose={() => setShowMembers(false)}
       />
 
-      {/* Group call member selector (group / open rooms only) */}
+      {/* Group call member selector (group rooms only) */}
       <Modal
         visible={showCallSelector}
         animationType="slide"

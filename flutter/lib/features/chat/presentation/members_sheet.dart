@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import '../../../core/network/united_chat_repository.dart';
 import '../../../core/theme/app_theme.dart';
 
-/// Bottom sheet that lists every member of a room with their role and lets
-/// owner / sub_admin moderate them (ban, mute self).
+/// Bottom sheet that lists every member of a room with their role. The owner
+/// can promote / demote sub_admins and ban anyone but the owner; a sub_admin
+/// can ban plain members only (the server answers 403 otherwise). Anyone can
+/// mute the room's notifications for themselves.
 class MembersSheet extends StatefulWidget {
   const MembersSheet({
     super.key,
@@ -84,8 +86,8 @@ class _MembersSheetState extends State<MembersSheet> {
     if (userId == null || userId == widget.currentUserId) return;
     final ok = await _confirm(
       title: 'Ban member?',
-      body: 'Banning ${member['user_name'] ?? userId} removes them from the '
-          'room and prevents them from rejoining until you unban.',
+      body: 'Banning ${member['user_name'] ?? userId} removes them from this '
+          'room and keeps them out until the ban is lifted.',
       destructive: true,
     );
     if (ok != true) return;
@@ -247,7 +249,13 @@ class _MembersSheetState extends State<MembersSheet> {
     final userName = (m['user_name'] ?? userId) as String;
     final role = (m['role'] ?? 'member') as String;
     final isSelf = userId == widget.currentUserId;
-    final canActOnThisRow = _canModerate && !isSelf && role != 'owner';
+    // Same rule as the server: nobody bans the owner, and a sub_admin can
+    // ban members only.
+    final canBan = _canModerate &&
+        !isSelf &&
+        role != 'owner' &&
+        (_isOwner || role == 'member');
+    final canActOnThisRow = canBan || (_isOwner && !isSelf && role != 'owner');
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: AppTheme.primaryAccent.withOpacity(0.25),
@@ -292,14 +300,15 @@ class _MembersSheetState extends State<MembersSheet> {
                       Text('Demote to member'),
                     ]),
                   ),
-                const PopupMenuItem(
-                  value: 'ban',
-                  child: Row(children: [
-                    Icon(Icons.block, color: Colors.redAccent, size: 18),
-                    SizedBox(width: 8),
-                    Text('Ban from room'),
-                  ]),
-                ),
+                if (canBan)
+                  const PopupMenuItem(
+                    value: 'ban',
+                    child: Row(children: [
+                      Icon(Icons.block, color: Colors.redAccent, size: 18),
+                      SizedBox(width: 8),
+                      Text('Ban from room'),
+                    ]),
+                  ),
               ],
             )
           : null,

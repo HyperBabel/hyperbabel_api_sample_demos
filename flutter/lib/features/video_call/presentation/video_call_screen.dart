@@ -130,7 +130,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
       // Publisher tokens are session-scoped: the server checks that this user is
       // a participant and signs the token with the session's channel + uid, so
       // we join with what the response returns.
-      final sessionId = (session['id'] ?? session['session_id']) as String?;
+      final sessionId = session['id'] as String?;
       if (sessionId == null) throw Exception('Session has no id.');
       _sessionId = sessionId;
       // `participants[]` marks who started the call (`is_caller`).
@@ -222,7 +222,7 @@ class _VideoCallScreenState extends State<VideoCallScreen> {
   /// chat screen uses. Cancelling removes only this screen's listener.
   Future<void> _listenForCallEvents() async {
     try {
-      final room = await _chat.getRoom(widget.roomId);
+      final room = await _chat.getRoom(widget.roomId, userId: _userId);
       final channel = room['realtime_channel'] as String?;
       if (channel == null || channel.isEmpty || _closing) return;
       final rt = HyperBabelRealtimeClient();

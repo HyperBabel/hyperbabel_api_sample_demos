@@ -38,6 +38,7 @@ import {
   isFirebaseReady,
   signInWithEmailAndExchange,
   signInAnonymouslyAndExchange,
+  saveDisplayName,
   type FirebaseExchangeResult,
 } from '@/services/firebaseAuthService';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
@@ -74,8 +75,8 @@ export default function LoginScreen() {
     result:         FirebaseExchangeResult,
     fallbackName:   string,
   ) => {
-    const resolvedName = fallbackName.trim()
-      || result.external_user_id.slice(0, 8);
+    const typedName    = fallbackName.trim();
+    const resolvedName = typedName || result.external_user_id.slice(0, 8);
     await login({
       userId:       result.external_user_id,
       userName:     resolvedName,
@@ -85,6 +86,12 @@ export default function LoginScreen() {
       refreshToken: result.refresh_token,
       expiresAt:    result.expires_at,
     });
+    // Save the typed name on the server too — otherwise other members see
+    // the name HyperBabel took from Firebase (often the email address).
+    if (typedName) {
+      await saveDisplayName(typedName).catch((err) =>
+        console.warn('[auth] could not save the display name', err?.message ?? err));
+    }
     router.replace('/(main)/dashboard');
   };
 

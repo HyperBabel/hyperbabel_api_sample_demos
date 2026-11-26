@@ -70,7 +70,8 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const receiveCallInvite = useCallback(
     (call: IncomingCallData, busyCallback: () => void) => {
       if (isInCallRef.current) {
-        // User is already in a call — silently send CALL_BUSY
+        // Already in a call — don't ring; the listener's callback declines
+        // the invite as busy (the caller then sees `call_busy`).
         busyCallback();
         return;
       }

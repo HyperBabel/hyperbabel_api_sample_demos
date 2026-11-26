@@ -217,13 +217,11 @@ private fun ListView(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
     else LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        items(sessions, key = {
-            it["session_id"]?.jsonPrimitive?.content
-                ?: it["id"]?.jsonPrimitive?.content
-                ?: ""
-        }) { session ->
-            val sid = session["session_id"]?.jsonPrimitive?.content
-                ?: session["id"]?.jsonPrimitive?.content ?: ""
+        // GET /stream/sessions → { sessions: [{ id, title, status,
+        //   host: { user_id, display_name }, viewer_count, started_at, created_at }] }
+        items(sessions, key = { it["id"]?.jsonPrimitive?.content ?: "" }) { session ->
+            val sid = session["id"]?.jsonPrimitive?.content ?: ""
+            val host = session["host"]?.jsonObject
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
                 modifier = Modifier.fillMaxWidth().clickable { onWatch(sid) },
@@ -234,7 +232,7 @@ private fun ListView(
                         style = MaterialTheme.typography.titleSmall,
                     )
                     Text(
-                        "Host: ${session["host_name"]?.jsonPrimitive?.content ?: session["host_user_id"]?.jsonPrimitive?.content ?: "—"}",
+                        "Host: ${host?.get("display_name")?.jsonPrimitive?.content ?: host?.get("user_id")?.jsonPrimitive?.content ?: "—"}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -331,8 +329,8 @@ private suspend fun goLive(
         }
         val resp = ApiClient.stream.createSession(payload)
         val detail = resp["session"]?.jsonObject ?: resp
+        // The session id is `session.id` — there is no `session_id` field.
         val sid = detail["id"]?.jsonPrimitive?.content
-            ?: detail["session_id"]?.jsonPrimitive?.content
             ?: return onError("Server did not return a session id.")
         val appId = detail["app_id"]?.jsonPrimitive?.content
             ?: return onError("Server did not return app_id.")

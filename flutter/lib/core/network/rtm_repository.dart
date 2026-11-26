@@ -1,8 +1,11 @@
 import 'package:dio/dio.dart';
 import 'api_client.dart';
+import 'api_error.dart';
 
-/// Token issuance for HyperBabel Real-Time and HyperBabel Video. Both
-/// endpoints take an API-key Bearer and return short-lived signed tokens.
+/// Token issuance for HyperBabel Video. `POST /rtm/rtc/token` accepts the
+/// signed-in user's session token (customer JWT) — no organization API key
+/// — and returns a short-lived signed token. (The HyperBabel Real-Time token,
+/// `POST /rtm/token`, is fetched by `HyperBabelRealtimeClient`.)
 class RtmRepository {
   final ApiClient _apiClient = ApiClient();
 
@@ -36,7 +39,7 @@ class RtmRepository {
       );
       return response.data as Map<String, dynamic>;
     } on DioException catch (e) {
-      throw Exception('Failed to fetch RTC token: ${e.message}');
+      throw Exception('Failed to fetch RTC token: ${apiErrorMessage(e)}');
     }
   }
 }

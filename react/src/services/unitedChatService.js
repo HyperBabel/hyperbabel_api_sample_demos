@@ -23,11 +23,13 @@ const BASE = '/unitedchat';
  *
  * @param {object} data
  * @param {'1to1'|'group'|'open'} data.room_type
- * @param {string}  data.creator_id
+ * @param {string}  data.creator_id       — You
  * @param {string}  [data.room_name]      — Display name (group/open only)
- * @param {string[]} [data.members]       — User IDs to invite
+ * @param {string[]} [data.members]       — User IDs to invite. For '1to1' pass
+ *   exactly `[peerUserId]` — the server takes members[0] as the peer and
+ *   `creator_id` as you; `[me, peer]` would create a chat with yourself.
  * @param {number}  [data.max_members=100]
- * @returns {Promise<object>} Created room (or existing 1:1 if duplicate)
+ * @returns {Promise<{ room: object }>} Created room (or existing 1:1 if duplicate)
  */
 export const createRoom = (data) => api.post(`${BASE}/rooms`, data);
 
@@ -37,7 +39,9 @@ export const createRoom = (data) => api.post(`${BASE}/rooms`, data);
  * @param {string} userId
  * @param {{ limit?: number, cursor?: string, lang?: string }} [params]
  *   Pass `lang` (e.g. `'ko'`, `'ja'`) to enable description auto-translation.
- *   Translations are cached in the DB — no extra cost on repeated calls.
+ *   Translations are cached server-side — no extra cost on repeated calls.
+ *   Each row's `room_name` is already resolved for this user (your custom
+ *   name, else the 1:1 peer's name, else the room name).
  *   If omitted, `navigator.language.slice(0,2)` is used automatically.
  * @returns {Promise<{ rooms: object[], open_rooms: object[] }>}
  */
@@ -49,9 +53,20 @@ export const listRooms = (userId, params = {}) => {
 
 /**
  * Get full room details including member list with roles.
+ *
+ * Pass your own `userId`: the server then resolves the names for YOU —
+ * `custom_name` (a name you set with updateRoomName) and, for a 1:1 room,
+ * `display_name` = the peer's name. Without it a 1:1 room only has its
+ * internal channel name to show, and a renamed room loses its name on reload.
+ * `room_name` is the group/open room's own name (null for 1:1);
+ * `members[].user_name` carries each member's current name.
+ *
  * @param {string} roomId
+ * @param {string} userId — The signed-in user
+ * @returns {Promise<{ room: object }>}
  */
-export const getRoom = (roomId) => api.get(`${BASE}/rooms/${roomId}`);
+export const getRoom = (roomId, userId) =>
+  api.get(`${BASE}/rooms/${roomId}`, userId ? { user_id: userId } : undefined);
 
 /**
  * Set a per-user custom display name for a room.
@@ -73,9 +88,12 @@ export const updateRoomDescription = (roomId, userId, description) =>
 
 /**
  * Join an open room using an 8-character invite code (without knowing the room ID).
+ * Joining a room you are already in is fine (no second join notice).
  * @param {string} inviteCode
- * @param {string} userId
+ * @param {string} userId — The signed-in user
  * @param {string} [displayName]
+ * @returns {Promise<{ success: boolean, room_id: string, room_name: string, realtime_channel: string }>}
+ *   404 = unknown code; 403 `banned` / `room_full`.
  */
 export const joinByCode = (inviteCode, userId, displayName) =>
   api.post(`${BASE}/rooms/join-by-code`, { invite_code: inviteCode, user_id: userId, display_name: displayName });
@@ -91,7 +109,7 @@ export const joinRoom = (roomId, userId, displayName) =>
   api.post(`${BASE}/rooms/${roomId}/join`, { user_id: userId, display_name: displayName });
 
 /**
- * Leave a room (owner cannot leave — must transfer ownership first).
+ * Leave a room.
  * @param {string} roomId
  * @param {string} userId
  * @param {string} [displayName] — Shown in the system leave message broadcasted to all remaining members
@@ -119,6 +137,9 @@ export const markAsRead = (roomId, userId) =>
  * @param {'text'|'image'|'file'|'video'|'audio'|'system'} [data.message_type='text']
  * @param {string} [data.reply_to]    — Parent message ID for thread replies
  * @param {object} [data.metadata]    — Extra data (file URL, thumbnail, etc.)
+ * @returns {Promise<{ message: object }>} The stored message. The same message
+ *   also arrives on the room's real-time channel — for the sender too — so
+ *   swap an optimistic placeholder for it by id instead of adding it twice.
  */
 export const sendMessage = (roomId, data) =>
   api.post(`${BASE}/rooms/${roomId}/messages`, data);
@@ -126,8 +147,15 @@ export const sendMessage = (roomId, data) =>
 /**
  * Fetch paginated message history.
  *
+ * 🔴 Messages come NEWEST FIRST. Reverse each page before rendering
+ * oldest → newest, and append real-time messages at the end. For older
+ * history pass the previous page's `next_cursor` as `cursor` while
+ * `has_more` is true, and prepend the (reversed) result.
+ *
  * @param {string} roomId
  * @param {{ cursor?: string, limit?: number, created_at_gte?: string, created_at_lte?: string }} [params]
+ * @returns {Promise<{ messages: object[], next_cursor: string|null, has_more: boolean,
+ *   read_statuses: object[], reply_snapshots: Object<string, object> }>}
  */
 export const getMessages = (roomId, params = {}) =>
   api.get(`${BASE}/rooms/${roomId}/messages`, params);
@@ -150,6 +178,33 @@ export const deleteMessage = (roomId, messageId, userId) =>
  */
 export const editMessage = (roomId, messageId, userId, content) =>
   api.put(`${BASE}/rooms/${roomId}/messages/${messageId}`, { user_id: userId, content });
+
+/**
+ * Add an emoji reaction to a message (idempotent for the same user + emoji).
+ * Everyone in the room also receives a `reaction` real-time event carrying
+ * the delta `{ message_id, emoji, user_id, action: 'add' }`.
+ *
+ * @param {string} roomId
+ * @param {string} messageId
+ * @param {string} userId — The signed-in user
+ * @param {string} emoji
+ * @returns {Promise<{ reactions: Object<string, string[]> }>} The message's full
+ *   reaction map ({ emoji: [userId, …] }) after the change
+ */
+export const addReaction = (roomId, messageId, userId, emoji) =>
+  api.post(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
+
+/**
+ * Remove your emoji reaction from a message. Same response and real-time
+ * event as addReaction (with `action: 'remove'`).
+ *
+ * @param {string} roomId
+ * @param {string} messageId
+ * @param {string} userId — The signed-in user
+ * @param {string} emoji
+ */
+export const removeReaction = (roomId, messageId, userId, emoji) =>
+  api.delete(`${BASE}/rooms/${roomId}/messages/${messageId}/reactions`, { user_id: userId, emoji });
 
 /**
  * Batch-translate multiple messages into the target language.
@@ -411,6 +466,14 @@ export const updateTypingPrefs = (roomId, userId, sendEnabled, recvEnabled) =>
 /**
  * Broadcast a typing event for a United Chat room.
  * Backend checks send/recv prefs and only publishes via HyperBabel Real-Time when appropriate.
+ *
+ * 🔴 THROTTLE IT — never call this per keystroke. It counts against the same
+ * per-user, per-minute rate limit as every other call (60/min on the Free
+ * plan), and a 429 here also blocks that user's next message send. Send at
+ * most one call every ~3 s while the user keeps typing (ChatInput does this).
+ * There is no "stopped typing" call: receivers hide the indicator a few
+ * seconds after the last event, or as soon as that user's message arrives.
+ *
  * @param {string} roomId
  * @param {string} userId
  * @param {string} [displayName]

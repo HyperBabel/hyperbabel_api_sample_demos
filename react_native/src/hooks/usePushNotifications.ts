@@ -1,19 +1,22 @@
 /**
  * HyperBabel Demo — usePushNotifications Hook
  *
- * Requests permission for push notifications and registers the
- * FCM/APNs token with the HyperBabel backend.
+ * Requests permission for push notifications and registers the FCM
+ * registration token with HyperBabel — on iOS as well as Android (HyperBabel
+ * delivers to FCM tokens only; Firebase Messaging maps them to APNs on iOS).
  * Also sets up a foreground handler for incoming messages.
+ *
+ * The token is released at sign-out by AuthContext.logout()
+ * (POST /customer/logout with `push_tokens`).
  */
 
 import { useEffect, useCallback } from 'react';
-import { Platform, Alert } from 'react-native';
+import { Platform } from 'react-native';
 import messaging from '@react-native-firebase/messaging';
 import * as pushService from '@/services/pushService';
+import { PUSH_TOKEN_CACHE_KEY as TOKEN_CACHE_KEY } from '@/services/pushService';
 import { useAuth } from '@/context/AuthContext';
 import * as SecureStore from 'expo-secure-store';
-
-const TOKEN_CACHE_KEY = 'hb_push_token_cache';
 
 export function usePushNotifications() {
   const { user } = useAuth();
@@ -41,7 +44,7 @@ export function usePushNotifications() {
 
       if (!enabled || !mounted) return;
 
-      // 2. Get the token
+      // 2. Get the FCM registration token (iOS included)
       try {
         const token = await messaging().getToken();
         if (token) {

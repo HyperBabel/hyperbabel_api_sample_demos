@@ -63,9 +63,9 @@ android/key.properties
 # members can copy it to .env.
 !.env.example
 
-# Firebase native config — developer-supplied secrets, never commit.
-# The build-step copies into android/app/ and ios/Runner/ are also
-# gitignored implicitly via /build/, /android/build/, /ios/Pods/ etc.
+# Firebase native config — developer-supplied, never commit. The copies
+# installed into android/app/ and ios/Runner/ (firebase/README.md) are
+# ignored too.
 firebase/google-services.json
 firebase/GoogleService-Info.plist
 android/app/google-services.json

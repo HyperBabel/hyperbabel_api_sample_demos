@@ -30,7 +30,7 @@ data class ReactionsResponse(
 )
 
 interface ChatService {
-    @POST("api/v1/unitedchat/rooms/{roomId}/messages/{messageId}/reactions")
+    @POST("unitedchat/rooms/{roomId}/messages/{messageId}/reactions")
     suspend fun addReaction(
         @Path("roomId") roomId: String,
         @Path("messageId") messageId: String,
@@ -39,7 +39,7 @@ interface ChatService {
 
     @HTTP(
         method = "DELETE",
-        path = "api/v1/unitedchat/rooms/{roomId}/messages/{messageId}/reactions",
+        path = "unitedchat/rooms/{roomId}/messages/{messageId}/reactions",
         hasBody = true,
     )
     suspend fun removeReaction(

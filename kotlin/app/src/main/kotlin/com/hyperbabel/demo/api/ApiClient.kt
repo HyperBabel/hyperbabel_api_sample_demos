@@ -10,15 +10,30 @@
  * MUST NOT ship in the app binary. The client throws on any request
  * that would carry one — that catches accidental copies from
  * server-side examples before they reach production.
+ *
+ * Base URL: `Session.apiUrl` already ends in `/api/v1` (default
+ * `https://api.hyperbabel.com/api/v1`). Every Retrofit path in the
+ * service interfaces is RELATIVE to it — `unitedchat/rooms`, never
+ * `api/v1/unitedchat/rooms` (that would request /api/v1/api/v1/… → 404)
+ * and never a leading `/` (that would drop the /api/v1 segment).
+ *
+ * Errors: every non-2xx answer is thrown as [ApiException], whose message
+ * keeps the server's own error text (see [parseApiError]).
  */
 package com.hyperbabel.demo.api
 
 import com.hyperbabel.demo.BuildConfig
 import com.hyperbabel.demo.data.SecureStore
 import com.hyperbabel.demo.data.Session
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.Authenticator
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,7 +44,19 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * A non-2xx HyperBabel API answer. [message] is "HTTP <status>: <server
+ * message>"; [code] is the machine-readable `error.code` when the server
+ * sent one (e.g. `plan_upgrade_required`, `forbidden`).
+ */
+class ApiException(
+    val status: Int,
+    val code: String?,
+    message: String,
+) : IOException(message)
 
 object ApiClient {
 
@@ -53,10 +80,53 @@ object ApiClient {
         val expires_at:    Long,
     )
 
+    @Serializable
+    private data class LogoutRequest(
+        val refresh_token: String,
+        val push_tokens:   List<String>,
+    )
+
     /** Shared inflight refresh so a burst of expirations only triggers
      *  a single POST /customer/refresh round-trip. */
     private val refreshInflight = AtomicReference<String?>(null)
     private val refreshLock = Any()
+
+    // ── Error parsing ───────────────────────────────────────────────────
+
+    /**
+     * Turn a non-2xx answer into an [ApiException] that keeps the server's
+     * message. The API uses two error shapes — handle both:
+     *
+     *   { "error": { "code": "forbidden", "message": "…" } }
+     *   { "error": "Firebase project \"…\" is not registered with HyperBabel" }
+     */
+    fun parseApiError(status: Int, body: String?): ApiException {
+        val error = runCatching {
+            (json.parseToJsonElement(body.orEmpty()) as? JsonObject)?.get("error")
+        }.getOrNull()
+        var code: String? = null
+        val serverMessage: String? = when (error) {
+            is JsonObject -> {
+                code = (error["code"] as? JsonPrimitive)?.contentOrNull
+                (error["message"] as? JsonPrimitive)?.contentOrNull ?: code
+            }
+            is JsonPrimitive -> error.contentOrNull
+            else -> null
+        }
+        val text = serverMessage
+            ?: body?.trim()?.take(200)?.takeIf { it.isNotEmpty() }
+            ?: "request failed"
+        return ApiException(status, code, "HTTP $status: $text")
+    }
+
+    /** Outermost interceptor: runs after the 401 refresh retry has settled. */
+    private val errorInterceptor = Interceptor { chain ->
+        val response = chain.proceed(chain.request())
+        if (response.isSuccessful) return@Interceptor response
+        val body = runCatching { response.peekBody(64 * 1024L).string() }.getOrNull()
+        response.close()
+        throw parseApiError(response.code, body)
+    }
 
     // ── Startup guard ───────────────────────────────────────────────────
 
@@ -114,6 +184,43 @@ object ApiClient {
         }
     }
 
+    // ── Logout ──────────────────────────────────────────────────────────
+
+    /**
+     * Sign this device out on the server: `POST /customer/logout
+     * { refresh_token, push_tokens }`. It revokes the session behind the
+     * refresh token (which otherwise stays valid for 30 days) and deletes the
+     * push tokens this device registered, so the device stops receiving the
+     * previous user's notifications.
+     *
+     * Call it BEFORE clearing local state — it needs the stored refresh token.
+     * It takes no Authorization header (the refresh token in the body is the
+     * credential), so it goes out on the bare client. Best-effort: any failure
+     * is ignored so sign-out always completes locally.
+     */
+    suspend fun logout(pushTokens: List<String>) {
+        val refreshToken = SecureStore.read(SecureStore.KEY_REFRESH_TOKEN) ?: return
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val body = json.encodeToString(
+                    LogoutRequest.serializer(),
+                    LogoutRequest(refresh_token = refreshToken, push_tokens = pushTokens.distinct()),
+                ).toRequestBody("application/json".toMediaType())
+                val req = Request.Builder()
+                    .url("${Session.apiUrl.trimEnd('/')}/customer/logout")
+                    .post(body)
+                    .build()
+                // Bounded, so a slow network cannot hold the user on the screen.
+                bareClient.newBuilder()
+                    .callTimeout(5, TimeUnit.SECONDS)
+                    .build()
+                    .newCall(req)
+                    .execute()
+                    .close()
+            }
+        }
+    }
+
     // ── HTTP stack ──────────────────────────────────────────────────────
 
     private val bareClient: OkHttpClient by lazy {
@@ -124,6 +231,7 @@ object ApiClient {
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .addInterceptor(errorInterceptor)
             .addInterceptor { chain ->
                 val token = currentAccessToken()
                 val req = if (token != null) {
@@ -166,8 +274,8 @@ object ApiClient {
     val rtm:        RtmService        by lazy { retrofit.create(RtmService::class.java) }
     val chat:       ChatService       by lazy { retrofit.create(ChatService::class.java) }
     val users:      UsersService      by lazy { retrofit.create(UsersService::class.java) }
+    val profile:    ProfileService    by lazy { retrofit.create(ProfileService::class.java) }
     val push:       PushService       by lazy { retrofit.create(PushService::class.java) }
-    val auth:       AuthService       by lazy { retrofit.create(AuthService::class.java) }
     val stream:     StreamService     by lazy { retrofit.create(StreamService::class.java) }
     val storage:    StorageService    by lazy { retrofit.create(StorageService::class.java) }
 

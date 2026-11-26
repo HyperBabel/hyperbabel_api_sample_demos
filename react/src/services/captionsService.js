@@ -19,6 +19,10 @@
  *   4. Render caption messages:
  *        partial / final        — original-language track
  *        partial_tr / final_tr  — translation track (only when `translate` set)
+ *      Errors arrive as { kind: 'error', fatal, message }:
+ *        fatal: false — a transient hiccup; the session KEEPS RUNNING, so
+ *                       show it and keep streaming
+ *        fatal: true  — the session is over (e.g. allowance used up); stop
  *   5. Send the text frame "EOS" to finish — usage is metered on close.
  *
  * Billing note: the platform meters the audio you actually SEND (per minute,
@@ -103,7 +107,9 @@ export async function getSpokenLanguages() {
  *                                    least one of sessionId / roomId.
  * @param {function} opts.onCaption   ({ kind, text, lang }) per caption message.
  * @param {function} [opts.onStatus]  ('connecting'|'ready'|'closed') lifecycle.
- * @param {function} [opts.onError]   (message) on relay/socket errors.
+ * @param {function} [opts.onError]   (message, { fatal }) on relay/socket errors.
+ *                                      fatal=false: captions keep running;
+ *                                      fatal=true: the session has stopped.
  * @returns {{ stop: () => void }}    Handle — call stop() to end the session
  *                                    (flushes the last utterance and meters usage).
  */
@@ -115,6 +121,9 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
   let stopped = false;
 
   const emitStatus = (s) => { try { onStatus?.(s); } catch { /* listener error — ignore */ } };
+  const emitError = (message, fatal) => {
+    try { onError?.(message, { fatal }); } catch { /* listener error — ignore */ }
+  };
 
   const teardownAudio = () => {
     try { ctx?.close(); } catch { /* already closed */ }
@@ -185,17 +194,22 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
           case 'final_tr':
             try { onCaption?.(msg); } catch { /* listener error — ignore */ }
             break;
-          case 'error':
-            try { onError?.(String(msg.message ?? msg.code ?? 'captions error')); } catch { /* ignore */ }
-            stop();
+          case 'error': {
+            // Only `fatal: true` ends the session. `fatal: false` is a
+            // transient error the relay recovers from — stopping here would
+            // turn a hiccup into a dead caption strip.
+            const fatal = msg.fatal === true;
+            emitError(String(msg.message ?? msg.code ?? 'captions error'), fatal);
+            if (fatal) stop();
             break;
+          }
           default:
             break; // keepalive + forward-compatible unknown kinds
         }
       };
       ws.onclose = () => { if (!stopped) stop(); };
       ws.onerror = () => {
-        try { onError?.('Could not reach the speech-translation service.'); } catch { /* ignore */ }
+        emitError('Could not reach the speech-translation service.', true);
         if (!stopped) stop();
       };
 
@@ -249,7 +263,7 @@ export function startLiveCaptions({ lang, translateTo, sessionId, roomId, onCapt
       }
     } catch (err) {
       if (stopped) return; // stale failure of an already-stopped session — silent
-      try { onError?.(err?.message || 'Failed to start live captions.'); } catch { /* ignore */ }
+      emitError(err?.message || 'Failed to start live captions.', true);
       stop();
     }
   })();

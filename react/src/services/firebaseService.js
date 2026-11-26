@@ -18,6 +18,17 @@
  * Receive flow (background — when app tab is closed):
  *  → firebase-messaging-sw.js service worker handles delivery
  *
+ * What a browser token receives: chat-message pushes (`type: 'message'`).
+ * Incoming-call pushes (`type: 'CALL_INVITE'`) go to Android and iOS app
+ * tokens only — a web token does not get them. In the browser an incoming
+ * call rings through the real-time private channel while a tab is open
+ * (IncomingCallListener), not through push.
+ *
+ * Sign-out: the token registered here is remembered in localStorage so
+ * AuthContext.logout() can hand it to POST /customer/logout, which deletes
+ * it server-side — the next user of this browser does not get the previous
+ * user's notifications.
+ *
  * Firebase env vars (all optional — push is silently disabled if absent):
  *  VITE_FIREBASE_API_KEY, VITE_FIREBASE_AUTH_DOMAIN, VITE_FIREBASE_PROJECT_ID,
  *  VITE_FIREBASE_STORAGE_BUCKET, VITE_FIREBASE_MESSAGING_SENDER_ID,
@@ -30,6 +41,14 @@ import * as pushService from './pushService';
 let firebaseApp       = null;
 let firebaseMessaging = null;
 let onMessageUnsubscribe = null; // cleanup function for foreground listener
+
+/** The FCM token this browser registered with HyperBabel (read at sign-out). */
+const STORAGE_KEY_PUSH_TOKEN = 'hb_push_token';
+
+/** @returns {string|null} The push token this device registered, if any. */
+export const getRegisteredPushToken = () => {
+  try { return localStorage.getItem(STORAGE_KEY_PUSH_TOKEN); } catch { return null; }
+};
 
 // ── Firebase initialisation ───────────────────────────────────────────────
 
@@ -98,21 +117,19 @@ const initFirebase = async () => {
 // ── Foreground message handler ────────────────────────────────────────────
 
 /**
- * Build the URL a notification tap should navigate to, based on the
- * structured data fields included by HyperBabel's Push API.
- *
- * HyperBabel sends these data fields:
- *   type        — 'chat.message' | 'video.call' | 'CALL_INVITE' | 'stream.started' | ...
- *   room_id     — chat or video room ID
- *   session_id  — live stream session ID
+ * Push `data.type` values HyperBabel sends:
+ *   'message'       — new chat message: room_id, message_id, sender_id
+ *   'read'          — silent sync (the user read the room on another device):
+ *                     room_id, badge. Nothing to show.
+ *   'CALL_INVITE'   — incoming call: session_id, room_id, caller_name, …
+ *                     (sent to Android / iOS app tokens, not to web tokens)
+ *   'call_canceled' — the call stopped ringing. Nothing to show.
  */
+const SILENT_PUSH_TYPES = new Set(['read', 'call_canceled']);
+
+/** Build the URL a notification tap should navigate to. */
 const buildClickUrl = (data = {}) => {
-  if (data.type === 'video.call' || data.type === 'CALL_INVITE') {
-    return data.room_id ? `/video-call/${data.room_id}` : '/dashboard';
-  }
-  if (data.type === 'stream.started') {
-    return data.session_id ? `/live-stream/viewer/${data.session_id}` : '/dashboard';
-  }
+  // Web tokens get chat-message pushes only, so a tap opens the room.
   if (data.room_id) return `/chat/${data.room_id}`;
   return '/dashboard';
 };
@@ -131,6 +148,7 @@ const startForegroundListener = async (messaging) => {
   onMessageUnsubscribe = onMessage(messaging, (payload) => {
     const notification = payload.notification || {};
     const data         = payload.data         || {};
+    if (SILENT_PUSH_TYPES.has(data.type)) return; // sync-only push — nothing to show
 
     const title   = notification.title || data.title || 'HyperBabel';
     const body    = notification.body  || data.body  || 'You have a new notification.';
@@ -216,6 +234,7 @@ export const registerForPushNotifications = async (userId, platform = 'web') => 
 
     // 5. Register token with HyperBabel Push API
     await pushService.registerToken(userId, fcmToken, platform);
+    try { localStorage.setItem(STORAGE_KEY_PUSH_TOKEN, fcmToken); } catch { /* storage unavailable */ }
 
     console.info('[HyperBabel Push] Push notifications registered successfully');
 
@@ -230,18 +249,28 @@ export const registerForPushNotifications = async (userId, platform = 'web') => 
 };
 
 /**
- * Unregister push notifications for the current user.
- * Call on logout to stop receiving push messages on this device.
+ * Stop handling pushes in this tab and forget the remembered token. Called by
+ * AuthContext.logout() AFTER POST /customer/logout has deleted the token
+ * server-side.
+ */
+export const stopPushNotifications = () => {
+  if (typeof onMessageUnsubscribe === 'function') {
+    onMessageUnsubscribe();
+    onMessageUnsubscribe = null;
+  }
+  try { localStorage.removeItem(STORAGE_KEY_PUSH_TOKEN); } catch { /* storage unavailable */ }
+};
+
+/**
+ * Unregister push notifications for the current user while staying signed in
+ * (e.g. a "notifications off" switch). Sign-out does not need this —
+ * POST /customer/logout removes the token.
  *
  * @param {string} userId
  * @param {string} token — FCM token to remove (returned by registerForPushNotifications)
  */
 export const unregisterPushNotifications = async (userId, token) => {
-  // Stop foreground listener
-  if (typeof onMessageUnsubscribe === 'function') {
-    onMessageUnsubscribe();
-    onMessageUnsubscribe = null;
-  }
+  stopPushNotifications();
 
   if (!token) return;
   try {
@@ -251,4 +280,9 @@ export const unregisterPushNotifications = async (userId, token) => {
   }
 };
 
-export default { registerForPushNotifications, unregisterPushNotifications };
+export default {
+  registerForPushNotifications,
+  unregisterPushNotifications,
+  stopPushNotifications,
+  getRegisteredPushToken,
+};

@@ -12,6 +12,13 @@
  *    See src/services/streamService.ts for the full explanation.
  *
  * Route: /live-stream/viewer/[sessionId]
+ * Params:
+ *   chatRoomId — (optional) an open United Chat room your backend created
+ *                for this broadcast. A stream session has no chat room of
+ *                its own, so without this param the chat overlay is hidden.
+ *
+ * The viewer-token response is FLAT (`token`, `uid`, `channel_name`,
+ * `app_id`, `title`, `host_display_name`, …) and `token` is subscribe-only.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -26,18 +33,21 @@ import { StreamChat }  from '@/components/stream/StreamChat';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 import { RtcClient, RtcSurfaceView, VideoSourceType } from '@/services/rtcService';
 import * as streamService from '@/services/streamService';
-import type { StreamSession } from '@/services/streamService';
+import type { ViewerToken } from '@/services/streamService';
 
 export default function LiveStreamViewerScreen() {
-  const { sessionId } = useLocalSearchParams<{ sessionId: string }>();
+  const { sessionId, chatRoomId } = useLocalSearchParams<{ sessionId: string; chatRoomId?: string }>();
   const { user }      = useAuth();
 
-  const [session,   setSession]   = useState<StreamSession | null>(null);
+  const [stream,    setStream]    = useState<ViewerToken | null>(null);
   const [hostUid,   setHostUid]   = useState<number | null>(null);
   const [loading,   setLoading]   = useState(true);
   const [showChat,  setShowChat]  = useState(true);
 
   const rtcRef = useRef<RtcClient | null>(null);
+  // Viewers subscribe only, so the one remote publisher is the host. Kept in
+  // a ref: the RTC callbacks are created once and would see a stale state.
+  const hostUidRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!sessionId || !user) return;
@@ -45,30 +55,34 @@ export default function LiveStreamViewerScreen() {
 
     (async () => {
       try {
-        const { session: s } = await streamService.getViewerToken(sessionId, {
+        // Flat response — not wrapped in `session`.
+        const s = await streamService.getViewerToken(sessionId, {
           user_id:             user.userId,
           viewer_display_name: user.userName,
         });
         if (!mounted) return;
-        setSession(s);
+        setStream(s);
 
         const client = new RtcClient();
         rtcRef.current = client;
 
         await client.join(
           {
-            appId:       s.app_id ?? '',
-            channelName: s.channel_name ?? '',
-            token:       s.rtc_token ?? '',
-            uid:         s.uid ?? 0,
+            appId:       s.app_id,
+            channelName: s.channel_name,
+            token:       s.token,
+            uid:         s.uid,
             role:        'subscriber',
           },
           {
             onJoined:     ()    => { if (mounted) setLoading(false); },
-            onUserJoined: (uid) => { if (mounted) setHostUid(uid); },
+            onUserJoined: (uid) => {
+              hostUidRef.current = uid;
+              if (mounted) setHostUid(uid);
+            },
             onUserLeft:   (uid) => {
               if (!mounted) return;
-              if (uid === hostUid) {
+              if (uid === hostUidRef.current) {
                 Alert.alert('Stream Ended', 'The host has ended the broadcast.');
                 router.back();
               }
@@ -119,21 +133,21 @@ export default function LiveStreamViewerScreen() {
       {/* Info overlay (top-left) */}
       <SafeAreaView style={styles.topOverlay}>
         <View style={styles.infoCard}>
-          <Text style={styles.streamTitle} numberOfLines={1}>{session?.title}</Text>
-          <Text style={styles.hostName}>{session?.host_name}</Text>
+          <Text style={styles.streamTitle} numberOfLines={1}>{stream?.title}</Text>
+          <Text style={styles.hostName}>{stream?.host_display_name}</Text>
         </View>
       </SafeAreaView>
 
-      {/* Chat overlay (bottom-left) */}
-      {showChat && session?.chat_room_id && (
+      {/* Chat overlay (bottom-left) — only when a chat room was passed in */}
+      {showChat && !!chatRoomId && (
         <View style={styles.chatWrap}>
-          <StreamChat chatRoomId={session.chat_room_id} />
+          <StreamChat chatRoomId={chatRoomId} />
         </View>
       )}
 
       {/* Action buttons (top-right) */}
       <SafeAreaView style={styles.topRight}>
-        {session?.chat_room_id && (
+        {!!chatRoomId && (
           <TouchableOpacity onPress={() => setShowChat((v) => !v)} style={styles.iconBtn}>
             <Text style={styles.iconBtnText}>💬</Text>
           </TouchableOpacity>

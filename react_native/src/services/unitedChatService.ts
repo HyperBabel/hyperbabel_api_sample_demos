@@ -5,8 +5,9 @@
  * It wraps room management, member roles, video call lifecycle, ban/mute,
  * freeze, pinning, and message CRUD into a single cohesive API surface.
  *
- * Recommended for most applications — start here unless you need raw
- * channel-level control (use the low-level Chat API instead).
+ * It is the messaging surface an end-user app can call with its customer
+ * JWT. The low-level Chat API (`/chat/*`) is server-to-server — it needs the
+ * organization API key and refuses end-user tokens with 403.
  *
  * Base path: /unitedchat
  */
@@ -28,8 +29,16 @@ export type MemberRole = 'owner' | 'sub_admin' | 'member';
 
 export interface CreateRoomParams {
   room_type:    RoomType;
+  /** You. With an end-user token it must be your own user id. */
   creator_id:   string;
   room_name?:   string;
+  /**
+   * The OTHER people — never include yourself for a 1:1 room.
+   *  - '1to1': exactly `[peerUserId]`; the server reads `members[0]` as the
+   *    peer. `[me, peer]` would make `me` the peer → a chat with yourself.
+   *    `[yourOwnId]` is the deliberate self-chat ("My Notes").
+   *  - 'group': at least one id (the creator is always added).
+   */
   members?:     string[];
   max_members?: number;
 }
@@ -54,8 +63,25 @@ export interface Room {
   id:             string;
   /** Room kind. Room reads name it `channel_type` — `room_type` is the create-request field. */
   channel_type:   RoomType;
+  /**
+   * GET /rooms: the name to show — for a 1:1 room, the PEER's name.
+   * GET /rooms/:roomId: the group / open room name only (null for 1:1).
+   */
   room_name:      string | null;
+  /**
+   * GET /rooms/:roomId only — a fallback title for the caller passed as
+   * `user_id`: their own alias, else (1:1) the peer's name as stored when the
+   * room was created, else the room name, else the internal channel name.
+   * For a 1:1 header prefer the peer's live `members[].user_name`.
+   */
+  display_name?:  string;
   description?:   string | null;
+  /**
+   * GET /rooms with `lang`: the open room's description in that language.
+   * May be missing on the first request for a language (translated in the
+   * background) — fall back to `description`.
+   */
+  description_translated?: string;
   invite_code?:   string | null;
   is_frozen:      boolean;
   is_muted?:      boolean;
@@ -87,7 +113,8 @@ export interface Room {
 
 export interface RoomMember {
   user_id:      string;
-  user_name:    string;
+  /** The member's profile name; null when the user has none. */
+  user_name:    string | null;
   role:         MemberRole;
   joined_at:    string;
 }
@@ -118,7 +145,6 @@ export interface Message {
    * sync. `POST`/`DELETE .../reactions` returns this same map in full.
    */
   reactions?:   Record<string, string[]>;
-  reply_count?: number;
 }
 
 /** One participant slot of a video call session. */
@@ -223,20 +249,19 @@ export const listRooms = (userId: string, params: { limit?: number; cursor?: str
 };
 
 /**
- * Get full room details including member list with roles.
- */
-/**
- * Fetch one room.
+ * Fetch one room, including the member list with roles.
  *
  * The endpoint answers with the room WRAPPED as `{ room: { … } }`, so unwrap
- * it here rather than in every screen. Reading the raw response as a `Room`
- * yields an object whose every field is `undefined` — including
- * `realtime_channel`, `members` and `is_frozen` — and nothing throws, so the
- * screen just renders empty.
+ * it here rather than in every screen.
+ *
+ * Pass `userId` (your own id) when you show the room's title: it resolves
+ * `display_name` for you (your alias, or the peer of a 1:1 room). Without it
+ * `display_name` falls back to the internal channel name.
  */
-export const getRoom = async (roomId: string): Promise<Room> => {
-  const res = await api.get<{ room?: Room }>(`${BASE}/rooms/${roomId}`);
-  return (res?.room ?? (res as unknown as Room));
+export const getRoom = async (roomId: string, userId?: string): Promise<Room> => {
+  const qs = userId ? `?user_id=${encodeURIComponent(userId)}` : '';
+  const res = await api.get<{ room: Room }>(`${BASE}/rooms/${roomId}${qs}`);
+  return res.room;
 };
 
 /**
@@ -268,7 +293,8 @@ export const joinRoom = (roomId: string, userId: string, displayName?: string) =
   api.post(`${BASE}/rooms/${roomId}/join`, { user_id: userId, display_name: displayName });
 
 /**
- * Leave a room (owner cannot leave without transferring ownership first).
+ * Leave a room. Any member may leave — the owner included; ownership is not
+ * handed to anyone, so a room the owner left has no owner afterwards.
  */
 export const leaveRoom = (roomId: string, userId: string, displayName?: string) =>
   api.post(`${BASE}/rooms/${roomId}/leave`, { user_id: userId, display_name: displayName });
@@ -324,7 +350,14 @@ export const batchTranslateMessages = (roomId: string, messageIds: string[], tar
  *
  * Each callee is rung on their private real-time channel: event name
  * `'signal'`, payload `{ type: 'CALL_INVITE', sessionId, roomId, … }`.
- * 1:1 rooms ring the other member; group rooms REQUIRE `targetUserIds`.
+ * 1:1 rooms ring the other member; group rooms REQUIRE `targetUserIds`;
+ * open rooms cannot hold calls (400).
+ *
+ * Size: caller + targets may be at most 3 on plans that include group video,
+ * otherwise 2 — more answers 400 `plan_upgrade_required` (`limit_exceeded`
+ * above 3). Busy targets are skipped: the caller gets one `CALL_BUSY` signal
+ * per skipped target on their private channel, and 409 `targets_busy` when
+ * every target is busy.
  *
  * The response nests everything: `session.id`, `session.channel_name`,
  * `session.app_id`, and the caller's own `caller.rtc_token` / `caller.uid`.
@@ -383,8 +416,10 @@ export const endVideoCall = (roomId: string, userId: string, sessionId: string) 
   api.post(`${BASE}/rooms/${roomId}/video-call/end`, { user_id: userId, session_id: sessionId });
 
 /**
- * Leave the call individually — other participants remain connected.
- * If the last participant leaves, the call ends automatically.
+ * Leave the call individually. The call goes on while at least two
+ * participants are still active; once your leaving drops it below two, the
+ * server ends it for everyone (so in a 1:1 call, either side leaving ends
+ * it). Invited people who have not accepted do not count as active.
  * (Not to be confused with `leaveRoom()`, which leaves the chat room.)
  */
 export const leaveVideoCall = (roomId: string, userId: string, sessionId: string) =>
@@ -432,20 +467,39 @@ export const renewVideoCallToken = (roomId: string, userId: string, sessionId: s
 
 // ── Ban / Unban ──────────────────────────────────────────────────────────
 
-/** Ban a user from the room (owner/sub_admin only). `bannedBy` is the acting user. */
+/**
+ * Ban a user from THIS room and remove them from it (owner / sub_admin
+ * only). The owner cannot be banned, and only the owner can ban a sub_admin.
+ * `bannedBy` is the acting user. To stop someone reaching you in every room,
+ * block them instead (`blockUser`).
+ */
 export const banUser = (roomId: string, bannedBy: string, userId: string) =>
   api.post(`${BASE}/rooms/${roomId}/ban`, { banned_by: bannedBy, user_id: userId });
 
 /**
- * Lift a ban — the user can rejoin after unbanning. `unbannedBy` is the
+ * Lift a ban (owner / sub_admin only). It does not put the user back in the
+ * room — they can rejoin (open room) or be added again. `unbannedBy` is the
  * acting user; it travels in the JSON body of the DELETE (required).
  */
 export const unbanUser = (roomId: string, unbannedBy: string, userId: string) =>
   api.delete(`${BASE}/rooms/${roomId}/ban/${userId}`, { unbanned_by: unbannedBy });
 
-/** Get all active bans for a room. */
+/**
+ * The room's ban history, newest first — lifted bans included
+ * (`is_active: false`), so filter on `is_active` for the current bans.
+ * Only members of the room can read it.
+ */
 export const getBans = (roomId: string) =>
-  api.get<{ bans: Array<{ user_id: string; banned_at: string }> }>(`${BASE}/rooms/${roomId}/bans`);
+  api.get<{
+    bans: Array<{
+      user_id:     string;
+      banned_by:   string;
+      banned_at:   string;
+      unbanned_by: string | null;
+      unbanned_at: string | null;
+      is_active:   boolean;
+    }>;
+  }>(`${BASE}/rooms/${roomId}/bans`);
 
 // ── Sub-Admin ────────────────────────────────────────────────────────────
 
@@ -471,11 +525,15 @@ export const getMembers = (roomId: string) =>
 
 // ── Pin ──────────────────────────────────────────────────────────────────
 
-/** Pin a message to the top of the room (1 pin per room, owner/sub_admin only). */
+/**
+ * Pin a message to the top of the room (one pin per room — pinning replaces
+ * it). Who may pin: any member in a 1:1 room; the owner or a sub_admin in
+ * group and open rooms (403 otherwise).
+ */
 export const pinMessage = (roomId: string, messageId: string, userId: string) =>
   api.put(`${BASE}/rooms/${roomId}/pin/${messageId}`, { user_id: userId });
 
-/** Remove the pinned message from the room. */
+/** Remove the pinned message. Same permission rule as `pinMessage`. */
 export const unpinMessage = (roomId: string, userId: string) =>
   api.delete(`${BASE}/rooms/${roomId}/pin`, { user_id: userId });
 
@@ -496,6 +554,9 @@ export const updateTypingPrefs = (roomId: string, userId: string, sendEnabled: b
 /**
  * Broadcast a typing event for a United Chat room.
  * Backend checks send/recv prefs and only delivers to opts-in recipients.
+ * It counts against the same per-minute request limit as every other call
+ * (sending messages included) — throttle it (one call every few seconds
+ * while typing), never once per keystroke.
  */
 export const sendTypingIndicator = (roomId: string, userId: string, displayName?: string) =>
   api.post(`${BASE}/rooms/${roomId}/typing`, { user_id: userId, display_name: displayName });
@@ -519,7 +580,10 @@ export const getMuteStatus = (roomId: string, userId: string) =>
 
 // ── Freeze ───────────────────────────────────────────────────────────────
 
-/** Freeze the room — regular members cannot send messages. Only owner/sub_admin can still post. */
+/**
+ * Freeze the room (owner / sub_admin) — regular members' sends are refused
+ * with 403 `room_frozen`; the owner and sub_admins can still post.
+ */
 export const freezeRoom = (roomId: string, userId: string) =>
   api.post(`${BASE}/rooms/${roomId}/freeze`, { user_id: userId });
 

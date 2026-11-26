@@ -20,7 +20,7 @@
  *
  * Wire shapes:
  *   POST /stream/sessions                   → { session: { id, channel_name, app_id, host: { uid, rtc_token } } }
- *   GET  /stream/sessions                   → { sessions: [{ id, title, host_user_id, host_name, viewer_count }, …] }
+ *   GET  /stream/sessions                   → { sessions: [{ id, title, status, host: { user_id, display_name }, viewer_count }, …], total }
  *   POST /stream/sessions/:id/viewer-token  → { channel_name, uid, token, app_id, host_user_id, title }
  *   POST /stream/sessions/:id/start         → { … } (success ack)
  *   POST /stream/sessions/:id/end           → { … } (success ack)
@@ -132,7 +132,7 @@ struct StreamViewerTokenResponse: Codable {
 
 /// Wire shape per the HyperBabel Stream API (POST /stream/sessions):
 /// flat `{ title, host_user_id, host_display_name? }`. `title` is required
-/// (zod min-length 1).
+/// (at least 1 character).
 struct CreateStreamRequest: Codable {
     let title: String
     let hostUserId: String

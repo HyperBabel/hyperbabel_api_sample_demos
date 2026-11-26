@@ -80,9 +80,13 @@ enum StorageService {
     ///
     /// `channelId` is optional but should be passed for chat-room uploads —
     /// it routes the presigned object key into the chat-scoped storage path
-    /// (`<org>/chat/<channelId>/...`), which lets the server populate
-    /// `com_uploaded_files.channel_id` and `com_usage_logs.metadata.channel_id`.
-    /// Omitting it falls back to the generic user-content path.
+    /// (`<org>/chat/<channelId>/...`), so the server records the file and its
+    /// storage usage against that room. Omitting it falls back to the generic
+    /// user-content path.
+    ///
+    /// The confirm response's `message_type` (`image` | `video` | `audio` |
+    /// `file`, derived from the file name) is the type to send the chat
+    /// message with; its `url` is what recipients open.
     static func uploadFile(
         fileURL: URL,
         filename: String,

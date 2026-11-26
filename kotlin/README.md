@@ -25,20 +25,25 @@ the sibling `sample_demos/*` projects.
 
 | Feature              | APIs Used                                                  |
 | -------------------- | ---------------------------------------------------------- |
-| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`    |
-| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms`          |
-| Chat (send / receive / edit / delete / typing / reactions / reply) | `/unitedchat/rooms/:id/messages*` (reactions included — room-scoped; replies use the top-level `reply_to` field) + Real-Time push |
+| Sign in / Sign up    | Firebase Auth → `POST /customer/auth/firebase-exchange`, then `PATCH /customer/users/me { display_name }` when the user typed a name (1–60 characters). Without it a new user is named after the Firebase profile name or, failing that, the Firebase **email** — which other members would see. A failure is logged and does not block sign-in. |
+| Logout               | `POST /customer/logout { refresh_token, push_tokens }` (no auth header) **before** local state is cleared — revokes the server session and deletes this device's push token; a failure is ignored |
+| Room list & creation | `GET /unitedchat/rooms`, `POST /unitedchat/rooms` (group / open) |
+| Chat (send / receive / edit / delete / typing / reply) | `/unitedchat/rooms/:id/messages*` (replies use the top-level `reply_to` field) + Real-Time push. Typing pings are throttled to one every 3 s. |
+| Send a reaction      | `POST /unitedchat/rooms/:roomId/messages/:messageId/reactions` (room-scoped). The demo only sends reactions — it does not display them. |
 | Image / file upload  | `POST /storage/presign` → PUT signed URL → `POST /storage/confirm`, then sent with the `message_type` the confirm step returns |
-| Read receipts        | `POST /unitedchat/rooms/:roomId/read`                      |
-| Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / freeze / mute |
-| Block list           | `GET /users/:id/blocks`, `POST /users/block`, `DELETE /users/block` |
-| Presence heartbeat   | `POST /presence/heartbeat`, `GET /presence?user_ids=…`     |
-| Video call (1:1 / group, up to 3 people) | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/accept`, `…/reject`, `…/leave`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token` (each with `session_id`) + `CALL_INVITE` on the user's private Real-Time channel + call events (`call_ended`, `call_rejected`, …) on the room channel + HyperBabel Video. Camera / microphone permissions are requested before joining. |
+| Mark as read         | `POST /unitedchat/rooms/:roomId/read` when a room opens   |
+| Members & moderation | `GET /unitedchat/rooms/:id/members`, ban / sub-admin / mute. Freeze / unfreeze for owner / sub_admin: the state is read from `room.is_frozen` and kept current by the `room.updated` Real-Time event. |
+| Block list           | `GET /users/:id/blocks`, `DELETE /users/block` (list + unblock; `POST /users/block` is declared in `UsersService` but no screen calls it) |
+| Presence heartbeat   | `POST /presence/heartbeat` every 30 s while the app is in the foreground. `PresenceService.list` wraps `GET /presence?user_ids=a,b` → `{ presence: [...] }` for your own UI; no screen uses it. |
+| Video call (1:1, or group up to 3 people when your plan includes group video) | `POST /unitedchat/rooms/:roomId/video-call`, `…/active`, `…/accept`, `…/reject`, `…/leave`, `…/joined-rtc`, `…/heartbeat` (every 60 s), `…/renew-token` (each with `session_id`) + `CALL_INVITE` on the user's private Real-Time channel + call events (`call_ended`, `call_rejected`, …) on the room channel + HyperBabel Video. Camera / microphone permissions are requested before joining. Without group video a group call is rejected with 400 `plan_upgrade_required`; a call nobody joins is ended by the server after 3 minutes. |
 | Live stream (host) ⚠️ | `POST /stream/sessions`, `…/start`, `…/end` + HyperBabel Video (broadcaster) — **needs your backend**, see below |
 | Live stream (viewer) ⚠️ | `POST /stream/sessions/:id/viewer-token` + HyperBabel Video (audience) — **needs your backend**, see below |
-| Push tokens          | `POST /push/register`, `GET /push/tokens`                  |
-| Usage stats          | `GET /auth/usage`                                          |
+| Push tokens          | `POST /push/register` with this device's FCM token (once per launch while signed in), `GET /push/tokens` — see [Push notifications](#push-notifications) |
 | Token issuance       | `POST /rtm/token`, `POST /rtm/rtc/token`                   |
+| Error messages       | Every non-2xx answer becomes an `ApiException` that keeps the server's message, for both error shapes: `{ "error": { "code", "message" } }` and `{ "error": "…" }` |
+
+Organization usage and plan data are available to your backend with the
+organization API key, not to end-user apps, so the demo does not show them.
 
 ### ⚠️ Live streaming and standalone translation need your backend
 
@@ -140,6 +145,28 @@ The customer JWT pair lives in `EncryptedSharedPreferences`
 `lang`, `apiUrl`) live in a plain `SharedPreferences` file so they
 persist across launches but aren't conflated with secrets.
 
+### Push notifications
+
+HyperBabel delivers push notifications only to **FCM registration tokens**
+— on iOS too, where the app registers the token from Firebase Messaging.
+Tokens FCM rejects are pruned on the server, so never register a
+placeholder value.
+
+- **Where the token is registered:** `PushRegistration.registerThisDevice()`
+  in `api/PushService.kt`. Once per app launch while someone is signed in
+  (`MainActivity.kt`), it reads `FirebaseMessaging.getInstance().token` and
+  sends `POST /push/register { user_id, token, platform: "android",
+  token_type: "fcm" }`. The same `google-services.json` that enables
+  Firebase Auth enables Firebase Messaging.
+- **On logout** the registered token goes to `POST /customer/logout` in
+  `push_tokens`, which deletes it, so the next person on the device does not
+  receive the previous user's notifications.
+- **Before you ship:** add a `FirebaseMessagingService` that calls
+  `POST /push/register` from `onNewToken` (tokens rotate), and on Android 13+
+  declare and request `POST_NOTIFICATIONS` — without it the system shows no
+  notifications. This demo registers the token but does not render
+  notifications itself.
+
 ---
 
 ## Configuration
@@ -149,12 +176,14 @@ The default API base URL points at production
 HyperBabel deployment), set `HB_API_URL` in `local.properties`:
 
 ```properties
-# Android emulator hits the host's localhost as 10.0.2.2
-HB_API_URL=http://10.0.2.2:8787/api/v1
+# Your own API base URL — keep the trailing /api/v1
+HB_API_URL=https://your-api-base-url.example.com/api/v1
 ```
 
 The value is wired into `BuildConfig.HB_API_URL` and read by
-`Session.apiUrl` on launch.
+`Session.apiUrl` on launch. It must end in `/api/v1`: the Retrofit paths in
+`api/*.kt` are relative to it (`unitedchat/rooms`, not
+`api/v1/unitedchat/rooms`).
 
 ### CORS & Allowed Origins
 
@@ -183,14 +212,13 @@ kotlin/
         ├── api/
         │   ├── ApiClient.kt          # Customer JWT Retrofit client (B1) — proactive refresh + Authenticator + org-key guard
         │   ├── FirebaseAuthService.kt# Firebase → /customer/auth/firebase-exchange
-        │   ├── AuthService.kt        # /auth/usage
-        │   ├── ChatService.kt        # reactions (room-scoped)
+        │   ├── ChatService.kt        # send / remove reactions (room-scoped)
         │   ├── UnitedChatService.kt  # rooms / messages / moderation / video-call
         │   ├── StreamService.kt      # live stream session lifecycle (needs your backend)
         │   ├── StorageService.kt     # 3-step presign upload
-        │   ├── PresenceService.kt    # online status heartbeat
-        │   ├── PushService.kt        # token register / list
-        │   ├── UsersService.kt       # global block list
+        │   ├── PresenceService.kt    # heartbeat / status / bulk read
+        │   ├── PushService.kt        # FCM token register / list (PushRegistration)
+        │   ├── UsersService.kt       # global block list + own profile (PATCH /customer/users/me)
         │   └── RtmService.kt         # token issuance for Real-Time + Video
         ├── data/
         │   ├── Models.kt             # @Serializable wire types
@@ -221,12 +249,14 @@ kotlin/
 
 1. **Auth.** Copy `api/FirebaseAuthService.kt` + `data/SecureStore.kt`
    + `api/ApiClient.kt`. The first owns Firebase sign-in / sign-up /
-   exchange / sign-out; the second is the EncryptedSharedPreferences
+   exchange / display-name save / sign-out; the second is the EncryptedSharedPreferences
    wrapper; the third owns the customer JWT lifecycle (proactive
    refresh + 401 fallback via Retrofit `Authenticator` + org-key
-   guard).
+   guard + `POST /customer/logout`) and turns error answers into
+   `ApiException` with the server's message.
 2. **HTTP services.** The modules in `api/` are Retrofit interfaces +
-   kotlinx-serialization — copy whichever you need.
+   kotlinx-serialization — copy whichever you need. Their paths are
+   relative to the `/api/v1/` base URL.
 3. **Real-Time push.** `realtime/HyperBabelRealtime.kt` shows how to
    exchange a token via `POST /rtm/token`, subscribe to a room channel,
    and subscribe to the signed-in user's private channel
@@ -256,8 +286,10 @@ tier on every session-creation call:
 
 - `app/src/main/kotlin/com/hyperbabel/demo/video/VideoQuality.kt` — the presets and the `quality` value are both defined here.
 - 1280 × 720 when a participant receives at most one remote stream
-  (live-stream host, 1:1 call); 640 × 480 from three participants up, so a
-  four-way call still totals 3 × 307,200 = 921,600 px.
+  (live-stream host, 1:1 call); 640 × 480 from three participants up, so
+  even a four-way call (possible only through `POST /video/sessions` from
+  your backend — room calls stop at three) still totals
+  3 × 307,200 = 921,600 px.
 - `quality` is sent as `"hd"`. If you publish above these presets, change the
   preset **and** the declared tier together in that one file — the declared
   value is what your invoice is calculated from (Terms §5.1 / §5.2).
@@ -272,10 +304,10 @@ Every session-creation call in this demo sends `publish_resolution` alongside
 but leaving it out is how the most common billing surprise happens.
 
 ```
-POST /api/v1/video/sessions
+POST /api/v1/unitedchat/rooms/:roomId/video-call
 {
-  "call_type": "group",
-  "participants": [ ... ],
+  "caller_id": "alice",
+  "target_user_ids": ["bob", "carol"],
   "quality": "hd",
   "publish_resolution": { "width": 640, "height": 480 }
 }

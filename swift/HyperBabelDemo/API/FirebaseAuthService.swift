@@ -15,11 +15,11 @@
  *
  * The app never sees the integrator's org API key — the HyperBabel
  * API resolves the org from the Firebase project ID claim after
- * verifying the signature against Google JWKS.
+ * verifying the token signature against Firebase's public signing keys.
  *
  * Prerequisites:
  *   1. `firebase/GoogleService-Info.plist` installed via Xcode (drag
- *      into Runner target — see firebase/README.md).
+ *      into the app target — see firebase/README.md).
  *   2. The chosen sign-in providers (Email/Password, Anonymous, …)
  *      enabled in Firebase Console → Authentication → Sign-in method.
  *   3. Your Firebase project ID allow-listed in HyperBabel Console
@@ -69,7 +69,7 @@ enum FirebaseAuthService {
     static func signInWithEmail(
         _ email: String,
         password: String,
-        preferredLangCd: String? = nil,
+        preferredLangCd: String? = nil
     ) async throws -> FirebaseExchangeResult {
         guard isFirebaseReady else { throw FirebaseAuthError.notConfigured }
         let result = try await Auth.auth().signIn(withEmail: email, password: password)
@@ -79,7 +79,7 @@ enum FirebaseAuthService {
     static func signUpWithEmail(
         _ email: String,
         password: String,
-        preferredLangCd: String? = nil,
+        preferredLangCd: String? = nil
     ) async throws -> FirebaseExchangeResult {
         guard isFirebaseReady else { throw FirebaseAuthError.notConfigured }
         let result = try await Auth.auth().createUser(withEmail: email, password: password)
@@ -87,7 +87,7 @@ enum FirebaseAuthService {
     }
 
     static func signInAnonymously(
-        preferredLangCd: String? = nil,
+        preferredLangCd: String? = nil
     ) async throws -> FirebaseExchangeResult {
         guard isFirebaseReady else { throw FirebaseAuthError.notConfigured }
         let result = try await Auth.auth().signInAnonymously()
@@ -99,7 +99,7 @@ enum FirebaseAuthService {
     /// (Sign in with Apple, Google Sign-In, etc.) once the Firebase
     /// user is already authenticated.
     static func exchangeCurrentUser(
-        preferredLangCd: String? = nil,
+        preferredLangCd: String? = nil
     ) async throws -> FirebaseExchangeResult {
         guard let user = Auth.auth().currentUser else {
             throw FirebaseAuthError.exchangeFailed(message: "No Firebase user is currently signed in")
@@ -115,7 +115,7 @@ enum FirebaseAuthService {
 
     private static func exchange(
         user: User,
-        preferredLangCd: String?,
+        preferredLangCd: String?
     ) async throws -> FirebaseExchangeResult {
         let idToken = try await user.getIDToken(forcingRefresh: true)
         let baseUrl = Session.shared.apiUrl
@@ -132,8 +132,11 @@ enum FirebaseAuthService {
 
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            // Keeps the server's message for both error shapes — e.g. 401
+            // `Firebase project "<id>" is not registered with HyperBabel` when
+            // the project is missing from Console → Customer Auth.
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            let message = String(data: data, encoding: .utf8) ?? "HTTP \(status)"
+            let message = ApiError.serverMessage(from: data) ?? "HTTP \(status)"
             throw FirebaseAuthError.exchangeFailed(message: message)
         }
         do {

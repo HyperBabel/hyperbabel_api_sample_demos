@@ -7,7 +7,7 @@
  *   .chat(roomId)     — chat in a room (text + real-time push)
  *   .video(roomId)    — 1:1 video call
  *   .stream           — live stream list / host / viewer
- *   .settings         — usage / push tokens / logout
+ *   .settings         — profile / push tokens / logout
  *   .blocks           — global block list
  *
  * While a user is signed in, RootNavigation keeps IncomingCallStore listening
@@ -16,12 +16,20 @@
  * over whatever screen is foregrounded. Accept needs to push the .video
  * route, so navigation state is lifted to a shared NavStore that both the
  * overlay and the stack observe.
+ *
+ * Push: once signed in, RootNavigation registers this device's FCM token
+ * (API/PushRegistration.swift); on iOS, PushAppDelegate hands the APNs
+ * device token to Firebase Messaging. Logout calls POST /customer/logout
+ * before clearing local state (Session.signOut).
  */
 import SwiftUI
 import FirebaseCore
 
 @main
 struct HyperBabelDemoApp: App {
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(PushAppDelegate.self) private var pushAppDelegate
+    #endif
     @StateObject private var session = Session.shared
     @StateObject private var callStore = IncomingCallStore.shared
     @StateObject private var nav = NavStore.shared
@@ -104,7 +112,7 @@ struct RootNavigation: View {
                 if session.isSignedIn {
                     HomeScreen(
                         onOpenRoom: { nav.push(.chat(roomId: $0)) },
-                        onLogout: { session.signOut() }
+                        onLogout: { Task { await session.signOut() } }
                     )
                     .toolbar {
                         // `.topBarTrailing` is iOS-only — `.primaryAction`
@@ -124,7 +132,7 @@ struct RootNavigation: View {
                 case .home:
                     HomeScreen(
                         onOpenRoom: { nav.push(.chat(roomId: $0)) },
-                        onLogout: { session.signOut(); nav.popAll() }
+                        onLogout: { Task { await session.signOut(); nav.popAll() } }
                     )
                 case .chat(let roomId):
                     ChatScreen(
@@ -150,6 +158,11 @@ struct RootNavigation: View {
         // sign-out and account switch; sign-out also closes the connection.
         .task(id: session.userId) {
             await callStore.listen(signedIn: session.isSignedIn)
+        }
+        // Register this device's FCM token for the signed-in user (no-op when
+        // signed out or when Firebase / push is not set up).
+        .task(id: session.userId) {
+            await PushRegistration.shared.registerIfSignedIn()
         }
     }
 }

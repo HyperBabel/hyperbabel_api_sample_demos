@@ -26,6 +26,8 @@
  *      → Settings → Authorized domains.
  */
 
+import api, { serverErrorMessage } from './api';
+
 const BASE_URL = import.meta.env.VITE_HB_API_URL || 'https://api.hyperbabel.com/api/v1';
 
 // ── Module-level Firebase Auth singleton ──────────────────────────────────
@@ -97,11 +99,31 @@ const exchangeIdTokenForCustomerJwt = async (idToken, preferredLangCd) => {
   if (!res.ok) {
     let data = null;
     try { data = await res.json(); } catch { /* ignore */ }
-    const msg = data?.error?.message || data?.message || `Exchange failed: HTTP ${res.status}`;
-    throw new Error(msg);
+    // Both error shapes are possible here. An unregistered Firebase project,
+    // for example, answers 401 { error: 'Firebase project "<id>" is not
+    // registered with HyperBabel' } — surface that text, not just the status.
+    const msg = serverErrorMessage(data) || `Exchange failed: HTTP ${res.status}`;
+    const error = new Error(msg);
+    error.status = res.status;
+    throw error;
   }
   return res.json();
 };
+
+// ── Profile ───────────────────────────────────────────────────────────────
+
+/**
+ * Save the display name other members see. Call it right after the token
+ * exchange (once AuthContext has stored the customer JWT) whenever the user
+ * typed a name: on first sign-in HyperBabel seeds the profile name from the
+ * Firebase account — its name, or its EMAIL when there is no name — so
+ * without this call other members could see the user's email address.
+ *
+ * @param {string} displayName — 1–60 characters
+ * @returns {Promise<object>} The updated profile
+ */
+export const saveDisplayName = (displayName) =>
+  api.patch('/customer/users/me', { display_name: displayName.trim().slice(0, 60) });
 
 // ── Public flows ──────────────────────────────────────────────────────────
 
@@ -121,8 +143,8 @@ export const signInWithEmailAndExchange = async (email, password, preferredLangC
 
 /**
  * Create a brand-new Firebase user with email + password, then exchange.
- * HyperBabel auto-creates the matching `com_users` row on first exchange,
- * so no extra "create user" call is needed.
+ * HyperBabel creates the matching end-user on the first exchange, so no
+ * extra "create user" call is needed.
  */
 export const signUpWithEmailAndExchange = async (email, password, preferredLangCd) => {
   const auth = await getAuthInstance();
@@ -150,9 +172,9 @@ export const signInAnonymouslyAndExchange = async (preferredLangCd) => {
 
 /**
  * Sign the Firebase user out. Safe to call even when no user is signed in.
- * Does NOT revoke the HyperBabel customer JWT — call AuthContext.logout()
- * separately (or POST /customer/revoke from your backend) if you need to
- * invalidate every device.
+ * Does NOT end the HyperBabel session by itself — AuthContext.logout() does
+ * that first with POST /customer/logout (this device). To invalidate every
+ * device of a user, call POST /customer/revoke from your backend.
  */
 export const firebaseSignOut = async () => {
   const auth = await getAuthInstance();

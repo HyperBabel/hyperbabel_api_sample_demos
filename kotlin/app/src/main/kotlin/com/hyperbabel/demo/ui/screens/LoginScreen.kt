@@ -8,6 +8,7 @@
  *   3. Session.persist(...) writes the JWT pair to
  *      EncryptedSharedPreferences via SecureStore. ApiClient attaches
  *      it to every subsequent request.
+ *   4. A typed display name is saved with PATCH /customer/users/me.
  *
  * If Firebase isn't initialised (no google-services.json) the screen
  * renders a setup-help banner instead of the form.
@@ -47,7 +48,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
-import com.hyperbabel.demo.api.ApiClient
 import com.hyperbabel.demo.api.FirebaseAuthService
 import com.hyperbabel.demo.api.FirebaseExchangeResult
 import com.hyperbabel.demo.data.Session
@@ -80,18 +80,13 @@ fun LoginScreen(
     val firebaseReady = remember { FirebaseAuthService.isFirebaseReady }
     val scope = rememberCoroutineScope()
 
-    fun finishSignIn(result: FirebaseExchangeResult) {
+    suspend fun finishSignIn(result: FirebaseExchangeResult) {
         Session.persist(result, fallbackDisplayName = displayName, langCode = langCd)
-        // Best-effort push token registration. Failures don't block sign-in.
-        scope.launch {
-            runCatching {
-                ApiClient.push.registerToken(mapOf(
-                    "user_id"  to result.external_user_id,
-                    "token"    to "demo-android-${System.currentTimeMillis()}",
-                    "platform" to "android",
-                ))
-            }
-        }
+        // Publish the typed name (if any) so other members don't see the
+        // Firebase email. Best-effort — never blocks sign-in.
+        FirebaseAuthService.saveDisplayName(displayName)
+        // The device's real FCM token is registered once the signed-in app
+        // starts (MainActivity → PushRegistration in api/PushService.kt).
         onSignedIn()
     }
 

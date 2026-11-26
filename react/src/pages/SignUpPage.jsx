@@ -3,8 +3,13 @@
  *
  * Creates a brand-new Firebase user with email + password, then exchanges
  * the resulting ID token for a HyperBabel customer JWT (pattern B1). The
- * matching `com_users` row is created server-side during the exchange —
- * no extra "create user" call is needed.
+ * matching end-user is created server-side during the exchange — no extra
+ * "create user" call is needed.
+ *
+ * A typed display name is saved with PATCH /customer/users/me right after
+ * the exchange. Without it the server names the new user after the Firebase
+ * account — for an email/password account that is the email address, which
+ * other members would see.
  */
 
 import { useMemo, useState } from 'react';
@@ -13,6 +18,7 @@ import { useAuth } from '../context/AuthContext';
 import {
   isFirebaseConfigured,
   signUpWithEmailAndExchange,
+  saveDisplayName,
 } from '../services/firebaseAuthService';
 
 const isValidEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
@@ -45,7 +51,8 @@ export default function SignUpPage() {
     setLoading(true);
     try {
       const result = await signUpWithEmailAndExchange(em, password, langCode);
-      const resolvedName = userName.trim() || result.external_user_id.slice(0, 8);
+      const enteredName = userName.trim().slice(0, 60);
+      const resolvedName = enteredName || result.external_user_id.slice(0, 8);
       await login({
         userId:       result.external_user_id,
         userName:     resolvedName,
@@ -54,6 +61,12 @@ export default function SignUpPage() {
         refreshToken: result.refresh_token,
         expiresAt:    result.expires_at,
       });
+      // Runs after login() stored the customer JWT — the PATCH needs it.
+      if (enteredName) {
+        await saveDisplayName(enteredName).catch((err) => {
+          console.warn('Could not save the display name:', err?.message);
+        });
+      }
       navigate('/dashboard');
     } catch (err) {
       setErrorMsg(err?.message || 'Sign-up failed.');
@@ -147,6 +160,7 @@ export default function SignUpPage() {
                 type="text"
                 className="input-field"
                 placeholder="Alice (optional)"
+                maxLength={60}
                 value={userName}
                 onChange={(e) => setUserName(e.target.value)}
               />

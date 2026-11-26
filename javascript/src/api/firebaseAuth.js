@@ -7,10 +7,14 @@
  *   2. We pull the Firebase ID token from the resulting user.
  *   3. POST /api/v1/customer/auth/firebase-exchange exchanges the ID
  *      token for a HyperBabel customer JWT pair (access + refresh).
- *   4. The caller (pages/login.js, pages/signup.js) persists the JWT
- *      pair to localStorage; api/client.js attaches it to every
- *      subsequent request and refreshes transparently on 401.
+ *   4. The caller (pages/login.js, pages/signup.js) hands the result to
+ *      `completeSignIn()`, which persists the JWT pair to localStorage and
+ *      saves the typed display name with PATCH /customer/users/me;
+ *      api/client.js attaches the JWT to every subsequent request and
+ *      refreshes transparently on 401.
  *      The Firebase ID token never leaves the device after exchange.
+ *   5. `logoutAndClear()` revokes the session with POST /customer/logout
+ *      before it clears anything locally.
  *
  * The browser never sees the integrator's org API key — the HyperBabel
  * API resolves the org from the Firebase project ID claim after
@@ -90,8 +94,12 @@ async function exchangeIdTokenForCustomerJwt(idToken, preferredLangCd) {
   if (!res.ok) {
     let data = null;
     try { data = await res.json(); } catch { /* ignore */ }
-    const msg = data?.error?.message || data?.message || `Exchange failed: HTTP ${res.status}`;
-    throw new Error(msg);
+    // e.g. 401 { "error": "Firebase project \"my-app\" is not registered with HyperBabel" }
+    // — allow-list the project in HyperBabel Console → Customer Auth.
+    const err = new Error(serverErrorMessage(data, res.status));
+    err.status = res.status;
+    err.body   = data;
+    throw err;
   }
   return res.json();
 }
@@ -138,13 +146,19 @@ import {
   STORAGE_KEY_ACCESS_TOKEN,
   STORAGE_KEY_REFRESH_TOKEN,
   STORAGE_KEY_EXPIRES_AT,
+  serverErrorMessage,
 } from './client.js';
+import { updateMyProfile } from './users.js';
+import { deviceTokens, forgetDeviceTokens } from './push.js';
 
 const STORAGE_KEY_USER = 'hb_user';
 
+/** Longest display name the profile accepts. */
+const DISPLAY_NAME_MAX = 60;
+
 /** Persist the customer JWT pair + identity returned by exchange. */
 export function persistSession(exchange, fallbackDisplayName, langCode) {
-  const resolvedName = (fallbackDisplayName || '').trim()
+  const resolvedName = (fallbackDisplayName || '').trim().slice(0, DISPLAY_NAME_MAX)
     || exchange.external_user_id.slice(0, 8);
   const resolvedLang = exchange.preferred_lang_cd || langCode;
 
@@ -158,11 +172,61 @@ export function persistSession(exchange, fallbackDisplayName, langCode) {
   }));
 }
 
+/**
+ * Finish a sign-in / sign-up: persist the session, then save the display name
+ * the user typed (if any) to their HyperBabel profile.
+ *
+ * On first sign-in HyperBabel names the user after their Firebase profile
+ * name or, if there is none, their email address — and that is the name other
+ * members see in member lists and 1:1 room titles. Saving the typed name right
+ * after the exchange keeps the email address off other people's screens.
+ * Best-effort: sign-in still succeeds if the update fails.
+ */
+export async function completeSignIn(exchange, typedDisplayName, langCode) {
+  persistSession(exchange, typedDisplayName, langCode);
+  const name = (typedDisplayName || '').trim().slice(0, DISPLAY_NAME_MAX);
+  if (!name) return;
+  try {
+    await updateMyProfile({ display_name: name });
+  } catch (err) {
+    console.warn('[auth] could not save the display name:', err.message);
+  }
+}
+
+/**
+ * Sign out of HyperBabel and Firebase.
+ *
+ * 1. `POST /customer/logout` FIRST, while the refresh token is still here. It
+ *    needs no Authorization header — the refresh token in the body is the
+ *    credential. It ends this device's session on the server (the 30-day
+ *    refresh token stops working) and deletes the push tokens this device
+ *    registered, so the next person on this device does not receive the
+ *    previous user's notifications. Failures are ignored: signing out must
+ *    still work offline.
+ * 2. Clear the local session and sign out of Firebase.
+ *
+ * The caller then closes the real-time connection — see `pages/settings.js`.
+ */
 export async function logoutAndClear() {
+  const refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH_TOKEN);
+  if (refreshToken) {
+    const pushTokens = deviceTokens();
+    try {
+      await fetch(`${BASE_URL}/customer/logout`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          refresh_token: refreshToken,
+          ...(pushTokens.length ? { push_tokens: pushTokens } : {}),
+        }),
+      });
+    } catch { /* offline — still sign out locally */ }
+  }
+
   localStorage.removeItem(STORAGE_KEY_ACCESS_TOKEN);
   localStorage.removeItem(STORAGE_KEY_REFRESH_TOKEN);
   localStorage.removeItem(STORAGE_KEY_EXPIRES_AT);
   localStorage.removeItem(STORAGE_KEY_USER);
-  localStorage.removeItem('hb_api_key'); // legacy key, defensive cleanup
+  forgetDeviceTokens();
   await firebaseSignOut();
 }

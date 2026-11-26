@@ -37,7 +37,9 @@ firebase/
    token to prove ownership → click *Verify and add*.
 
    This step is what tells HyperBabel "trust ID tokens from this project."
-   Without it, `/customer/auth/firebase-exchange` returns 403.
+   Without it, `/customer/auth/firebase-exchange` returns **401**
+   `{ "error": "Firebase project \"<id>\" is not registered with HyperBabel" }`
+   — the login screen shows that message.
 
 6. **Start the demo**:
    ```sh

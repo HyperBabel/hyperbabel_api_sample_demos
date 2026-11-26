@@ -5,15 +5,17 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/auth/auth_controller.dart';
 import '../../../core/network/api_client.dart';
-import '../../../core/network/auth_repository.dart';
 import '../../../core/network/push_repository.dart';
 import '../../../core/realtime/hyperbabel_realtime_client.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../shared/widgets/glass_container.dart';
 
-/// Settings — surfaces every account-level read endpoint the demo cares about
-/// plus the language preference. Webhooks are explicitly excluded; manage
-/// those in the HyperBabel Console.
+/// Settings — profile, language preference, blocked users and push tokens.
+/// Webhooks are explicitly excluded; manage those in the HyperBabel Console.
+///
+/// Organization usage and plan data are not shown: they are business data
+/// for your backend, read with the organization API key, and are not
+/// available to end-user apps.
 ///
 /// There is no language-detection playground: `/translate/*` authenticates
 /// with your organization API key only, so it belongs on your backend — never
@@ -26,13 +28,11 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  final AuthRepository _auth = AuthRepository();
   final PushRepository _push = PushRepository();
 
   String? _userId;
   String? _apiUrl;
 
-  Map<String, dynamic>? _usage;
   List<Map<String, dynamic>> _tokens = [];
   bool _loading = true;
 
@@ -67,13 +67,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final results = await Future.wait([
-      _auth.getUsage(),
-      _push.getTokens(_userId!).catchError((_) => <Map<String, dynamic>>[]),
-    ]);
+    final tokens = await _push
+        .getTokens(_userId!)
+        .catchError((_) => <Map<String, dynamic>>[]);
     setState(() {
-      _usage = results[0] as Map<String, dynamic>?;
-      _tokens = results[1] as List<Map<String, dynamic>>;
+      _tokens = tokens;
       _loading = false;
     });
   }
@@ -101,7 +99,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     if (ok != true) return;
     await HyperBabelRealtimeClient().disconnect();
-    // Clears the session tokens and the signed-in user. The auth state change
+    await PushRegistration.reset();
+    // Calls POST /customer/logout { refresh_token, push_tokens } first — the
+    // server revokes the session and deletes this device's push token — then
+    // clears the session tokens and the signed-in user. The auth state change
     // is what routes back to /login and stops the incoming-call listener.
     await ref.read(authControllerProvider.notifier).logout();
     if (!mounted) return;
@@ -154,21 +155,26 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   title: 'Blocked Users',
                   onTap: () => context.go('/blocks'),
                 ),
-                _section('API Usage'),
-                GlassContainer(
-                  padding: const EdgeInsets.all(16),
-                  child: _usage == null
-                      ? const Text('Unable to load usage stats.',
-                          style: TextStyle(color: Colors.white54))
-                      : Column(children: _usageRows(_usage!)),
-                ),
                 _section('Push Tokens'),
                 GlassContainer(
                   padding: const EdgeInsets.all(16),
-                  child: _tokens.isEmpty
-                      ? const Text('No push tokens registered for this user yet.',
-                          style: TextStyle(color: Colors.white54))
-                      : Column(children: _tokens.map(_tokenRow).toList()),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (_tokens.isEmpty)
+                        const Text('No push tokens registered for this user yet.',
+                            style: TextStyle(color: Colors.white54))
+                      else
+                        ..._tokens.map(_tokenRow),
+                      // Why this device's FCM token could not be registered
+                      // (usually: the native push setup from the README).
+                      if (PushRegistration.lastProblem != null) ...[
+                        const SizedBox(height: 8),
+                        Text(PushRegistration.lastProblem!,
+                            style: const TextStyle(color: Colors.amber, fontSize: 12)),
+                      ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
@@ -239,38 +245,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ),
       ),
     );
-  }
-
-  /// GET /auth/usage returns ONE flat object: this month's counters
-  /// (`messages_sent`, `hd_video_mins`, …) next to the plan's limits
-  /// (`monthly_messages`, …; -1 means unlimited). Video and stream minutes are
-  /// metered per resolution tier, so the HD and Full HD buckets are added up.
-  /// Large counters arrive as JSON strings, hence [_num].
-  List<Widget> _usageRows(Map<String, dynamic> usage) {
-    final entries = <(String, num?, num?)>[
-      ('Chat Messages', _num(usage['messages_sent']), _num(usage['monthly_messages'])),
-      ('Video Minutes', _sum(usage['hd_video_mins'], usage['fhd_video_mins']), null),
-      ('Stream Minutes', _sum(usage['hd_stream_mins'], usage['fhd_stream_mins']), null),
-      ('Translate Chars', _num(usage['translate_chars']), _num(usage['monthly_translate_chars'])),
-    ];
-    return [
-      Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(
-            'Plan: ${usage['plan_name'] ?? '—'}  ·  '
-            'Period ends: ${usage['current_period_end'] ?? '—'}',
-            style: const TextStyle(color: Colors.white60, fontSize: 11)),
-      ),
-      ...entries.map((e) => _row(e.$1,
-          '${e.$2 ?? '—'}${e.$3 == null ? '' : '  /  ${e.$3! < 0 ? 'unlimited' : e.$3}'}')),
-    ];
-  }
-
-  static num? _num(dynamic v) => v is num ? v : num.tryParse('${v ?? ''}');
-
-  static num? _sum(dynamic a, dynamic b) {
-    final x = _num(a), y = _num(b);
-    return (x == null && y == null) ? null : (x ?? 0) + (y ?? 0);
   }
 
   Widget _tokenRow(Map<String, dynamic> t) {

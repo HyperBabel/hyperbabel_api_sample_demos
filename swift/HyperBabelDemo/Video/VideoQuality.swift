@@ -22,6 +22,10 @@
  * call at 4. Room calls (POST /unitedchat/rooms/:roomId/video-call, what this
  * demo places) stop at 3: the caller plus two target_user_ids.
  *
+ * Both caps depend on your plan: a plan without group video allows 2 people
+ * (1:1 only), and a larger request answers 400 `plan_upgrade_required`
+ * (`limit_exceeded` above the structural cap of 3 / 4).
+ *
  *  TWO SUMS GET QUOTED FOR A GROUP CALL — KEEP THEM STRAIGHT
  *
  *    what ONE participant RECEIVES  =  (N-1) x preset   <- the tier is based on THIS
@@ -59,8 +63,11 @@
  * an adjustment charge (section 5.2).
  *
  * Keep the encoder preset and the declared tier in THIS file so they can
- * never drift apart. The pure-Swift part below is deliberately outside the
- * SDK availability gate so host-side tooling can still compile and test it.
+ * never drift apart. Everything except the encoder configuration is plain
+ * Swift and lives OUTSIDE the SDK availability gate: the request models
+ * (StartVideoCallRequest, CreateStreamRequest) use `declaredQuality()` and
+ * `publishResolution(forParticipantCount:)`, so the package has to compile
+ * with the video SDK absent (macOS host builds) as well as present (iOS).
  */
 import Foundation
 
@@ -110,18 +117,7 @@ enum VideoQuality {
     static func declaredQuality() -> String {
         soloOr1to1.pixels <= hdBudgetPx ? "hd" : "fhd"
     }
-}
 
-#if canImport(AgoraRtcKit)
-import AgoraRtcKit
-
-// Hide raw vendor class names behind neutral aliases, exactly as
-// HyperBabelVideo.swift does — the body below talks about HyperBabel Video.
-typealias VideoEncoderConfig = AgoraVideoEncoderConfiguration
-private let videoBitrateStandard = AgoraVideoBitrateStandard
-
-extension VideoQuality {
-    /// The same preset shaped for the RTC SDK's encoder configuration call.
     /// The `publish_resolution` to declare when creating a session with
     /// `participantCount` people in it.
     ///
@@ -140,7 +136,19 @@ extension VideoQuality {
         let p = preset(forRemoteCount: total - 1)
         return PublishResolution(width: p.width, height: p.height)
     }
+}
 
+// Only the encoder configuration touches the video SDK, so only it is gated.
+#if canImport(AgoraRtcKit)
+import AgoraRtcKit
+
+// Hide raw vendor class names behind neutral aliases, exactly as
+// HyperBabelVideo.swift does — the body below talks about HyperBabel Video.
+typealias VideoEncoderConfig = AgoraVideoEncoderConfiguration
+private let videoBitrateStandard = AgoraVideoBitrateStandard
+
+extension VideoQuality {
+    /// The same preset shaped for the RTC SDK's encoder configuration call.
     static func encoderConfiguration(forRemoteCount remoteCount: Int) -> VideoEncoderConfig {
         let p = preset(forRemoteCount: remoteCount)
         return VideoEncoderConfig(

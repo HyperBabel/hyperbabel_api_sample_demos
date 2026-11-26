@@ -30,16 +30,20 @@ const BASE = '/translate';
  * @param {string} text
  * @param {string} targetLanguage — BCP-47 code (e.g. 'ko', 'en', 'ja')
  * @param {string} [sourceLanguage='auto'] — Auto-detect if omitted
+ * @returns {Promise<{ translated_text: string, source_language: string,
+ *   target_language: string, char_count: number }>}
  */
 export const translateText = (text, targetLanguage, sourceLanguage = 'auto') =>
   api.post(`${BASE}/text`, { text, target_language: targetLanguage, source_language: sourceLanguage });
 
 /**
- * Translate a text string to multiple target languages at once.
+ * Translate a text string to multiple target languages at once (up to 10).
  *
  * @param {string}   text
  * @param {string[]} targetLanguages — e.g. ['ko', 'ja', 'es']
  * @param {string}   [sourceLanguage]
+ * @returns {Promise<{ translations: Object<string, string>, char_count: number,
+ *   successful_languages: string[] }>} `translations` maps language → text
  */
 export const translateBatch = (text, targetLanguages, sourceLanguage) =>
   api.post(`${BASE}/batch`, {
@@ -52,12 +56,12 @@ export const translateBatch = (text, targetLanguages, sourceLanguage) =>
  * Detect the language of a given text string.
  *
  * @param {string} text
- * @returns {Promise<{ language: string, confidence: number }>}
+ * @returns {Promise<{ detected_language: string, confidence: number }>}
  */
 export const detectLanguage = (text) => api.post(`${BASE}/detect`, { text });
 
 /**
- * Get the full list of supported language codes.
- * @returns {Promise<string[]>}
+ * Get the full list of supported languages.
+ * @returns {Promise<{ languages: Array<{ code: string, name: string }>, count: number }>}
  */
 export const getSupportedLanguages = () => api.get(`${BASE}/languages`);

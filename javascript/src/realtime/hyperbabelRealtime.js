@@ -12,6 +12,10 @@ import { requestRealtimeToken } from '../api/rtm.js';
 
 let _client = null;
 let _orgId  = null;
+/** The connect() in flight, shared so concurrent callers get ONE client. */
+let _connecting = null;
+/** Bumped by disconnect(), so a connect() still in flight for the old user is dropped. */
+let _generation = 0;
 
 async function authCallback(_tokenParams, callback) {
   try {
@@ -27,8 +31,7 @@ async function authCallback(_tokenParams, callback) {
      * arrived in. The endpoint answers
      *   { realtime_token_request: {...}, user_id, org_id }
      * and the SDK validates the signature over the inner object — passing the
-     * whole envelope fails auth. (Every other demo already unwraps it; this
-     * one did not.)
+     * whole envelope fails auth.
      */
     callback(null, res.realtime_token_request);
   } catch (err) {
@@ -36,23 +39,38 @@ async function authCallback(_tokenParams, callback) {
   }
 }
 
-export async function connect(user) {
-  if (_client) return _client;
-  // Pre-fetch the first token so we know orgId before opening the connection.
-  const initial = await requestRealtimeToken(
-    user.user_id,
-    user.display_name,
-    user.preferred_lang_cd,
-  );
-  _orgId = initial.org_id;
-  const compositeClientId = _orgId ? `${_orgId}:${user.user_id}` : user.user_id;
-  _client = new realtimeSdk.Realtime({
-    authCallback,
-    clientId: compositeClientId,
-    echoMessages: false,
-  });
-  await _client.connection.once('connected');
-  return _client;
+/**
+ * Open (or reuse) the connection for the signed-in user. One connection per
+ * sign-in: call `disconnect()` on sign-out, or the next user in this tab
+ * would reuse the previous user's connection.
+ */
+export function connect(user) {
+  if (_client) return Promise.resolve(_client);
+  if (_connecting) return _connecting;
+  const generation = _generation;
+  const attempt = (async () => {
+    // Pre-fetch the first token so we know orgId before opening the connection.
+    const initial = await requestRealtimeToken(
+      user.user_id,
+      user.display_name,
+      user.preferred_lang_cd,
+    );
+    if (generation !== _generation) throw new Error('Signed out while connecting');
+    _orgId = initial.org_id;
+    const compositeClientId = _orgId ? `${_orgId}:${user.user_id}` : user.user_id;
+    const client = new realtimeSdk.Realtime({
+      authCallback,
+      clientId: compositeClientId,
+      echoMessages: false,
+    });
+    _client = client;
+    await client.connection.once('connected');
+    return client;
+  })();
+  _connecting = attempt;
+  const settle = () => { if (_connecting === attempt) _connecting = null; };
+  attempt.then(settle, settle);
+  return attempt;
 }
 
 /**
@@ -92,10 +110,13 @@ export function subscribePrivate(userId, onEvent) {
   return () => channel.unsubscribe(listener);
 }
 
+/** Close the connection — call on sign-out. Every subscription ends with it. */
 export async function disconnect() {
+  _generation += 1;
+  _connecting = null;
   if (_client) {
     _client.close();
     _client = null;
-    _orgId = null;
   }
+  _orgId = null;
 }

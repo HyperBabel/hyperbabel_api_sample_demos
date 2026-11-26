@@ -160,6 +160,26 @@ const parseBody = async (res) => {
   try { return await res.json(); } catch { return null; }
 };
 
+/**
+ * Read the server's error text from either error shape the API uses:
+ *   { "error": { "code": "...", "message": "..." } }
+ *   { "error": "plain message" }
+ * Keeping the server text matters: the most common setup mistake (a Firebase
+ * project that is not registered with HyperBabel) only says so in the message.
+ */
+export const serverErrorMessage = (data) => {
+  const e = data?.error;
+  if (typeof e === 'string' && e) return e;
+  if (e && typeof e === 'object' && e.message) return e.message;
+  return typeof data?.message === 'string' ? data.message : null;
+};
+
+/** The machine-readable `error.code`, when the object shape carries one. */
+export const serverErrorCode = (data) => {
+  const e = data?.error;
+  return e && typeof e === 'object' && typeof e.code === 'string' ? e.code : undefined;
+};
+
 async function request(endpoint, options = {}) {
   const token = await maybeProactiveRefresh(readAccessToken());
 
@@ -183,13 +203,47 @@ async function request(endpoint, options = {}) {
 
   const data = await parseBody(response);
   if (!response.ok) {
-    const error = new Error(data?.error?.message ?? `API Error ${response.status}`);
+    const error = new Error(serverErrorMessage(data) ?? `API Error ${response.status}`);
     error.status = response.status;
+    error.code   = serverErrorCode(data);
     error.data   = data;
     throw error;
   }
   return data;
 }
+
+// ── Sign-out ──────────────────────────────────────────────────────────────
+
+/**
+ * End this device's customer session on the server: POST /customer/logout
+ * revokes the refresh token and deletes the push tokens this device
+ * registered, so a signed-out browser stops receiving the previous user's
+ * notifications. The refresh token in the body authenticates the call — no
+ * Authorization header is sent.
+ *
+ * Call it BEFORE clearing local storage (it reads the stored refresh token).
+ * Failures are ignored on purpose: the call is idempotent, and signing out
+ * locally must still work offline or with an already-expired session.
+ *
+ * @param {string[]} [pushTokens] — Push tokens this device registered
+ * @returns {Promise<void>}
+ */
+export const logoutCustomerSession = async (pushTokens = []) => {
+  let refreshToken = null;
+  try { refreshToken = localStorage.getItem(STORAGE_KEY_REFRESH_TOKEN); } catch { /* storage unavailable */ }
+  if (!refreshToken) return;
+  const tokens = pushTokens.filter(Boolean);
+  try {
+    await fetch(`${BASE_URL}/customer/logout`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        refresh_token: refreshToken,
+        ...(tokens.length ? { push_tokens: tokens } : {}),
+      }),
+    });
+  } catch { /* offline — local sign-out still proceeds */ }
+};
 
 // ── Public API ────────────────────────────────────────────────────────────
 

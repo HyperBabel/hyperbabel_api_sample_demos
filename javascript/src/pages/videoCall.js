@@ -147,9 +147,14 @@ export async function renderVideoCall(roomId, navigate) {
         // reset the UI so the button doesn't pretend captions are still live.
         if (st === 'closed' && ccHandle) stopCaptions();
       },
-      onError: (message) => {
+      onError: (message, { fatal } = {}) => {
         if (ccSession !== mySession) return; // stale session — ignore
-        setStatus(`Captions: ${message}`);
+        if (!fatal) {
+          // Transient — the session is still running; just say so.
+          setStatus(`Captions: ${message} (still listening)`);
+          return;
+        }
+        setStatus(`Captions stopped: ${message}`);
         stopCaptions();
       },
     });

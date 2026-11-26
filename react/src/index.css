@@ -941,35 +941,6 @@ select.input-field {
   padding: 24px;
 }
 
-.usage-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 16px;
-}
-
-.usage-item {
-  padding: 16px;
-  background: var(--hb-surface-alt);
-  border-radius: var(--hb-radius-sm);
-  text-align: center;
-}
-
-.usage-value {
-  font-size: 1.5rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--hb-primary-light), var(--hb-accent));
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.usage-label {
-  font-size: 0.75rem;
-  color: var(--hb-text-muted);
-  text-transform: uppercase;
-  margin-top: 4px;
-}
-
 /* ── Empty State ─────────────────────────────────────────────────────── */
 .empty-state {
   display: flex;

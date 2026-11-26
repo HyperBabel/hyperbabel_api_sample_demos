@@ -45,10 +45,11 @@
  *  /dashboard           — Sandbox Hub (main landing after login)
  *  /chat                — Unified Chat Hub (room list)
  *  /chat/:roomId        — Specific chat room
+ *  /join?code=…         — Join an open room from an invite link
  *  /video-call/:roomId  — Video call (1:1 or group)
  *  /live-stream/host    — Live stream host mode
  *  /live-stream/viewer/:sessionId — Live stream viewer mode
- *  /settings            — Usage, push tokens, language detection
+ *  /settings            — Push tokens, language detection
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
@@ -60,6 +61,7 @@ import LoginPage from './pages/LoginPage';
 import SignUpPage from './pages/SignUpPage';
 import DashboardPage from './pages/DashboardPage';
 import ChatHubPage from './pages/ChatHubPage';
+import JoinByCodePage from './pages/JoinByCodePage';
 import VideoCallPage from './pages/VideoCallPage';
 import LiveStreamPage from './pages/LiveStreamPage';
 import SettingsPage from './pages/SettingsPage';
@@ -86,6 +88,8 @@ export default function App() {
           {/* ── Unified Chat Hub ── */}
           <Route path="/chat" element={<ChatHubPage />} />
           <Route path="/chat/:roomId" element={<ChatHubPage />} />
+          {/* Invite link copied from the open-room member panel */}
+          <Route path="/join" element={<JoinByCodePage />} />
 
           {/* ── Video Call (launched from within chat rooms) ── */}
           <Route path="/video-call/:roomId" element={<VideoCallPage />} />

@@ -46,7 +46,16 @@ firebase/
    token to prove ownership → click *Verify and add*.
 
    This step tells HyperBabel "trust ID tokens from this project."
-   Without it, `/customer/auth/firebase-exchange` returns 403.
+   Without it, `/customer/auth/firebase-exchange` returns **401**
+   `{ "error": "Firebase project \"<id>\" is not registered with HyperBabel" }`
+   — the sign-in screen shows that message.
+
+7. **Push notifications (optional).** HyperBabel delivers push to FCM
+   registration tokens only — on iOS too. To receive pushes, add the
+   *Push Notifications* capability to the Xcode target and upload your
+   APNs authentication key in Firebase Console → Project Settings →
+   Cloud Messaging. The demo then registers the device's FCM token
+   after sign-in (`API/PushRegistration.swift`).
 
 ## What if I skip this folder?
 

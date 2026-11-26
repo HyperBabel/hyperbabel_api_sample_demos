@@ -107,6 +107,7 @@ export const sendThreadReply = (
 /**
  * Full-text search for messages in a room. Path is `/unitedchat/rooms/:id/search`
  * — the leading-slash variant `/messages/search` does not exist.
+ * Provided for porting; no screen in this demo calls it yet.
  */
 export const searchMessages = (roomId: string, query: string, userId: string) =>
   api.get<{ messages: Message[] }>(

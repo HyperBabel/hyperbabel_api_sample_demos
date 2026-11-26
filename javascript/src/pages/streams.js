@@ -2,6 +2,10 @@
  * Live Streams page — list active sessions, host a new broadcast, or watch as
  * a viewer. The actual RTC join lives in `pages/streamHost.js` and
  * `pages/streamViewer.js`; this file is the discovery surface.
+ *
+ * Needs your backend: `/stream/*` accepts only the organization API key, so
+ * this browser demo shows the server's "Invalid API key format" error here
+ * (see api/stream.js).
  */
 
 import * as stream from '../api/stream.js';
@@ -29,8 +33,9 @@ export async function renderStreams(navigate) {
   document.getElementById('go-live').onclick = () => navigate('#/stream/host');
 
   try {
+    // `{ sessions: [{ id, title, host: { user_id, display_name }, viewer_count, … }], total }`
     const data = await stream.listSessions();
-    const sessions = data.sessions || data || [];
+    const sessions = data?.sessions || [];
     const box = document.getElementById('sessions');
     if (sessions.length === 0) {
       box.innerHTML = '<span class="muted">Nobody is streaming right now — be the first.</span>';
@@ -43,11 +48,11 @@ export async function renderStreams(navigate) {
       row.innerHTML = `
         <div>
           <div style="font-weight: 600;">${escapeHtml(s.title || 'Untitled stream')}</div>
-          <div class="meta">Host: ${escapeHtml(s.host_name || s.host_user_id || '—')} · ${s.viewer_count ?? 0} viewers</div>
+          <div class="meta">Host: ${escapeHtml(s.host?.display_name || s.host?.user_id || '—')} · ${escapeHtml(s.viewer_count ?? 0)} viewers</div>
         </div>
         <button>Watch →</button>
       `;
-      row.onclick = () => navigate(`#/stream/viewer/${s.session_id || s.id}`);
+      row.onclick = () => navigate(`#/stream/viewer/${encodeURIComponent(s.id)}`);
       box.appendChild(row);
     }
   } catch (err) {

@@ -15,9 +15,9 @@ import retrofit2.http.Body
 import retrofit2.http.POST
 
 interface RtmService {
-    @POST("api/v1/rtm/token")
+    @POST("rtm/token")
     suspend fun realtimeToken(@Body body: RealtimeTokenRequest): RealtimeTokenResponse
 
-    @POST("api/v1/rtm/rtc/token")
+    @POST("rtm/rtc/token")
     suspend fun rtcToken(@Body body: RtcTokenRequest): RtcTokenResponse
 }

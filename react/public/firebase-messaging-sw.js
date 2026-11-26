@@ -10,11 +10,15 @@
  *
  * HyperBabel Push API → FCM → firebase-messaging-sw.js (this file)
  *   ├─ Display OS push notification (title / body / icon)
- *   ├─ Incoming call push → includes "📞 Accept / ❌ Reject" action buttons
- *   └─ Notification click → routes to the relevant page by push type
- *        chat.message   → /chat/:room_id
- *        video.call     → /video-call/:room_id
- *        stream.started → /live-stream/viewer/:session_id
+ *   ├─ Silent sync pushes (`read`, `call_canceled`) → nothing is shown
+ *   └─ Notification click → /chat/:room_id
+ *
+ * Push `data.type` values HyperBabel sends to a browser token:
+ *   message — a new chat message (room_id, message_id, sender_id)
+ *   read    — silent: the user read the room on another device
+ * Incoming-call pushes (`CALL_INVITE` / `call_canceled`) go to Android and
+ * iOS app tokens, not to web tokens. In the browser a call rings through the
+ * real-time private channel while a tab is open.
  *
  * ─────────────────────────────────────────────────────────────────
  * Foreground (when the app tab is active) is handled by the
@@ -62,13 +66,15 @@ if (!firebaseConfig.apiKey.startsWith('REPLACE_')) {
    * payload.notification  → { title, body, image }  (from FCM)
    * payload.data          → custom key/value pairs from HyperBabel
    *
-   * HyperBabel Push API sends structured data payloads such as:
-   *   { type: 'chat.message', room_id: '...', sender_name: '...' }
-   *   { type: 'video.call', room_id: '...', caller_name: '...' }
+   * A chat-message push carries:
+   *   { type: 'message', room_id: '...', message_id: '...', sender_id: '...' }
    */
   messaging.onBackgroundMessage((payload) => {
     const notification = payload.notification || {};
     const data         = payload.data         || {};
+
+    // Sync-only pushes have nothing to show.
+    if (data.type === 'read' || data.type === 'call_canceled') return;
 
     // Build notification options
     const title = notification.title || data.title || 'HyperBabel';
@@ -78,29 +84,17 @@ if (!firebaseConfig.apiKey.startsWith('REPLACE_')) {
     // Badge for type-specific context
     const badge = '/vite.svg';
 
-    // Actions differ by push type (chat message vs. call invite)
-    const actions = [];
-    if (data.type === 'video.call' || data.type === 'CALL_INVITE') {
-      actions.push({ action: 'accept', title: '📞 Accept' });
-      actions.push({ action: 'reject', title: '❌ Reject' });
-    }
-
-    // Build click URL — clicking the notification opens the relevant page
-    let clickUrl = '/dashboard';
-    if (data.room_id)     clickUrl = `/chat/${data.room_id}`;
-    if (data.session_id)  clickUrl = `/live-stream/viewer/${data.session_id}`;
-    if (data.type === 'video.call' || data.type === 'CALL_INVITE') {
-      clickUrl = data.room_id ? `/video-call/${data.room_id}` : '/dashboard';
-    }
+    // Clicking the notification opens the room
+    const clickUrl = data.room_id ? `/chat/${data.room_id}` : '/dashboard';
 
     self.registration.showNotification(title, {
       body,
       icon,
       badge,
-      tag:           data.type || 'hb-notification', // replaces previous same-type notification
+      // One notification per room (a newer message replaces the older one)
+      tag:           data.room_id || data.type || 'hb-notification',
       renotify:      true,
       data:          { clickUrl, ...data },
-      ...(actions.length > 0 && { actions }),
     });
   });
 

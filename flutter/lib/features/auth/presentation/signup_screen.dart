@@ -6,9 +6,10 @@ import '../../../core/auth/auth_controller.dart';
 import '../../../shared/widgets/glass_container.dart';
 
 /// Sign up with Firebase Email/Password, then exchange the resulting ID
-/// token for a HyperBabel customer JWT (pattern B1). The matching
-/// `com_users` row is created server-side on first exchange, so no extra
-/// "create user" call is needed.
+/// token for a HyperBabel customer JWT (pattern B1). HyperBabel creates the
+/// end user on the first exchange, so no extra "create user" call is needed.
+/// A typed display name is saved right after with PATCH /customer/users/me —
+/// otherwise other members would see the email address as the name.
 class SignUpScreen extends ConsumerStatefulWidget {
   const SignUpScreen({super.key});
 
@@ -63,7 +64,7 @@ class _SignUpScreenState extends ConsumerState<SignUpScreen> {
           );
       if (mounted) context.go('/home');
     } catch (e) {
-      setState(() => _errorMsg = e.toString());
+      if (mounted) setState(() => _errorMsg = e.toString());
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -205,8 +206,8 @@ class _FirebaseMissingBanner extends StatelessWidget {
           SizedBox(height: 6),
           Text(
             'Install google-services.json (Android) and '
-            'GoogleService-Info.plist (iOS) via your platform tooling, '
-            'and populate FIREBASE_* in .env. See firebase/README.md and '
+            'GoogleService-Info.plist (iOS), then run the app again. '
+            'Nothing goes in .env for Firebase. See firebase/README.md and '
             'the project README → Quickstart.',
             style: TextStyle(color: Color(0xFFFDE68A), fontSize: 12, height: 1.4),
           ),

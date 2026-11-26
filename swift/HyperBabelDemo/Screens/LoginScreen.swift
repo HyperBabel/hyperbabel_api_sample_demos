@@ -143,7 +143,7 @@ struct LoginScreen: View {
         defer { loading = false }
         do {
             let result = try await FirebaseAuthService.signInWithEmail(
-                em, password: password, preferredLangCd: langCd,
+                em, password: password, preferredLangCd: langCd
             )
             await finishSignIn(result)
         } catch {
@@ -157,7 +157,7 @@ struct LoginScreen: View {
         defer { loading = false }
         do {
             let result = try await FirebaseAuthService.signInAnonymously(
-                preferredLangCd: langCd,
+                preferredLangCd: langCd
             )
             await finishSignIn(result)
         } catch {
@@ -167,17 +167,11 @@ struct LoginScreen: View {
 
     private func finishSignIn(_ result: FirebaseExchangeResult) async {
         session.persist(result, fallbackDisplayName: displayName, langCode: langCd)
-        // Best-effort push token registration. Failures don't block sign-in
-        // and don't surface to the user — production apps swap the synthetic
-        // token below for the real APNs token.
-        Task {
-            let token = "demo-ios-\(Int(Date().timeIntervalSince1970))"
-            _ = try? await PushService.register(
-                userId: result.external_user_id,
-                token: token,
-                platform: "ios",
-            )
-        }
+        // Save the typed name to the profile so other members never see the
+        // account's email address.
+        await session.publishDisplayName(displayName)
+        // The push token is registered by RootNavigation once the session is
+        // set (PushRegistration.registerIfSignedIn) — the real FCM token.
     }
 
     private var firebaseMissingBanner: some View {

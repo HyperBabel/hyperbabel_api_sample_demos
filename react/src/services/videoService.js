@@ -4,8 +4,13 @@
  * Standalone video call management for custom implementations.
  * Supports 1-to-1 and group calls with rich participant metadata.
  *
- * For video calls embedded inside chat rooms, use the United Chat API
- * video-call endpoints in `unitedChatService.js` instead.
+ * ⚠️ BACKEND ONLY. Every `/video/*` endpoint authenticates with your
+ * organization API key, so no page in this browser demo calls this file —
+ * run these calls from your own server.
+ *
+ * For video calls embedded inside chat rooms — the ones this demo makes, with
+ * the end-user token — use the United Chat video-call endpoints in
+ * `unitedChatService.js` instead.
  *
  * Base path: /video
  */

@@ -2,6 +2,10 @@
  * HyperBabel React Demo — Reusable Chat Message List
  *
  * Displays a scrollable list of chat messages with:
+ * - Messages in chronological order (oldest at the top). The history API
+ *   returns newest first — the caller reverses each page before passing it in.
+ * - Optional "Load earlier messages" button (hasMore / onLoadOlder) that keeps
+ *   the current scroll position when the older page is prepended
  * - Sender name and avatar
  * - Original message content with rich type renderers
  * - Auto-translated text (shown below original in accent color)
@@ -28,7 +32,7 @@
  *   📌 Pin   — pin/unpin for eligible message types
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { formatMessageTime, formatDateSeparator, initLocale } from '../utils/timeUtils';
 
@@ -64,9 +68,16 @@ const callEventNotice = (msg) => {
  * @param {Function} [props.onPin]        — Callback(msgId) to pin a message
  * @param {string}   [props.hoveredMsgId] — Controlled hover state from parent
  * @param {Function} [props.onHover]      — Callback(msgId|null) to update hover state
+ * @param {boolean}  [props.hasMore]      — Older history exists (`has_more`)
+ * @param {Function} [props.onLoadOlder]  — Loads and prepends the next older page
+ * @param {boolean}  [props.loadingOlder] — An older page is being fetched
  */
-export default function ChatMessageList({ messages = [], currentUserId, pinnedMsgId, canPin, onPin, hoveredMsgId, onHover, onCopy: notifyCopy, readStatuses = {}, roomType, isSelfChat, members = [], onRetry, onCancelSend, onEdit, onDelete, editingMsgId, editingContent, setEditingContent, deleteConfirmId, setDeleteConfirmId, replySnapshots = {}, onReply, userLang = 'en' }) {
+export default function ChatMessageList({ messages = [], currentUserId, pinnedMsgId, canPin, onPin, hoveredMsgId, onHover, onCopy: notifyCopy, readStatuses = {}, roomType, isSelfChat, members = [], onRetry, onCancelSend, onEdit, onDelete, editingMsgId, editingContent, setEditingContent, deleteConfirmId, setDeleteConfirmId, replySnapshots = {}, onReply, userLang = 'en', hasMore = false, onLoadOlder, loadingOlder = false }) {
   const bottomRef = useRef(null);
+  const containerRef = useRef(null);
+  // Scroll metrics captured just before an older page is requested, so the
+  // view can stay on the same message once that page is prepended above it.
+  const preserveScrollRef = useRef(null);
   const [localeReady, setLocaleReady] = useState(false);
   // Lightbox state for image click-to-enlarge
   const [lightboxUrl, setLightboxUrl] = useState(null);
@@ -126,9 +137,34 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
     initLocale().then(() => setLocaleReady(true));
   }, []);
 
-  // Auto-scroll to the latest message whenever messages change.
-  // Uses instant + rAF chain to handle tall cards (images, location, contact)
-  // that cause layout reflow AFTER paint.
+  // Older page prepended: shift the scroll offset by the height that was added
+  // above, so the message the user was looking at stays in place. Runs before
+  // paint (layout effect) — no visible jump.
+  const firstMsgId = messages[0]?.id;
+  useLayoutEffect(() => {
+    const saved = preserveScrollRef.current;
+    const el = containerRef.current;
+    if (!saved || !el) return;
+    preserveScrollRef.current = null;
+    el.scrollTop = el.scrollHeight - saved.scrollHeight + saved.scrollTop;
+  }, [firstMsgId]);
+  // The load finished without adding anything above — drop the snapshot so
+  // it cannot shift the view later (declared after the effect above, which
+  // runs first in the same commit when a page did arrive).
+  useLayoutEffect(() => {
+    if (!loadingOlder) preserveScrollRef.current = null;
+  }, [loadingOlder]);
+
+  const handleLoadOlder = () => {
+    const el = containerRef.current;
+    if (el) preserveScrollRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    onLoadOlder?.();
+  };
+
+  // Auto-scroll to the latest message whenever a NEW message lands at the end
+  // (prepending older history leaves the last id unchanged, so it does not
+  // jump). Uses instant + rAF chain to handle tall cards (images, location,
+  // contact) that cause layout reflow AFTER paint.
   const lastMsgId = messages[messages.length - 1]?.id;
   useEffect(() => {
     // first frame: paint; second frame + 100ms: layout settled
@@ -475,7 +511,19 @@ export default function ChatMessageList({ messages = [], currentUserId, pinnedMs
 
   return (
     <>
-      <div className="messages-container">
+      <div className="messages-container" ref={containerRef}>
+        {/* ── Older history (cursor pagination) ── */}
+        {hasMore && onLoadOlder && (
+          <div style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleLoadOlder}
+              disabled={loadingOlder}
+            >
+              {loadingOlder ? 'Loading…' : 'Load earlier messages'}
+            </button>
+          </div>
+        )}
         {messages.map((msg, idx) => {
           const isOwn = msg.sender_id === currentUserId;
           const prevMsg = idx > 0 ? messages[idx - 1] : null;

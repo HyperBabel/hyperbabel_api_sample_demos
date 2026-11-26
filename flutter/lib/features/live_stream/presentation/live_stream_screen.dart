@@ -17,6 +17,11 @@ import '../../../shared/widgets/glass_container.dart';
 ///
 /// Picks the right HyperBabel Video role based on which path the user takes,
 /// then mounts the local / remote canvas accordingly.
+///
+/// ⚠️ Every `/stream/*` call needs your organization API key, so from this
+/// app they fail with HTTP 401 BY DESIGN — the screen shows the payloads and
+/// the order of calls to move to your backend (see `stream_repository.dart`
+/// and the README).
 class LiveStreamScreen extends StatefulWidget {
   const LiveStreamScreen({super.key});
 
@@ -31,6 +36,7 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
   final HyperBabelVideoClient _video = HyperBabelVideoClient();
 
   String? _userId;
+  String? _userName;
   _Mode _mode = _Mode.list;
   bool _busy = false;
   String? _error;
@@ -54,10 +60,10 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
     super.dispose();
   }
 
-  /// Start the 30s heartbeat. Lets the server detect a host crash within
-  /// minutes and bill only actual stream time (vs the 8h wall-clock
-  /// fallback). The Dart timer suspends with the app, which is the
-  /// behavior we want — abandoned sessions will be reaped server-side.
+  /// Start the 30s heartbeat. A live session without one for 5 minutes is
+  /// ended by the server and billed up to the last heartbeat. The Dart timer
+  /// suspends with the app, which is the behavior we want — abandoned
+  /// sessions are reaped server-side.
   void _startHeartbeat(String sessionId) {
     _heartbeatTimer?.cancel();
     _stream.heartbeat(sessionId);
@@ -69,6 +75,7 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
   Future<void> _bootstrap() async {
     final prefs = await SharedPreferences.getInstance();
     _userId = prefs.getString('hb_user_id');
+    _userName = prefs.getString('hb_user_name');
     if (_userId == null) {
       if (mounted) context.go('/login');
       return;
@@ -94,31 +101,40 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
     try {
       await Permission.camera.request();
       await Permission.microphone.request();
+      final hostName = _userName ?? _userId!;
+      // `session` is the unwrapped `{ id, channel_name, app_id, host: {…} }`.
       final session = await _stream.createSession(
         hostUserId: _userId!,
-        hostName: _userId!,
-        title: 'Live from ${_userId!}',
+        hostName: hostName,
+        title: 'Live from $hostName',
       );
-      _activeSessionId = (session['session_id'] ?? session['id']) as String?;
+      _activeSessionId = session['id'] as String?;
       _channelName = session['channel_name'] as String?;
       final appId = session['app_id'] as String?;
-      final rtcToken = session['rtc_token'] as String?;
-      if (_channelName == null || appId == null || rtcToken == null) {
+      // The host publishes with the host's own token and uid.
+      final host = session['host'] is Map
+          ? Map<String, dynamic>.from(session['host'] as Map)
+          : const <String, dynamic>{};
+      final rtcToken = host['rtc_token'] as String?;
+      final hostUid = host['uid'] as int?;
+      if (_activeSessionId == null ||
+          _channelName == null ||
+          appId == null ||
+          rtcToken == null ||
+          hostUid == null) {
         throw Exception('Server did not return RTC details for the session.');
       }
-      _localUid = (session['uid'] as int?) ?? 0;
+      _localUid = hostUid;
       // Live broadcasting profile.
       await _video.initialize(appId, liveStream: true);
       await _video.joinRoom(
         token: rtcToken,
         channelName: _channelName!,
-        uid: _localUid!,
+        uid: hostUid,
         publisher: true,
       );
-      if (_activeSessionId != null) {
-        await _stream.startSession(_activeSessionId!, _userId!);
-        _startHeartbeat(_activeSessionId!);
-      }
+      await _stream.startSession(_activeSessionId!);
+      _startHeartbeat(_activeSessionId!);
       setState(() {
         _mode = _Mode.host;
         _busy = false;
@@ -138,12 +154,13 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
       _error = null;
     });
     try {
-      final sessionId = (session['session_id'] ?? session['id']) as String?;
+      final sessionId = session['id'] as String?;
       if (sessionId == null) throw Exception('Session has no id.');
+      // Flat response: `{ channel_name, uid, token, app_id, … }`.
       final tok = await _stream.viewerToken(sessionId, _userId!);
-      _channelName = tok['channel_name'] as String? ?? session['channel_name'] as String?;
+      _channelName = tok['channel_name'] as String?;
       final appId = tok['app_id'] as String?;
-      final rtcToken = tok['rtc_token'] as String?;
+      final rtcToken = tok['token'] as String?;
       if (_channelName == null || appId == null || rtcToken == null) {
         throw Exception('Viewer token missing RTC fields.');
       }
@@ -178,8 +195,8 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
     try {
-      if (_mode == _Mode.host && _activeSessionId != null && _userId != null) {
-        await _stream.endSession(_activeSessionId!, _userId!).catchError((_) {});
+      if (_mode == _Mode.host && _activeSessionId != null) {
+        await _stream.endSession(_activeSessionId!).catchError((_) {});
       }
       await _video.dispose();
     } catch (_) {}
@@ -237,7 +254,11 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
-              child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+              child: Text(
+                '$_error\n\nExpected from this app: live streaming runs through '
+                'your backend with the organization API key. See the README.',
+                style: const TextStyle(color: Colors.redAccent),
+              ),
             ),
           if (_sessions.isEmpty)
             const Padding(
@@ -260,7 +281,9 @@ class _LiveStreamScreenState extends State<LiveStreamScreen> {
 
   Widget _buildSessionCard(Map<String, dynamic> session) {
     final title = (session['title'] ?? 'Untitled stream') as String;
-    final hostName = (session['host_name'] ?? session['host_user_id'] ?? '—') as String;
+    final host = session['host'];
+    final hostName =
+        (host is Map ? (host['display_name'] ?? host['user_id']) : null) ?? '—';
     final viewers = session['viewer_count'] ?? '—';
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),

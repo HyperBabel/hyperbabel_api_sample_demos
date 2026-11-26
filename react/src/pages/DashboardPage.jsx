@@ -5,7 +5,6 @@
  * - Unified Chat Hub (1:1, Group, Open chat rooms)
  * - Live Stream (Host / Viewer) — needs your backend
  * - Standalone translation — needs your backend (chat translation does not)
- * - API Usage monitoring
  *
  * This page demonstrates how developers can build a dashboard
  * that integrates multiple HyperBabel API features.
@@ -14,12 +13,13 @@
  * `/translate/*`) are deliberately NOT called from here: the browser only
  * holds an end-user token, so they answer 401 — and every 401 also makes the
  * HTTP client spend a token refresh. Call them from your own server.
+ * The same goes for organization usage and plan data: read it from your
+ * backend with the API key — it is not available to end-user apps.
  */
 
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '../components/Header';
-import * as authService from '../services/authService';
 import * as presenceService from '../services/presenceService';
 import firebaseService from '../services/firebaseService';
 
@@ -27,8 +27,6 @@ export default function DashboardPage() {
   const navigate = useNavigate();
   const user = JSON.parse(localStorage.getItem('hb_user') || '{}');
 
-  // State for API usage stats
-  const [usage, setUsage] = useState(null);
   // Push notification registration status
   const [pushStatus, setPushStatus] = useState(null); // null | 'granted' | 'denied' | 'unavailable'
   // Live stream discovery list. Fill it from YOUR backend, which can call
@@ -52,12 +50,6 @@ export default function DashboardPage() {
     // Send initial heartbeat immediately
     presenceService.heartbeat(user.user_id, 'web').catch(() => {});
 
-    // Fetch API usage stats on mount (404 when the organization has no
-    // active subscription — the card is simply not shown then)
-    authService.getUsage()
-      .then(setUsage)
-      .catch(() => setUsage(null));
-
     // Register for push notifications via HyperBabel Push API
     firebaseService
       .registerForPushNotifications(user.user_id, 'web')
@@ -74,8 +66,6 @@ export default function DashboardPage() {
       clearInterval(heartbeatInterval);
     };
   }, []);
-
-  const usageSummary = usage ? authService.summarizeUsage(usage) : null;
 
   return (
     <>
@@ -103,7 +93,7 @@ export default function DashboardPage() {
               alignItems: 'center',
               gap: '6px',
             }}>
-              🔔 Push notifications registered — HyperBabel will alert you to new messages and calls
+              🔔 Push notifications registered — HyperBabel will alert you to new chat messages (incoming calls ring in an open tab)
             </div>
           )}
           {pushStatus === 'denied' && (
@@ -197,7 +187,7 @@ export default function DashboardPage() {
             </div>
             <div className="dashboard-card-title">Settings</div>
             <div className="dashboard-card-desc">
-              View API usage stats and the push notification tokens registered for you.
+              View the push notification tokens registered for you.
               Webhooks are managed in the HyperBabel Console.
             </div>
           </div>
@@ -282,40 +272,6 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-
-        {/* ── API Usage Stats ── */}
-        {usageSummary && (
-          <div style={{ marginTop: '40px' }}>
-            <h2 style={{ fontSize: '1.3rem', fontWeight: 700, marginBottom: '16px' }}>
-              📊 API Usage — Current Month
-            </h2>
-            <div className="glass-card" style={{ padding: '24px' }}>
-              <div style={{ marginBottom: '12px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <span className="badge badge-primary" style={{ fontSize: '0.8rem' }}>
-                  Plan: {usageSummary.plan}
-                </span>
-                {usageSummary.periodEnd && (
-                  <span className="badge badge-success" style={{ fontSize: '0.8rem' }}>
-                    Billing period ends: {new Date(usageSummary.periodEnd).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-              <div className="usage-grid">
-                {usageSummary.items.map((item) => (
-                  <div key={item.key} className="usage-item">
-                    <div className="usage-value">
-                      {item.used.toLocaleString()}
-                      <span className="text-muted text-sm">
-                        {' / '}{item.limit === null ? 'Unlimited' : item.limit.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="usage-label">{item.label}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </>
   );

@@ -3,8 +3,10 @@
  *
  * Creates a brand-new Firebase user with email + password, then exchanges
  * the resulting ID token for a HyperBabel customer JWT (pattern B1). The
- * matching `com_users` row is created automatically on the server side
- * during exchange — no extra "create user" call needed.
+ * matching HyperBabel end-user account is created automatically during the
+ * exchange — no extra "create user" call needed. A typed display name is
+ * then saved with PATCH /customer/users/me, so other members do not see the
+ * email address the account was named after.
  */
 
 import React, { useMemo, useState } from 'react';
@@ -26,6 +28,7 @@ import { useAuth } from '@/context/AuthContext';
 import {
   isFirebaseReady,
   signUpWithEmailAndExchange,
+  saveDisplayName,
 } from '@/services/firebaseAuthService';
 import { colors, spacing, textPresets, borderRadius } from '@/theme';
 
@@ -62,8 +65,8 @@ export default function SignUpScreen() {
     setLoading(true);
     try {
       const result = await signUpWithEmailAndExchange(e, p);
-      const resolvedName = userName.trim()
-        || result.external_user_id.slice(0, 8);
+      const typedName    = userName.trim();
+      const resolvedName = typedName || result.external_user_id.slice(0, 8);
       await login({
         userId:       result.external_user_id,
         userName:     resolvedName,
@@ -73,6 +76,10 @@ export default function SignUpScreen() {
         refreshToken: result.refresh_token,
         expiresAt:    result.expires_at,
       });
+      if (typedName) {
+        await saveDisplayName(typedName).catch((err) =>
+          console.warn('[auth] could not save the display name', err?.message ?? err));
+      }
       router.replace('/(main)/dashboard');
     } catch (err: any) {
       setErrorMsg(err?.message ?? String(err));

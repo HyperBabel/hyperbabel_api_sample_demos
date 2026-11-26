@@ -2,8 +2,9 @@
  * Sign-up screen — Customer Auth pattern B1.
  *
  * Creates a brand-new Firebase user with email + password, then
- * exchanges the resulting ID token for a HyperBabel customer JWT. The
- * matching `com_users` row is created server-side during exchange.
+ * exchanges the resulting ID token for a HyperBabel customer JWT.
+ * HyperBabel creates the matching user record during the exchange; the
+ * typed display name is then saved with PATCH /customer/users/me.
  */
 package com.hyperbabel.demo.ui.screens
 
@@ -163,6 +164,9 @@ fun SignUpScreen(
                         )
                     }.onSuccess { result ->
                         Session.persist(result, fallbackDisplayName = displayName, langCode = langCd)
+                        // Publish the typed name (if any) so other members don't see
+                        // the Firebase email. Best-effort — never blocks sign-up.
+                        FirebaseAuthService.saveDisplayName(displayName)
                         onSignedIn()
                     }.onFailure { error = it.message ?: "Sign-up failed." }
                     loading = false

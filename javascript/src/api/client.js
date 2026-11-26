@@ -142,6 +142,35 @@ async function parseBody(res) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
+/**
+ * The human-readable message from a HyperBabel error body.
+ *
+ * Errors come in two shapes, and both carry the server's explanation:
+ *   { "error": { "code": "invalid_api_key_format", "message": "Invalid API key format" } }
+ *   { "error": "Firebase project \"my-app\" is not registered with HyperBabel" }
+ * Reading only `error.message` loses the second one — including that common
+ * setup mistake — and leaves the user with a bare "HTTP 401".
+ */
+export function serverErrorMessage(data, status) {
+  const e = data?.error;
+  if (typeof e === 'string' && e) return e;
+  if (Array.isArray(e) && e.length) {
+    return e.map((issue) => issue?.message || String(issue)).join('; ');
+  }
+  if (e && typeof e === 'object') {
+    if (e.message) return String(e.message);
+    if (e.code) return String(e.code);
+  }
+  if (typeof data?.message === 'string' && data.message) return data.message;
+  return `HTTP ${status}`;
+}
+
+/** The machine-readable code, when the body has one (`{ error: { code } }`). */
+export function serverErrorCode(data) {
+  const e = data?.error;
+  return e && typeof e === 'object' && !Array.isArray(e) && e.code ? String(e.code) : undefined;
+}
+
 async function request(method, path, options = {}) {
   const token = await maybeProactiveRefresh(readAccessToken());
 
@@ -164,9 +193,9 @@ async function request(method, path, options = {}) {
 
   const data = await parseBody(res);
   if (!res.ok) {
-    const message = data?.error?.message || data?.message || `HTTP ${res.status}`;
-    const err = new Error(message);
+    const err = new Error(serverErrorMessage(data, res.status));
     err.status = res.status;
+    err.code   = serverErrorCode(data);
     err.body   = data;
     throw err;
   }
@@ -174,9 +203,10 @@ async function request(method, path, options = {}) {
 }
 
 export const api = {
-  get:  (path, query)        => request('GET',    path, { query }),
-  post: (path, body)         => request('POST',   path, { body }),
-  put:  (path, body)         => request('PUT',    path, { body }),
+  get:   (path, query)       => request('GET',    path, { query }),
+  post:  (path, body)        => request('POST',   path, { body }),
+  put:   (path, body)        => request('PUT',    path, { body }),
+  patch: (path, body)        => request('PATCH',  path, { body }),
   // Several DELETE endpoints carry a body (e.g. /users/block needs
   // {blocker_id, blocked_id}, /unitedchat/rooms/:id/freeze needs {user_id}).
   // Accept both an optional body and an optional query so callers don't

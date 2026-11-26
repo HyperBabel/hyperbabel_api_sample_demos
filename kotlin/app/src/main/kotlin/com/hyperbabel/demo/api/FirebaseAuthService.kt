@@ -14,6 +14,9 @@
  *      it to every subsequent request and refreshes transparently on
  *      401. The Firebase ID token never leaves the device after
  *      exchange.
+ *   5. If the user typed a display name, saveDisplayName(...) sends it with
+ *      PATCH /customer/users/me so other members never see the Firebase
+ *      email as the name.
  *
  * The app never sees the integrator's org API key — the HyperBabel
  * API resolves the org from the Firebase project ID claim after
@@ -26,10 +29,12 @@
  *   2. Sign-in providers (Email/Password, Anonymous, …) enabled in
  *      Firebase Console → Authentication → Sign-in method.
  *   3. Your Firebase project ID allow-listed in HyperBabel Console
- *      → Customer Auth → Add Firebase project.
+ *      → Customer Auth → Add Firebase project. Until it is, the exchange
+ *      answers 401 `Firebase project "<id>" is not registered with HyperBabel`.
  */
 package com.hyperbabel.demo.api
 
+import android.util.Log
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -42,6 +47,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -130,6 +136,35 @@ object FirebaseAuthService {
         runCatching { FirebaseAuth.getInstance().signOut() }
     }
 
+    /**
+     * Step 5 — publish the display name the user typed, right after the
+     * exchange (sign-in and sign-up): `PATCH /customer/users/me
+     * { display_name }` with the new customer JWT.
+     *
+     * On first sign-in HyperBabel names a new user after the Firebase profile
+     * name, falling back to the Firebase EMAIL — which other members would
+     * then see in member lists and 1:1 room titles. Later sign-ins keep the
+     * stored name, so this only has to succeed once.
+     *
+     * Best-effort: a blank name is skipped, and a failure is logged and never
+     * blocks sign-in. Call it after `Session.persist(...)` stored the JWT.
+     */
+    suspend fun saveDisplayName(typed: String?) {
+        // 1..60 characters; never cut a surrogate pair in half.
+        val name = typed.orEmpty().trim().take(DISPLAY_NAME_MAX)
+            .let { if (it.isNotEmpty() && it.last().isHighSurrogate()) it.dropLast(1) else it }
+        if (name.isEmpty()) return
+        try {
+            ApiClient.profile.updateMe(mapOf("display_name" to name))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            Log.w("FirebaseAuthService", "Could not save the display name: ${t.message}")
+        }
+    }
+
+    private const val DISPLAY_NAME_MAX = 60
+
     // ── Internals ───────────────────────────────────────────────────────
 
     private suspend fun exchange(
@@ -154,7 +189,10 @@ object FirebaseAuthService {
         http.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw ExchangeException("Exchange failed: HTTP ${response.code} — $text")
+                // Keep the server's message, e.g. an unregistered project answers
+                // 401 { "error": "Firebase project \"…\" is not registered with HyperBabel" }.
+                val parsed = ApiClient.parseApiError(response.code, text)
+                throw ExchangeException("Exchange failed: ${parsed.message}")
             }
             json.decodeFromString(FirebaseExchangeResult.serializer(), text)
         }
